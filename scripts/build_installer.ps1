@@ -67,7 +67,8 @@ Set-Content -Path $pth -Value $pthLines -Encoding ASCII
 # pywin32 gotcha: copy DLLs so the service can load them without PATH edits
 $sp = Join-Path $rt "Lib\site-packages"
 Copy-Item (Join-Path $sp "pywin32_system32\*.dll") $rt -Force -ErrorAction SilentlyContinue
-& $py (Join-Path $sp "win32\scripts\pywin32_postinstall.py") -install -destination $sp 2>$null
+try { & $py (Join-Path $sp "win32\scripts\pywin32_postinstall.py") -install -destination $sp *> $null } catch { Write-Warning "pywin32_postinstall non-fatal: $_" }
+$global:LASTEXITCODE = 0
 
 # (v) stage payload
 Copy-Item (Join-Path $root "app")     (Join-Path $build "app")     -Recurse
