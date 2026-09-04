@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="welcome">
+  <h2>Welcome, {{ current_user.full_name or current_user.username }}</h2>
+  <p class="muted">You are signed in as <strong>{{ current_user.role_name }}</strong>.</p>
+</div>
+
+{% if stats %}
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.total_users }}</div>
+    <div class="stat-label">Total users</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.active_users }}</div>
+    <div class="stat-label">Active users</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ stats.inactive_users }}</div>
+    <div class="stat-label">Inactive users</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="quick-links">
+  <a class="tile" href="{{ url_for('main.operations') }}">
+    <span class="tile-ico">⚙</span>
+    <span class="tile-title">Operations</span>
+    <span class="tile-desc">Open the operations workspace.</span>
+  </a>
+  {% if current_user.is_administrator %}
+  <a class="tile" href="{{ url_for('admin.users') }}">
+    <span class="tile-ico">👥</span>
+    <span class="tile-title">Manage users</span>
+    <span class="tile-desc">Create, edit and deactivate accounts.</span>
+  </a>
+  <a class="tile" href="{{ url_for('admin.audit_log') }}">
+    <span class="tile-ico">📄</span>
+    <span class="tile-title">Audit log</span>
+    <span class="tile-desc">Review recent security activity.</span>
+  </a>
+  {% endif %}
+  <a class="tile" href="{{ url_for('main.settings') }}">
+    <span class="tile-ico">🎨</span>
+    <span class="tile-title">Settings</span>
+    <span class="tile-desc">Switch between light and dark mode.</span>
+  </a>
+</div>
+{% endblock %}

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="{{ current_user.theme if current_user.is_authenticated else 'light' }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ app_name }}{% endblock %} v{{ app_version }} &middot; {{ app_name }}</title>
+  <link rel="icon" href="{{ url_for('static', filename='img/favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">AI</span>
+        <span class="brand-name">{{ app_name }}</span>
+      </div>
+      <nav class="nav">
+        <a class="nav-link {{ 'active' if request.endpoint == 'main.dashboard' }}"
+           href="{{ url_for('main.dashboard') }}">
+          <span class="nav-ico">▧</span> Dashboard
+        </a>
+        <a class="nav-link {{ 'active' if request.endpoint == 'main.operations' }}"
+           href="{{ url_for('main.operations') }}">
+          <span class="nav-ico">⚙</span> Operations
+        </a>
+        {% if current_user.is_administrator %}
+        <div class="nav-section">Administration</div>
+        <a class="nav-link {{ 'active' if request.endpoint == 'admin.users' or request.endpoint == 'admin.create_user' or request.endpoint == 'admin.edit_user' }}"
+           href="{{ url_for('admin.users') }}">
+          <span class="nav-ico">👥</span> Users
+        </a>
+        <a class="nav-link {{ 'active' if request.endpoint == 'admin.roles' }}"
+           href="{{ url_for('admin.roles') }}">
+          <span class="nav-ico">🔑</span> Roles
+        </a>
+        <a class="nav-link {{ 'active' if request.endpoint == 'admin.audit_log' }}"
+           href="{{ url_for('admin.audit_log') }}">
+          <span class="nav-ico">📄</span> Audit Log
+        </a>
+        {% endif %}
+      </nav>
+      <div class="sidebar-footer">v{{ app_version }} &middot; {{ current_year }}</div>
+    </aside>
+
+    <div class="main-area">
+      <header class="topbar">
+        <h1 class="page-title">{% block page_title %}{% endblock %}</h1>
+        <div class="topbar-actions">
+          <form method="post" action="{{ url_for('main.set_theme') }}" class="theme-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="theme"
+                   value="{{ 'light' if current_user.theme == 'dark' else 'dark' }}">
+            <button type="submit" class="icon-btn" title="Toggle theme">
+              {{ '☀' if current_user.theme == 'dark' else '☾' }}
+            </button>
+          </form>
+          <details class="user-menu">
+            <summary>
+              <span class="avatar">{{ (current_user.full_name or current_user.username)[:1]|upper }}</span>
+              <span class="user-meta">
+                <span class="user-name">{{ current_user.full_name or current_user.username }}</span>
+                <span class="user-role">{{ current_user.role_name }}</span>
+              </span>
+            </summary>
+            <div class="menu-dropdown">
+              <a href="{{ url_for('main.profile') }}">Profile</a>
+              <a href="{{ url_for('main.settings') }}">Settings</a>
+              <a href="{{ url_for('auth.change_password') }}">Change password</a>
+              <div class="menu-sep"></div>
+              <a href="{{ url_for('auth.logout') }}">Sign out</a>
+            </div>
+          </details>
+        </div>
+      </header>
+
+      <main class="content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="flash-stack">
+              {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

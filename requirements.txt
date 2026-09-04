@@ -1,0 +1,23 @@
+# Web framework & extensions
+Flask
+Flask-SQLAlchemy
+Flask-Login
+Flask-WTF
+WTForms
+Flask-Migrate
+email-validator
+
+# Database (Microsoft SQL Server)
+SQLAlchemy
+# Pinned: ships cp314 win_amd64 wheels (required by the embeddable runtime).
+pyodbc==5.3.0
+
+# Configuration
+python-dotenv
+
+# Production WSGI server (Windows-friendly)
+waitress
+
+# Windows service support
+# Pinned: supports Python 3.14 (required by the embeddable runtime).
+pywin32==312

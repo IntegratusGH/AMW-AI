@@ -1,0 +1,36 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Virtual environment
+venv/
+.venv/
+
+# Flask / instance
+instance/
+
+# Logs
+*.log
+logs/
+
+# Alembic (migrations kept, but caches ignored)
+migrations/__pycache__/
+
+# IDE
+.vscode/
+.idea/
+
+# Installer build artifacts
+build/
+dist/
+tools/
+*.msi
+*.wixobj
+*.wixpdb
+SQLMedia/
+scripts/sql/

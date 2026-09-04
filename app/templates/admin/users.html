@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block page_title %}User management{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <p class="muted">{{ users|length }} user(s)</p>
+  <a class="btn btn-primary" href="{{ url_for('admin.create_user') }}">+ New user</a>
+</div>
+
+<div class="card table-card">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Username</th><th>Full name</th><th>Email</th><th>Role</th>
+        <th>Status</th><th>Last sign in</th><th class="ta-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td class="mono">{{ u.username }}</td>
+        <td>{{ u.full_name or '—' }}</td>
+        <td>{{ u.email }}</td>
+        <td><span class="badge">{{ u.role_name }}</span></td>
+        <td>
+          {% if u.is_active %}<span class="badge badge-success">Active</span>
+          {% else %}<span class="badge badge-muted">Inactive</span>{% endif %}
+        </td>
+        <td>{{ u.last_login_at.strftime('%Y-%m-%d %H:%M') if u.last_login_at else '—' }}</td>
+        <td class="ta-right actions">
+          <a class="btn btn-sm" href="{{ url_for('admin.edit_user', user_id=u.id) }}">Edit</a>
+          <a class="btn btn-sm" href="{{ url_for('admin.reset_password', user_id=u.id) }}">Reset</a>
+          <form method="post" action="{{ url_for('admin.toggle_active', user_id=u.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-sm {{ 'btn-warning' if u.is_active else 'btn-success' }}">
+              {{ 'Deactivate' if u.is_active else 'Activate' }}
+            </button>
+          </form>
+          <form method="post" action="{{ url_for('admin.delete_user', user_id=u.id) }}"
+                class="inline" onsubmit="return confirm('Delete user {{ u.username }}?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-sm btn-danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Audit log{% endblock %}
+{% block page_title %}Audit log{% endblock %}
+
+{% block content %}
+<div class="card table-card">
+  <table class="table">
+    <thead>
+      <tr><th>When (UTC)</th><th>User</th><th>Action</th><th>Detail</th><th>IP</th></tr>
+    </thead>
+    <tbody>
+      {% for log in logs.items %}
+      <tr>
+        <td class="mono">{{ log.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+        <td>{{ log.username or '—' }}</td>
+        <td><span class="badge">{{ log.action }}</span></td>
+        <td>{{ log.detail or '—' }}</td>
+        <td class="mono">{{ log.ip_address or '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted ta-center">No activity recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if logs.pages > 1 %}
+<div class="pagination">
+  {% if logs.has_prev %}
+    <a class="btn btn-sm" href="{{ url_for('admin.audit_log', page=logs.prev_num) }}">Previous</a>
+  {% endif %}
+  <span class="muted">Page {{ logs.page }} of {{ logs.pages }}</span>
+  {% if logs.has_next %}
+    <a class="btn btn-sm" href="{{ url_for('admin.audit_log', page=logs.next_num) }}">Next</a>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

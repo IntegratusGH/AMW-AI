@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Profile{% endblock %}
+{% block page_title %}My profile{% endblock %}
+
+{% block content %}
+<div class="card narrow">
+  <div class="profile-head">
+    <span class="avatar lg">{{ (current_user.full_name or current_user.username)[:1]|upper }}</span>
+    <div>
+      <h2>{{ current_user.username }}</h2>
+      <p class="muted">{{ current_user.role_name }}
+        {% if current_user.last_login_at %}
+          &middot; last sign in {{ current_user.last_login_at.strftime('%Y-%m-%d %H:%M') }} UTC
+        {% endif %}
+      </p>
+    </div>
+  </div>
+
+  <form method="post" novalidate>
+    {{ form.hidden_tag() }}
+    <div class="field">
+      {{ form.full_name.label }}
+      {{ form.full_name(class="input") }}
+      {% for e in form.full_name.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+    </div>
+    <div class="field">
+      {{ form.email.label }}
+      {{ form.email(class="input") }}
+      {% for e in form.email.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+    </div>
+    <div class="form-actions">
+      {{ form.submit(class="btn btn-primary") }}
+      <a class="btn btn-ghost" href="{{ url_for('auth.change_password') }}">Change password</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

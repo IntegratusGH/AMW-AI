@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!-- UpgradeCode: STABLE forever (do not change across releases) -->
+  <Product Id="*" Name="AMW-AI" Language="1033" Version="$(var.ProductVersion)"
+           Manufacturer="Integratus" UpgradeCode="903413F5-1023-4434-BB29-CD924A2E1A4C">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"
+             Platform="x64" Description="AMW-AI Web Application" />
+    <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of AMW-AI is already installed." />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="AMW-AI" />
+      </Directory>
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="PDROOT" Name="AMW-AI">
+          <Directory Id="PDLOGS" Name="logs" />
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <!-- ProgramData component (kept on upgrade; .env not overwritten).
+         The Everyone ACL is applied at runtime by installer_bootstrap.py
+         (icacls) because WixUtilExtension cannot be loaded in this build
+         environment. -->
+    <DirectoryRef Id="PDROOT">
+      <Component Id="ProgramDataDir" Guid="7156ADD6-1EAE-4F0F-A551-7C56C58F286F" KeyPath="yes">
+        <CreateFolder />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="AMW-AI" Level="1">
+      <ComponentGroupRef Id="PayloadGroup" />   <!-- from heat Files.wxs -->
+      <ComponentRef Id="ProgramDataDir" />
+    </Feature>
+
+    <!-- ===== Custom actions (all deferred, no-impersonate = SYSTEM) ===== -->
+    <SetProperty Id="RUNTIME_PY" Value="[INSTALLFOLDER]runtime\python.exe" Before="StopSvc" Sequence="execute" />
+
+    <CustomAction Id="StopSvc" Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[INSTALLFOLDER]runtime\python.exe&quot; &quot;[INSTALLFOLDER]service\windows_service.py&quot; stop"
+      Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="Bootstrap" Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[INSTALLFOLDER]runtime\python.exe&quot; &quot;[INSTALLFOLDER]scripts\installer_bootstrap.py&quot;"
+      Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="SvcInstall" Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[INSTALLFOLDER]runtime\python.exe&quot; &quot;[INSTALLFOLDER]service\windows_service.py&quot; --startup auto install"
+      Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="SvcStart" Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[INSTALLFOLDER]runtime\python.exe&quot; &quot;[INSTALLFOLDER]service\windows_service.py&quot; start"
+      Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="Firewall" Directory="INSTALLFOLDER"
+      ExeCommand="powershell.exe -ExecutionPolicy Bypass -NoProfile -File &quot;[INSTALLFOLDER]scripts\open_firewall.ps1&quot; -Port 8080"
+      Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="SvcRemove" Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[INSTALLFOLDER]runtime\python.exe&quot; &quot;[INSTALLFOLDER]service\windows_service.py&quot; remove"
+      Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <!-- stop service early (before files/products swap) on install & upgrade -->
+      <Custom Action="StopSvc" Before="RemoveExistingProducts">Installed OR REMOVE</Custom>
+      <!-- on uninstall (not upgrade) remove the service -->
+      <Custom Action="SvcRemove" After="StopSvc">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <!-- after new files land: DB migrate/seed, (re)install+start service, firewall -->
+      <Custom Action="Bootstrap"   After="InstallFiles">NOT REMOVE</Custom>
+      <Custom Action="SvcInstall"  After="Bootstrap">NOT Installed OR UPGRADINGPRODUCTCODE OR NOT REMOVE</Custom>
+      <Custom Action="Firewall"    After="SvcInstall">NOT REMOVE</Custom>
+      <Custom Action="SvcStart"    After="Firewall">NOT REMOVE</Custom>
+    </InstallExecuteSequence>
+  </Product>
+</Wix>
