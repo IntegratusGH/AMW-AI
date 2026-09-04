@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Add AD user{% endblock %}
+{% block page_title %}Add Active Directory user{% endblock %}
+
+{% block content %}
+<div class="card narrow">
+  <p class="muted">
+    Enter the person's Active Directory logon name. Email and full name are
+    filled from the directory automatically when left blank. No password is
+    stored &mdash; the user signs in with their AD credentials.
+  </p>
+  <form method="post" novalidate>
+    {{ form.hidden_tag() }}
+    <div class="field">
+      {{ form.username.label }}
+      {{ form.username(class="input", placeholder="e.g. jsmith") }}
+      {% for e in form.username.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+    </div>
+    <div class="field">
+      {{ form.email.label }}
+      {{ form.email(class="input", placeholder="Auto-filled from AD if blank") }}
+      {% for e in form.email.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+    </div>
+    <div class="field">
+      {{ form.full_name.label }}
+      {{ form.full_name(class="input", placeholder="Auto-filled from AD if blank") }}
+      {% for e in form.full_name.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+    </div>
+    <div class="field">
+      {{ form.role.label }}
+      {{ form.role(class="input") }}
+      {% for e in form.role.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+    </div>
+    <div class="field-inline">
+      <label class="checkbox">{{ form.is_active() }} <span>Active</span></label>
+    </div>
+    <div class="form-actions">
+      {{ form.submit(class="btn btn-primary") }}
+      <a class="btn btn-ghost" href="{{ url_for('admin.users') }}">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

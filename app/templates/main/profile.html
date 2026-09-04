@@ -30,7 +30,9 @@
     </div>
     <div class="form-actions">
       {{ form.submit(class="btn btn-primary") }}
+      {% if not current_user.is_ad_user %}
       <a class="btn btn-ghost" href="{{ url_for('auth.change_password') }}">Change password</a>
+      {% endif %}
     </div>
   </form>
 </div>

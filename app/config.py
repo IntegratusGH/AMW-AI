@@ -82,3 +82,21 @@ class Config:
     DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
     DEFAULT_ADMIN_EMAIL = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@example.com")
     DEFAULT_ADMIN_PASSWORD = os.getenv("DEFAULT_ADMIN_PASSWORD", "Admin@12345")
+
+    # --- Active Directory / LDAP -----------------------------------------
+    # When enabled, AD-backed accounts are verified by an LDAP bind and the
+    # admin add-user flow looks users up via a read-only service account.
+    AD_ENABLED = _bool("AD_ENABLED", "no")
+    AD_SERVER = os.getenv("AD_SERVER", "").strip()          # host or FQDN of a DC
+    AD_PORT = int(os.getenv("AD_PORT", "0")) or None        # 636 (LDAPS) / 389
+    AD_USE_SSL = _bool("AD_USE_SSL", "yes")                  # LDAPS recommended
+    AD_DOMAIN = os.getenv("AD_DOMAIN", "").strip()          # NetBIOS, e.g. AMWLTD
+    AD_UPN_SUFFIX = os.getenv("AD_UPN_SUFFIX", "").strip()  # e.g. corp.example.com
+    AD_BASE_DN = os.getenv("AD_BASE_DN", "").strip()        # search base for lookups
+    # Read-only service account used only for directory lookups (never for
+    # authenticating end users, who bind with their own credentials).
+    AD_BIND_USER = os.getenv("AD_BIND_USER", "").strip()
+    AD_BIND_PASSWORD = os.getenv("AD_BIND_PASSWORD", "")
+    AD_USER_SEARCH_FILTER = os.getenv(
+        "AD_USER_SEARCH_FILTER", "(sAMAccountName={username})"
+    ).strip()

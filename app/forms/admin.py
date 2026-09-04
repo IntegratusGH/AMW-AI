@@ -35,6 +35,24 @@ class CreateUserForm(FlaskForm):
     submit = SubmitField("Create user")
 
 
+class CreateADUserForm(FlaskForm):
+    """Add an Active Directory account (no local password is stored).
+
+    Email and full name are optional here: when left blank they are filled
+    from the directory lookup performed on submit.
+    """
+
+    username = StringField(
+        "AD username (sAMAccountName)",
+        validators=[DataRequired(), Length(min=1, max=64)],
+    )
+    email = StringField("Email", validators=[Optional(), Email(), Length(max=255)])
+    full_name = StringField("Full name", validators=[Optional(), Length(max=120)])
+    role = SelectField("Role", coerce=int, validators=[DataRequired()])
+    is_active = BooleanField("Active", default=True)
+    submit = SubmitField("Add AD user")
+
+
 class EditUserForm(FlaskForm):
     username = StringField("Username", validators=[DataRequired(), Length(min=3, max=64)])
     email = StringField("Email", validators=[DataRequired(), Email(), Length(max=255)])

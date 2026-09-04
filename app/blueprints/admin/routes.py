@@ -1,13 +1,20 @@
 """Administration routes: manage users, roles and view the audit log."""
 from __future__ import annotations
 
-from flask import abort, flash, redirect, render_template, request, url_for
+from flask import abort, current_app, flash, redirect, render_template, request, url_for
 from flask_login import current_user
 
 from app.blueprints.admin import admin_bp
 from app.extensions import db
-from app.forms import CreateUserForm, EditUserForm, ResetPasswordForm, RoleForm
-from app.models import ROLE_ADMIN, AuditLog, Role, User, record_audit
+from app.forms import (
+    CreateADUserForm,
+    CreateUserForm,
+    EditUserForm,
+    ResetPasswordForm,
+    RoleForm,
+)
+from app.models import AUTH_AD, ROLE_ADMIN, AuditLog, Role, User, record_audit
+from app.utils.ad import ADError, ad_lookup_user
 from app.utils.decorators import admin_required
 
 
@@ -56,6 +63,54 @@ def create_user():
             flash(f"User '{user.username}' has been created.", "success")
             return redirect(url_for("admin.users"))
     return render_template("admin/user_form.html", form=form, mode="create")
+
+
+@admin_bp.route("/users/create-ad", methods=["GET", "POST"])
+@admin_required
+def create_ad_user():
+    if not current_app.config.get("AD_ENABLED"):
+        flash("Active Directory sign-in is not enabled on this server.", "warning")
+        return redirect(url_for("admin.users"))
+    form = CreateADUserForm()
+    form.role.choices = _role_choices()
+    if form.validate_on_submit():
+        typed = form.username.data.strip()
+        try:
+            ad_user = ad_lookup_user(typed)
+        except ADError as exc:
+            flash(f"Directory lookup failed: {exc}", "danger")
+            return render_template("admin/ad_user_form.html", form=form)
+        if ad_user is None:
+            flash(f"User '{typed}' was not found in Active Directory.", "danger")
+            return render_template("admin/ad_user_form.html", form=form)
+
+        username = ad_user.username
+        email = (form.email.data or ad_user.email or "").strip()
+        full_name = (form.full_name.data or ad_user.full_name or "").strip() or None
+        if not email:
+            flash("No email found in AD for this user; enter one manually.", "danger")
+            return render_template("admin/ad_user_form.html", form=form)
+
+        if User.query.filter_by(username=username).first():
+            flash(f"An account for '{username}' already exists.", "danger")
+        elif User.query.filter_by(email=email).first():
+            flash("That email address is already registered.", "danger")
+        else:
+            user = User(
+                username=username,
+                email=email,
+                full_name=full_name,
+                role_id=form.role.data,
+                is_active=form.is_active.data,
+                auth_source=AUTH_AD,
+                must_change_password=False,
+            )
+            db.session.add(user)
+            record_audit("ad_user_added", f"username={username}")
+            db.session.commit()
+            flash(f"Active Directory user '{username}' has been added.", "success")
+            return redirect(url_for("admin.users"))
+    return render_template("admin/ad_user_form.html", form=form)
 
 
 @admin_bp.route("/users/<int:user_id>/edit", methods=["GET", "POST"])
@@ -115,6 +170,9 @@ def toggle_active(user_id: int):
 @admin_required
 def reset_password(user_id: int):
     user = db.session.get(User, user_id) or abort(404)
+    if user.is_ad_user:
+        flash("AD accounts have no local password to reset.", "warning")
+        return redirect(url_for("admin.users"))
     form = ResetPasswordForm()
     if form.validate_on_submit():
         user.set_password(form.password.data)

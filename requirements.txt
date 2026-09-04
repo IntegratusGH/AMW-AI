@@ -21,3 +21,6 @@ waitress
 # Windows service support
 # Pinned: supports Python 3.14 (required by the embeddable runtime).
 pywin32==312
+
+# Active Directory / LDAP authentication (pure-Python; embeddable-runtime safe)
+ldap3

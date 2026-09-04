@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from flask import flash, redirect, render_template, request, url_for
+from flask import current_app, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required, login_user, logout_user
 
 from app.blueprints.auth import auth_bp
 from app.extensions import db
 from app.forms import ChangePasswordForm, LoginForm
 from app.models import User, record_audit
+from app.utils.ad import ADError, ad_authenticate
 
 # Endpoints an authenticated-but-must-change-password user may still reach.
 _ALLOWED_WHILE_FORCED = {"auth.change_password", "auth.logout", "static"}
@@ -35,9 +36,25 @@ def login():
 
     form = LoginForm()
     if form.validate_on_submit():
-        user = User.query.filter_by(username=form.username.data.strip()).first()
-        if user is None or not user.check_password(form.password.data):
-            record_audit("login_failed", f"username={form.username.data.strip()}")
+        username = form.username.data.strip()
+        user = User.query.filter_by(username=username).first()
+
+        if user is not None and user.is_ad_user:
+            if not current_app.config.get("AD_ENABLED"):
+                flash("Active Directory sign-in is not configured.", "danger")
+                return render_template("auth/login.html", form=form), 401
+            try:
+                credentials_ok = ad_authenticate(user.username, form.password.data)
+            except ADError:
+                record_audit("login_error", f"ad unavailable username={username}")
+                db.session.commit()
+                flash("Directory is currently unavailable. Try again later.", "danger")
+                return render_template("auth/login.html", form=form), 503
+        else:
+            credentials_ok = user is not None and user.check_password(form.password.data)
+
+        if user is None or not credentials_ok:
+            record_audit("login_failed", f"username={username}")
             db.session.commit()
             flash("Invalid username or password.", "danger")
             return render_template("auth/login.html", form=form), 401
@@ -74,6 +91,9 @@ def logout():
 @auth_bp.route("/change-password", methods=["GET", "POST"])
 @login_required
 def change_password():
+    if getattr(current_user, "is_ad_user", False):
+        flash("Your password is managed in Active Directory.", "info")
+        return redirect(url_for("main.profile"))
     form = ChangePasswordForm()
     if form.validate_on_submit():
         if not current_user.check_password(form.current_password.data):

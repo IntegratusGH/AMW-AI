@@ -11,6 +11,11 @@ from app.extensions import db, login_manager
 # Canonical role names used throughout the application.
 ROLE_ADMIN = "Administrator"
 ROLE_OPERATOR = "Operator"
+
+# Authentication sources.  Local accounts store a password hash; Active
+# Directory accounts store no password and are verified by an LDAP bind.
+AUTH_LOCAL = "local"
+AUTH_AD = "ad"
 DEFAULT_ROLES = {
     ROLE_ADMIN: "Full access: manage users, roles and system settings.",
     ROLE_OPERATOR: "Standard operational access to the application.",
@@ -37,7 +42,11 @@ class User(UserMixin, db.Model):
     username = db.Column(db.String(64), unique=True, nullable=False, index=True)
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     full_name = db.Column(db.String(120))
-    password_hash = db.Column(db.String(255), nullable=False)
+    # Nullable: Active Directory accounts have no local password.
+    password_hash = db.Column(db.String(255), nullable=True)
+    auth_source = db.Column(
+        db.String(10), default=AUTH_LOCAL, nullable=False, index=True
+    )
 
     role_id = db.Column(db.Integer, db.ForeignKey("roles.id"), nullable=False)
     role = db.relationship("Role", back_populates="users")
@@ -57,7 +66,13 @@ class User(UserMixin, db.Model):
         self.password_hash = generate_password_hash(password)
 
     def check_password(self, password: str) -> bool:
+        if not self.password_hash:
+            return False
         return check_password_hash(self.password_hash, password)
+
+    @property
+    def is_ad_user(self) -> bool:
+        return self.auth_source == AUTH_AD
 
     # --- role helpers -----------------------------------------------------
     @property
