@@ -192,6 +192,34 @@ select.input { appearance: auto; }
 .tile-title { font-weight: 650; }
 .tile-desc { color: var(--text-muted); font-size: 13px; }
 
+/* ---- Operations / AI automation modules --------------------------------- */
+.ops-intro { margin-bottom: 22px; }
+.ops-section { margin-bottom: 26px; }
+.ops-section-title {
+  font-size: 12.5px; text-transform: uppercase; letter-spacing: .7px;
+  color: var(--text-muted); font-weight: 650; margin: 0 0 12px;
+}
+.auto-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 16px; }
+.auto-card {
+  position: relative; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow); padding: 20px;
+  display: flex; flex-direction: column; gap: 10px;
+  transition: border-color .15s, transform .15s, box-shadow .15s;
+}
+.auto-card:hover { border-color: var(--primary); transform: translateY(-2px); }
+.auto-ico {
+  width: 58px; height: 58px; border-radius: 16px; display: grid; place-items: center;
+  background: var(--primary-soft); color: var(--primary);
+}
+.auto-ico svg { width: 30px; height: 30px; }
+.auto-ico.accent-green  { background: rgba(46,158,107,.14);  color: var(--success); }
+.auto-ico.accent-amber  { background: rgba(217,138,31,.16);  color: var(--warning); }
+.auto-ico.accent-purple { background: rgba(124,92,214,.16);  color: #7c5cd6; }
+.auto-ico.accent-teal   { background: rgba(32,160,166,.16);  color: #1fa3a9; }
+.auto-title { font-weight: 650; font-size: 15px; }
+.auto-desc { color: var(--text-muted); font-size: 13px; margin: 0; }
+.auto-status { position: absolute; top: 14px; right: 14px; }
+
 /* ---- User menu / avatar ------------------------------------------------- */
 .avatar { display: inline-grid; place-items: center; width: 36px; height: 36px;
   border-radius: 50%; background: var(--primary); color: #fff; font-weight: 650; }

@@ -1,12 +1,32 @@
 {% extends "base.html" %}
+{% from "main/_icons.html" import icon %}
 {% block title %}Operations{% endblock %}
-{% block page_title %}Operations{% endblock %}
+{% block page_title %}AI Automations{% endblock %}
 
 {% block content %}
-<div class="card placeholder">
-  <div class="placeholder-ico">⚙</div>
-  <h2>Operations workspace</h2>
-  <p class="muted">This area is reserved for operational features, which will be
-    defined and added later.</p>
+<div class="ops-intro">
+  <h2>AI Automation Workspace</h2>
+  <p class="muted">Intelligent automation modules for AMW &mdash; across vehicle
+    sales, after-sales service, finance &amp; leasing, and back-office operations.</p>
 </div>
+
+{% for group in operations %}
+<section class="ops-section">
+  <h3 class="ops-section-title">{{ group.name }}</h3>
+  <div class="auto-grid">
+    {% for m in group.modules %}
+    <div class="auto-card">
+      {% if m.status == 'available' %}
+        <span class="badge badge-success auto-status">Available</span>
+      {% else %}
+        <span class="badge badge-muted auto-status">Planned</span>
+      {% endif %}
+      <span class="auto-ico accent-{{ m.accent }}">{{ icon(m.icon) }}</span>
+      <span class="auto-title">{{ m.title }}</span>
+      <p class="auto-desc">{{ m.desc }}</p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}
 {% endblock %}
