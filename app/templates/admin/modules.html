@@ -56,15 +56,15 @@
           {% else %}<span class="badge badge-muted">Off</span>{% endif %}
         </td>
         <td class="ta-right actions">
-          <a class="btn btn-sm" href="{{ url_for('admin.edit_module', module_id=m.id) }}">Edit</a>
+          <a class="act-btn" href="{{ url_for('admin.edit_module', module_id=m.id) }}" title="Edit" aria-label="Edit module">{{ icon('pencil', 16) }}</a>
           <form method="post" action="{{ url_for('admin.toggle_module', module_id=m.id) }}" class="inline">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button class="btn btn-sm" type="submit">{{ 'Disable' if m.is_active else 'Enable' }}</button>
+            <button class="act-btn" type="submit" title="{{ 'Disable' if m.is_active else 'Enable' }}" aria-label="{{ 'Disable' if m.is_active else 'Enable' }} module">{{ icon('power', 16) }}</button>
           </form>
           <form method="post" action="{{ url_for('admin.delete_module', module_id=m.id) }}" class="inline"
                 onsubmit="return confirm('Delete module {{ m.name }}? This cannot be undone.');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button class="btn btn-sm btn-danger" type="submit">Delete</button>
+            <button class="act-btn act-danger" type="submit" title="Delete" aria-label="Delete module">{{ icon('trash', 16) }}</button>
           </form>
         </td>
       </tr>
@@ -93,15 +93,15 @@
             <span class="muted">{{ c.modules|length }} module(s)</span>
           </div>
           <div class="cat-actions">
-            <a class="btn btn-sm" href="{{ url_for('admin.edit_category', category_id=c.id) }}">Edit</a>
+            <a class="act-btn" href="{{ url_for('admin.edit_category', category_id=c.id) }}" title="Edit" aria-label="Edit category">{{ icon('pencil', 16) }}</a>
             <form method="post" action="{{ url_for('admin.toggle_category', category_id=c.id) }}" class="inline">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button class="btn btn-sm" type="submit">{{ 'Disable' if c.is_active else 'Enable' }}</button>
+              <button class="act-btn" type="submit" title="{{ 'Disable' if c.is_active else 'Enable' }}" aria-label="{{ 'Disable' if c.is_active else 'Enable' }} category">{{ icon('power', 16) }}</button>
             </form>
             <form method="post" action="{{ url_for('admin.delete_category', category_id=c.id) }}" class="inline"
                   onsubmit="return confirm('Delete category {{ c.name }}? Its modules will become uncategorised.');">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button class="btn btn-sm btn-danger" type="submit">Delete</button>
+              <button class="act-btn act-danger" type="submit" title="Delete" aria-label="Delete category">{{ icon('trash', 16) }}</button>
             </form>
           </div>
         </li>
