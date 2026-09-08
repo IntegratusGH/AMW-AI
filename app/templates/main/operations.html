@@ -10,7 +10,7 @@
     sales, after-sales service, finance &amp; leasing, and back-office operations.</p>
 </div>
 
-{% for group in operations %}
+{% for group in groups %}
 <section class="ops-section">
   <h3 class="ops-section-title">{{ group.name }}</h3>
   <div class="auto-grid">
@@ -21,12 +21,27 @@
       {% else %}
         <span class="badge badge-muted auto-status">Planned</span>
       {% endif %}
-      <span class="auto-ico accent-{{ m.accent }}">{{ icon(m.icon) }}</span>
-      <span class="auto-title">{{ m.title }}</span>
-      <p class="auto-desc">{{ m.desc }}</p>
+      <span class="auto-ico accent-{{ m.accent }}"
+            style="width:{{ m.icon_size + 26 }}px;height:{{ m.icon_size + 26 }}px">
+        {% if m.is_upload_icon and m.icon_value %}
+          <img src="{{ url_for('main.module_icon', filename=m.icon_value) }}"
+               alt="" style="width:{{ m.icon_size }}px;height:{{ m.icon_size }}px;object-fit:contain">
+        {% else %}
+          {{ icon(m.icon_value or 'target', m.icon_size) }}
+        {% endif %}
+      </span>
+      <span class="auto-title">{{ m.name }}</span>
+      {% if m.description %}<p class="auto-desc">{{ m.description }}</p>{% endif %}
     </div>
     {% endfor %}
   </div>
 </section>
+{% else %}
+<div class="card placeholder">
+  <div class="placeholder-ico">⚙</div>
+  <h2>No modules yet</h2>
+  <p class="muted">No AI modules are enabled for your role. Please contact an
+    administrator.</p>
+</div>
 {% endfor %}
 {% endblock %}

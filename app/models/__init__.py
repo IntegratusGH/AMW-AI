@@ -9,6 +9,18 @@ from app.models.user import (
     Role,
     User,
 )
+from app.models.module import (
+    BUILTIN_ICONS,
+    ICON_BUILTIN,
+    ICON_SIZE_DEFAULT,
+    ICON_SIZE_MAX,
+    ICON_SIZE_MIN,
+    ICON_UPLOAD,
+    MODULE_ACCENTS,
+    MODULE_STATUSES,
+    Module,
+    role_modules,
+)
 
 __all__ = [
     "AuditLog",
@@ -20,4 +32,14 @@ __all__ = [
     "ROLE_OPERATOR",
     "AUTH_LOCAL",
     "AUTH_AD",
+    "Module",
+    "role_modules",
+    "BUILTIN_ICONS",
+    "MODULE_STATUSES",
+    "MODULE_ACCENTS",
+    "ICON_BUILTIN",
+    "ICON_UPLOAD",
+    "ICON_SIZE_MIN",
+    "ICON_SIZE_MAX",
+    "ICON_SIZE_DEFAULT",
 ]

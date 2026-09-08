@@ -38,7 +38,89 @@ _PD_ENV_HINT = str(
 from app import create_app  # noqa: E402
 from app.config import Config  # noqa: E402
 from app.extensions import db  # noqa: E402
-from app.models import DEFAULT_ROLES, Role, User  # noqa: E402
+from app.models import (  # noqa: E402
+    DEFAULT_ROLES,
+    ROLE_ADMIN,
+    ROLE_OPERATOR,
+    Module,
+    Role,
+    User,
+)
+
+# Default AI modules seeded on first run.  "sort" drives display order.
+DEFAULT_MODULES = [
+    {"key": "registration_updater", "name": "Registration Updater AI",
+     "category": "Registration & Compliance", "icon": "file-check",
+     "accent": "blue", "status": "available", "sort": 0,
+     "description": "Automates vehicle registration (DMT) updates and keeps "
+                    "ownership records in sync."},
+    {"key": "service_scheduler", "name": "Service Scheduler AI",
+     "category": "After-Sales & Service", "icon": "calendar",
+     "accent": "green", "status": "available", "sort": 1,
+     "description": "Books and optimises workshop and Pitstop service "
+                    "appointments automatically."},
+    {"key": "service_warranty_reminder", "name": "Service & Warranty Reminder AI",
+     "category": "After-Sales & Service", "icon": "bell",
+     "accent": "amber", "status": "planned", "sort": 2,
+     "description": "Proactively reminds customers of service due dates and "
+                    "warranty expiry."},
+    {"key": "spare_parts_inventory", "name": "Spare Parts Inventory AI",
+     "category": "After-Sales & Service", "icon": "package",
+     "accent": "teal", "status": "planned", "sort": 3,
+     "description": "Forecasts demand and optimises spare-part, tyre and "
+                    "lubricant stock levels."},
+    {"key": "payment_reconciliation", "name": "Payment Reconciliation AI",
+     "category": "Finance & Leasing", "icon": "credit-card",
+     "accent": "green", "status": "available", "sort": 4,
+     "description": "Matches customer receipts, bank statements and leasing "
+                    "payments automatically."},
+    {"key": "leasing_insurance_document", "name": "Leasing & Insurance Document AI",
+     "category": "Finance & Leasing", "icon": "shield",
+     "accent": "purple", "status": "planned", "sort": 5,
+     "description": "Extracts and verifies KYC and contract documents for "
+                    "AMW Capital Leasing."},
+    {"key": "invoice_expense_ocr", "name": "Invoice & Expense OCR AI",
+     "category": "Finance & Leasing", "icon": "scan",
+     "accent": "amber", "status": "planned", "sort": 6,
+     "description": "Reads supplier invoices and posts expense data without "
+                    "manual entry."},
+    {"key": "email_message_handler", "name": "Email / Message Handler AI",
+     "category": "Sales & Customer Engagement", "icon": "mail",
+     "accent": "blue", "status": "available", "sort": 7,
+     "description": "Triages incoming email, WhatsApp and SMS and drafts "
+                    "suggested replies."},
+    {"key": "showroom_assistant", "name": "Showroom Assistant AI",
+     "category": "Sales & Customer Engagement", "icon": "message-circle",
+     "accent": "purple", "status": "planned", "sort": 8,
+     "description": "Answers product, pricing and availability questions "
+                    "across all brands."},
+    {"key": "vehicle_sales_lead", "name": "Vehicle Sales Lead AI",
+     "category": "Sales & Customer Engagement", "icon": "target",
+     "accent": "blue", "status": "planned", "sort": 9,
+     "description": "Qualifies and follows up showroom enquiries to boost "
+                    "conversions."},
+    {"key": "customer_feedback_sentiment", "name": "Customer Feedback & Sentiment AI",
+     "category": "Back-office & Insight", "icon": "star",
+     "accent": "teal", "status": "planned", "sort": 10,
+     "description": "Analyses after-sales feedback and reviews to surface "
+                    "issues early."},
+    {"key": "sales_service_analytics", "name": "Sales & Service Analytics AI",
+     "category": "Back-office & Insight", "icon": "chart",
+     "accent": "blue", "status": "planned", "sort": 11,
+     "description": "Turns sales and service data into forecasts and live "
+                    "dashboards."},
+    {"key": "hr_recruitment_screening", "name": "HR Recruitment Screening AI",
+     "category": "Back-office & Insight", "icon": "user-check",
+     "accent": "purple", "status": "planned", "sort": 12,
+     "description": "Screens career applications and shortlists candidates "
+                    "faster."},
+]
+
+# Modules the Operator role sees by default (the delivered/available ones).
+OPERATOR_MODULE_KEYS = [
+    "registration_updater", "service_scheduler",
+    "payment_reconciliation", "email_message_handler",
+]
 
 
 def _server() -> str:
@@ -323,14 +405,50 @@ def seed_roles_admin(app) -> None:
             print(f"      Administrator '{admin_username}' already exists.")
 
 
+def seed_modules(app) -> None:
+    """Seed default AI modules and role mappings (data only).
+
+    Assumes the schema and roles already exist.  Idempotent: does nothing if
+    any module already exists, so admin edits are never overwritten.
+    """
+    with app.app_context():
+        if Module.query.count() > 0:
+            print("      Modules already present; skipping module seed.")
+            return
+        print("Seeding AI modules ...")
+        created: dict[str, Module] = {}
+        for data in DEFAULT_MODULES:
+            module = Module(
+                key=data["key"], name=data["name"], category=data["category"],
+                description=data["description"], icon_kind="builtin",
+                icon_value=data["icon"], icon_size=32, accent=data["accent"],
+                status=data["status"], is_active=True, sort_order=data["sort"],
+            )
+            db.session.add(module)
+            created[data["key"]] = module
+        db.session.commit()
+
+        admin_role = Role.query.filter_by(name=ROLE_ADMIN).first()
+        operator_role = Role.query.filter_by(name=ROLE_OPERATOR).first()
+        if admin_role:
+            admin_role.modules = list(created.values())
+        if operator_role:
+            operator_role.modules = [
+                created[k] for k in OPERATOR_MODULE_KEYS if k in created
+            ]
+        db.session.commit()
+        print(f"      Seeded {len(created)} modules.")
+
+
 def seed(app) -> None:
-    """Standalone bootstrap: create all tables then seed roles/admin."""
+    """Standalone bootstrap: create all tables then seed roles/admin/modules."""
     with app.app_context():
         print("[2/3] Creating tables ...")
         db.create_all()
 
-    print("[3/3] Seeding roles and default administrator ...")
+    print("[3/3] Seeding roles, administrator and modules ...")
     seed_roles_admin(app)
+    seed_modules(app)
 
 
 def main() -> None:

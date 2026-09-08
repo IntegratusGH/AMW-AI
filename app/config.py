@@ -78,6 +78,18 @@ class Config:
     APP_NAME = "AMW-AI"
     APP_VERSION = _APP_VERSION
 
+    # --- Uploads (module icons) ------------------------------------------
+    # Icons are stored under the writable ProgramData tree (Program Files is
+    # not writable by the service account).
+    UPLOAD_DIR = str(
+        Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "AMW-AI" / "uploads"
+    )
+    MODULE_ICON_DIR = str(Path(UPLOAD_DIR) / "modules")
+    ALLOWED_ICON_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "svg"}
+    # Global request-body cap (also bounds uploads); icons are further limited
+    # per-field in the form.
+    MAX_CONTENT_LENGTH = int(os.getenv("MAX_UPLOAD_KB", "1024")) * 1024
+
     # Default admin bootstrap (used by scripts/init_db.py)
     DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
     DEFAULT_ADMIN_EMAIL = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@example.com")

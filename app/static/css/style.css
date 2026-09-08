@@ -211,7 +211,8 @@ select.input { appearance: auto; }
   width: 58px; height: 58px; border-radius: 16px; display: grid; place-items: center;
   background: var(--primary-soft); color: var(--primary);
 }
-.auto-ico svg { width: 30px; height: 30px; }
+.auto-ico svg, .auto-ico img { display: block; }
+.auto-ico svg:not([width]) { width: 30px; height: 30px; }
 .auto-ico.accent-green  { background: rgba(46,158,107,.14);  color: var(--success); }
 .auto-ico.accent-amber  { background: rgba(217,138,31,.16);  color: var(--warning); }
 .auto-ico.accent-purple { background: rgba(124,92,214,.16);  color: #7c5cd6; }
@@ -219,6 +220,28 @@ select.input { appearance: auto; }
 .auto-title { font-weight: 650; font-size: 15px; }
 .auto-desc { color: var(--text-muted); font-size: 13px; margin: 0; }
 .auto-status { position: absolute; top: 14px; right: 14px; }
+
+/* Module admin: reorder controls, icon picker, role checklist */
+.mod-order { white-space: nowrap; display: flex; gap: 4px; }
+.mod-order .icon-btn { width: 28px; height: 28px; font-size: 11px; padding: 0; }
+.icon-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 8px; }
+.icon-pick { cursor: pointer; }
+.icon-pick input { position: absolute; opacity: 0; width: 0; height: 0; }
+.icon-pick-box {
+  width: 48px; height: 48px; border-radius: 12px; display: grid; place-items: center;
+  border: 2px solid transparent; background: var(--surface-2); color: var(--text-muted);
+}
+.icon-pick input:checked + .icon-pick-box {
+  border-color: var(--primary); color: var(--primary); background: var(--primary-soft);
+}
+.mod-check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-bottom: 8px; }
+.mod-check {
+  display: flex; align-items: center; gap: 12px; padding: 12px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+}
+.mod-check:hover { border-color: var(--primary); }
+.mod-check-meta { display: flex; flex-direction: column; line-height: 1.3; }
+.mod-check-name { font-weight: 600; }
 
 /* ---- User menu / avatar ------------------------------------------------- */
 .avatar { display: inline-grid; place-items: center; width: 36px; height: 36px;

@@ -7,13 +7,17 @@
   <div class="card table-card">
     <h2 class="card-title">Existing roles</h2>
     <table class="table">
-      <thead><tr><th>Name</th><th>Description</th><th>Users</th></tr></thead>
+      <thead><tr><th>Name</th><th>Description</th><th>Users</th><th>Modules</th><th class="ta-right">Actions</th></tr></thead>
       <tbody>
         {% for r in roles %}
         <tr>
           <td><span class="badge">{{ r.name }}</span></td>
           <td>{{ r.description or '—' }}</td>
           <td>{{ r.users.count() }}</td>
+          <td>{{ r.modules|length }}</td>
+          <td class="ta-right">
+            <a class="btn btn-sm" href="{{ url_for('admin.manage_role_modules', role_id=r.id) }}">Manage modules</a>
+          </td>
         </tr>
         {% endfor %}
       </tbody>

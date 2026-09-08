@@ -2,22 +2,34 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
+from flask_wtf.file import FileAllowed, FileField, FileSize
 from wtforms import (
     BooleanField,
+    IntegerField,
     PasswordField,
     SelectField,
     StringField,
     SubmitField,
+    TextAreaField,
 )
 from wtforms.validators import (
     DataRequired,
     Email,
     EqualTo,
     Length,
+    NumberRange,
     Optional,
+    Regexp,
 )
 
 from app.forms.validators import StrongPassword
+from app.models import (
+    ICON_SIZE_DEFAULT,
+    ICON_SIZE_MAX,
+    ICON_SIZE_MIN,
+    MODULE_ACCENTS,
+    MODULE_STATUSES,
+)
 
 
 class CreateUserForm(FlaskForm):
@@ -78,3 +90,51 @@ class RoleForm(FlaskForm):
     name = StringField("Role name", validators=[DataRequired(), Length(max=50)])
     description = StringField("Description", validators=[Optional(), Length(max=255)])
     submit = SubmitField("Save role")
+
+
+class ModuleForm(FlaskForm):
+    """Create/edit an AI automation module (Administrator only).
+
+    ``icon_builtin`` choices are populated in the route from BUILTIN_ICONS.
+    When ``icon_kind`` is "upload" an image file is expected (or, when editing,
+    the existing upload is kept if no new file is provided).
+    """
+
+    name = StringField("Module name", validators=[DataRequired(), Length(max=120)])
+    key = StringField(
+        "Key (slug)",
+        validators=[
+            Optional(), Length(max=64),
+            Regexp(r"^[a-z0-9_]+$",
+                   message="Use lowercase letters, digits and underscores only."),
+        ],
+    )
+    description = TextAreaField("Description", validators=[Optional(), Length(max=400)])
+    category = StringField("Category", validators=[Optional(), Length(max=80)])
+    status = SelectField("Status", choices=[(s, s.title()) for s in MODULE_STATUSES])
+    accent = SelectField("Accent colour", choices=[(a, a.title()) for a in MODULE_ACCENTS])
+    icon_kind = SelectField(
+        "Icon source",
+        choices=[("builtin", "Built-in icon"), ("upload", "Upload image")],
+        default="builtin",
+    )
+    icon_builtin = SelectField("Built-in icon", validators=[Optional()], choices=[])
+    icon_file = FileField(
+        "Upload icon",
+        validators=[
+            Optional(),
+            FileAllowed(["png", "jpg", "jpeg", "webp", "svg"],
+                        "Images only (png, jpg, webp, svg)."),
+            FileSize(max_size=512 * 1024, message="Icon must be 512 KB or smaller."),
+        ],
+    )
+    icon_size = IntegerField(
+        "Icon size (px)",
+        validators=[DataRequired(), NumberRange(min=ICON_SIZE_MIN, max=ICON_SIZE_MAX)],
+        default=ICON_SIZE_DEFAULT,
+    )
+    is_active = BooleanField("Active", default=True)
+    sort_order = IntegerField(
+        "Sort order", validators=[Optional(), NumberRange(min=0, max=9999)], default=0
+    )
+    submit = SubmitField("Save module")

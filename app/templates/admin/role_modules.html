@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% from "main/_icons.html" import icon %}
+{% block title %}Role modules{% endblock %}
+{% block page_title %}Modules for role: {{ role.name }}{% endblock %}
+
+{% block content %}
+<div class="card">
+  <p class="card-hint">Select which AI modules users with the
+    <strong>{{ role.name }}</strong> role can see on the Operations page.
+    {% if role.name == 'Administrator' %}
+    <em>Administrators always see every active module regardless of this list.</em>
+    {% endif %}
+  </p>
+  <form method="post" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="mod-check-grid">
+      {% for m in modules %}
+      <label class="mod-check">
+        <input type="checkbox" name="module_ids" value="{{ m.id }}"
+               {{ 'checked' if m.id in enabled }}>
+        <span class="auto-ico accent-{{ m.accent }}" style="width:36px;height:36px">
+          {% if m.is_upload_icon and m.icon_value %}
+            <img src="{{ url_for('main.module_icon', filename=m.icon_value) }}" alt="" style="width:20px;height:20px;object-fit:contain">
+          {% else %}
+            {{ icon(m.icon_value or 'target', 20) }}
+          {% endif %}
+        </span>
+        <span class="mod-check-meta">
+          <span class="mod-check-name">{{ m.name }}</span>
+          <span class="muted">{{ m.category or 'General' }}{% if not m.is_active %} · disabled{% endif %}</span>
+        </span>
+      </label>
+      {% else %}
+      <p class="muted">No modules exist yet. Create some first.</p>
+      {% endfor %}
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">Save modules</button>
+      <a class="btn btn-ghost" href="{{ url_for('admin.roles') }}">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% from "main/_icons.html" import icon %}
+{% block title %}Modules{% endblock %}
+{% block page_title %}AI Modules{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <p class="muted">{{ modules|length }} module(s)</p>
+  <a class="btn btn-primary" href="{{ url_for('admin.create_module') }}">+ New module</a>
+</div>
+
+<div class="card table-card">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Order</th><th>Icon</th><th>Name</th><th>Category</th>
+        <th>Status</th><th>Roles</th><th>Active</th><th class="ta-right">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in modules %}
+      <tr>
+        <td class="mod-order">
+          <form method="post" action="{{ url_for('admin.move_module', module_id=m.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="icon-btn btn-sm" name="direction" value="up" title="Move up">▲</button>
+          </form>
+          <form method="post" action="{{ url_for('admin.move_module', module_id=m.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="icon-btn btn-sm" name="direction" value="down" title="Move down">▼</button>
+          </form>
+        </td>
+        <td>
+          <span class="auto-ico accent-{{ m.accent }}" style="width:40px;height:40px">
+            {% if m.is_upload_icon and m.icon_value %}
+              <img src="{{ url_for('main.module_icon', filename=m.icon_value) }}" alt="" style="width:22px;height:22px;object-fit:contain">
+            {% else %}
+              {{ icon(m.icon_value or 'target', 22) }}
+            {% endif %}
+          </span>
+        </td>
+        <td>
+          <strong>{{ m.name }}</strong>
+          <div class="muted mono">{{ m.key }}</div>
+        </td>
+        <td>{{ m.category or '—' }}</td>
+        <td>
+          {% if m.status == 'available' %}<span class="badge badge-success">Available</span>
+          {% else %}<span class="badge badge-muted">Planned</span>{% endif %}
+        </td>
+        <td>{{ m.roles|length }}</td>
+        <td>
+          {% if m.is_active %}<span class="badge badge-success">On</span>
+          {% else %}<span class="badge badge-muted">Off</span>{% endif %}
+        </td>
+        <td class="ta-right actions">
+          <a class="btn btn-sm" href="{{ url_for('admin.edit_module', module_id=m.id) }}">Edit</a>
+          <form method="post" action="{{ url_for('admin.toggle_module', module_id=m.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-sm" type="submit">{{ 'Disable' if m.is_active else 'Enable' }}</button>
+          </form>
+          <form method="post" action="{{ url_for('admin.delete_module', module_id=m.id) }}" class="inline"
+                onsubmit="return confirm('Delete module {{ m.name }}? This cannot be undone.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-sm btn-danger" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="muted ta-center">No modules yet. Create the first one.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

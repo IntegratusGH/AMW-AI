@@ -3,6 +3,7 @@ from app.forms.admin import (
     CreateADUserForm,
     CreateUserForm,
     EditUserForm,
+    ModuleForm,
     ResetPasswordForm,
     RoleForm,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "EditUserForm",
     "ResetPasswordForm",
     "RoleForm",
+    "ModuleForm",
     "ProfileForm",
     "SettingsForm",
 ]

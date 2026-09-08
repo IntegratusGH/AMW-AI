@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% from "main/_icons.html" import icon %}
+{% block title %}{{ 'Edit module' if mode == 'edit' else 'New module' }}{% endblock %}
+{% block page_title %}{{ 'Edit module' if mode == 'edit' else 'New module' }}{% endblock %}
+
+{% block content %}
+<div class="card">
+  <form method="post" enctype="multipart/form-data" novalidate>
+    {{ form.hidden_tag() }}
+    <div class="two-col">
+      <div>
+        <div class="field">
+          {{ form.name.label }}
+          {{ form.name(class="input") }}
+          {% for e in form.name.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+        </div>
+        <div class="field">
+          {{ form.key.label }}
+          {{ form.key(class="input", placeholder="auto from name if blank") }}
+          {% for e in form.key.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+        </div>
+        <div class="field">
+          {{ form.description.label }}
+          {{ form.description(class="input", rows="3") }}
+          {% for e in form.description.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+        </div>
+        <div class="field">
+          {{ form.category.label }}
+          {{ form.category(class="input", placeholder="e.g. After-Sales & Service") }}
+          {% for e in form.category.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+        </div>
+        <div class="field">
+          {{ form.status.label }}
+          {{ form.status(class="input") }}
+        </div>
+        <div class="field">
+          {{ form.accent.label }}
+          {{ form.accent(class="input") }}
+        </div>
+      </div>
+
+      <div>
+        <div class="field">
+          <label>Icon source</label>
+          <div class="field-inline">
+            <label class="checkbox"><input type="radio" name="icon_kind" value="builtin"
+              {{ 'checked' if form.icon_kind.data != 'upload' }}> <span>Built-in icon</span></label>
+            &nbsp;&nbsp;
+            <label class="checkbox"><input type="radio" name="icon_kind" value="upload"
+              {{ 'checked' if form.icon_kind.data == 'upload' }}> <span>Upload image</span></label>
+          </div>
+        </div>
+
+        <div id="builtin-section" class="field">
+          <label>Choose a built-in icon</label>
+          <div class="icon-pick-grid">
+            {% for n in builtin_icons %}
+            <label class="icon-pick" title="{{ n }}">
+              <input type="radio" name="icon_builtin" value="{{ n }}"
+                     {{ 'checked' if form.icon_builtin.data == n }}>
+              <span class="icon-pick-box accent-blue">{{ icon(n, 24) }}</span>
+            </label>
+            {% endfor %}
+          </div>
+          {% for e in form.icon_builtin.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+        </div>
+
+        <div id="upload-section" class="field">
+          {% if mode == 'edit' and module and module.is_upload_icon and module.icon_value %}
+          <div class="muted" style="margin-bottom:8px">
+            Current:
+            <img src="{{ url_for('main.module_icon', filename=module.icon_value) }}"
+                 alt="" style="width:28px;height:28px;object-fit:contain;vertical-align:middle">
+            &mdash; upload a new file to replace it.
+          </div>
+          {% endif %}
+          {{ form.icon_file.label }}
+          {{ form.icon_file(class="input") }}
+          <span class="muted">PNG, JPG, WebP or SVG &middot; max 512 KB.</span>
+          {% for e in form.icon_file.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+        </div>
+
+        <div class="field">
+          {{ form.icon_size.label }}
+          {{ form.icon_size(class="input", type="number", min="16", max="128") }}
+          {% for e in form.icon_size.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+        </div>
+        <div class="field">
+          {{ form.sort_order.label }}
+          {{ form.sort_order(class="input", type="number", min="0") }}
+          {% for e in form.sort_order.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+        </div>
+        <div class="field-inline">
+          <label class="checkbox">{{ form.is_active() }} <span>Active</span></label>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      {{ form.submit(class="btn btn-primary") }}
+      <a class="btn btn-ghost" href="{{ url_for('admin.modules') }}">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<script>
+  (function () {
+    function sync() {
+      var kind = document.querySelector('input[name="icon_kind"]:checked');
+      var upload = kind && kind.value === 'upload';
+      document.getElementById('upload-section').style.display = upload ? '' : 'none';
+      document.getElementById('builtin-section').style.display = upload ? 'none' : '';
+    }
+    document.querySelectorAll('input[name="icon_kind"]').forEach(function (r) {
+      r.addEventListener('change', sync);
+    });
+    sync();
+  })();
+</script>
+{% endblock %}

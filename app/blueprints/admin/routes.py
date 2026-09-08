@@ -10,16 +10,43 @@ from app.forms import (
     CreateADUserForm,
     CreateUserForm,
     EditUserForm,
+    ModuleForm,
     ResetPasswordForm,
     RoleForm,
 )
-from app.models import AUTH_AD, ROLE_ADMIN, AuditLog, Role, User, record_audit
+from app.models import (
+    AUTH_AD,
+    BUILTIN_ICONS,
+    ICON_SIZE_DEFAULT,
+    ICON_SIZE_MAX,
+    ICON_SIZE_MIN,
+    ICON_UPLOAD,
+    ROLE_ADMIN,
+    AuditLog,
+    Module,
+    Role,
+    User,
+    record_audit,
+)
 from app.utils.ad import ADError, ad_lookup_user
 from app.utils.decorators import admin_required
+from app.utils.uploads import delete_module_icon, save_module_icon, slugify
 
 
 def _role_choices():
     return [(r.id, r.name) for r in Role.query.order_by(Role.name).all()]
+
+
+def _builtin_icon_choices():
+    return [(n, n) for n in BUILTIN_ICONS]
+
+
+def _clamp_icon_size(value) -> int:
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return ICON_SIZE_DEFAULT
+    return max(ICON_SIZE_MIN, min(ICON_SIZE_MAX, size))
 
 
 def _active_admin_count() -> int:
@@ -218,6 +245,187 @@ def roles():
             return redirect(url_for("admin.roles"))
     all_roles = Role.query.order_by(Role.name).all()
     return render_template("admin/roles.html", form=form, roles=all_roles)
+
+
+# ===== AI automation modules =============================================
+@admin_bp.route("/modules")
+@admin_required
+def modules():
+    all_modules = Module.query.order_by(
+        Module.sort_order, Module.category, Module.name
+    ).all()
+    return render_template("admin/modules.html", modules=all_modules)
+
+
+def _apply_icon(form, module) -> bool:
+    """Set module icon from the form. Returns False (with a flash) if an
+    upload was requested but no image is available."""
+    if form.icon_kind.data == ICON_UPLOAD:
+        if form.icon_file.data:
+            new_name = save_module_icon(form.icon_file.data)
+            if module.is_upload_icon and module.icon_value:
+                delete_module_icon(module.icon_value)
+            module.icon_kind = ICON_UPLOAD
+            module.icon_value = new_name
+        elif module.is_upload_icon and module.icon_value:
+            module.icon_kind = ICON_UPLOAD  # keep existing upload
+        else:
+            flash("Choose an image to upload, or pick a built-in icon.", "danger")
+            return False
+    else:
+        if module.is_upload_icon and module.icon_value:
+            delete_module_icon(module.icon_value)
+        module.icon_kind = "builtin"
+        module.icon_value = form.icon_builtin.data or BUILTIN_ICONS[0]
+    return True
+
+
+@admin_bp.route("/modules/create", methods=["GET", "POST"])
+@admin_required
+def create_module():
+    form = ModuleForm()
+    form.icon_builtin.choices = _builtin_icon_choices()
+    if form.validate_on_submit():
+        key = (form.key.data or slugify(form.name.data)).strip()
+        if Module.query.filter_by(key=key).first():
+            flash(f"A module with key '{key}' already exists.", "danger")
+        else:
+            module = Module(
+                key=key,
+                name=form.name.data.strip(),
+                description=(form.description.data or "").strip() or None,
+                category=(form.category.data or "").strip() or None,
+                status=form.status.data,
+                accent=form.accent.data,
+                icon_size=_clamp_icon_size(form.icon_size.data),
+                is_active=form.is_active.data,
+                sort_order=form.sort_order.data or 0,
+            )
+            if not _apply_icon(form, module):
+                return render_template(
+                    "admin/module_form.html", form=form, mode="create",
+                    builtin_icons=BUILTIN_ICONS)
+            # Auto-enable for Administrators so they never lose visibility.
+            admin_role = Role.query.filter_by(name=ROLE_ADMIN).first()
+            if admin_role:
+                module.roles.append(admin_role)
+            db.session.add(module)
+            record_audit("module_created", f"key={key}")
+            db.session.commit()
+            flash(f"Module '{module.name}' has been created.", "success")
+            return redirect(url_for("admin.modules"))
+    return render_template(
+        "admin/module_form.html", form=form, mode="create",
+        builtin_icons=BUILTIN_ICONS)
+
+
+@admin_bp.route("/modules/<int:module_id>/edit", methods=["GET", "POST"])
+@admin_required
+def edit_module(module_id: int):
+    module = db.session.get(Module, module_id) or abort(404)
+    form = ModuleForm(obj=module)
+    form.icon_builtin.choices = _builtin_icon_choices()
+    if request.method == "GET":
+        form.icon_kind.data = module.icon_kind
+        form.icon_builtin.data = (
+            module.icon_value if not module.is_upload_icon else BUILTIN_ICONS[0]
+        )
+    if form.validate_on_submit():
+        key = (form.key.data or slugify(form.name.data)).strip()
+        dup = Module.query.filter(
+            Module.key == key, Module.id != module.id
+        ).first()
+        if dup:
+            flash(f"A module with key '{key}' already exists.", "danger")
+            return render_template(
+                "admin/module_form.html", form=form, mode="edit",
+                module=module, builtin_icons=BUILTIN_ICONS)
+        if not _apply_icon(form, module):
+            return render_template(
+                "admin/module_form.html", form=form, mode="edit",
+                module=module, builtin_icons=BUILTIN_ICONS)
+        module.key = key
+        module.name = form.name.data.strip()
+        module.description = (form.description.data or "").strip() or None
+        module.category = (form.category.data or "").strip() or None
+        module.status = form.status.data
+        module.accent = form.accent.data
+        module.icon_size = _clamp_icon_size(form.icon_size.data)
+        module.is_active = form.is_active.data
+        module.sort_order = form.sort_order.data or 0
+        record_audit("module_updated", f"key={key}")
+        db.session.commit()
+        flash(f"Module '{module.name}' has been updated.", "success")
+        return redirect(url_for("admin.modules"))
+    return render_template(
+        "admin/module_form.html", form=form, mode="edit",
+        module=module, builtin_icons=BUILTIN_ICONS)
+
+
+@admin_bp.route("/modules/<int:module_id>/toggle-active", methods=["POST"])
+@admin_required
+def toggle_module(module_id: int):
+    module = db.session.get(Module, module_id) or abort(404)
+    module.is_active = not module.is_active
+    record_audit(
+        "module_activated" if module.is_active else "module_deactivated",
+        f"key={module.key}",
+    )
+    db.session.commit()
+    state = "activated" if module.is_active else "deactivated"
+    flash(f"Module '{module.name}' has been {state}.", "success")
+    return redirect(url_for("admin.modules"))
+
+
+@admin_bp.route("/modules/<int:module_id>/move", methods=["POST"])
+@admin_required
+def move_module(module_id: int):
+    direction = request.form.get("direction", "up")
+    ordered = Module.query.order_by(Module.sort_order, Module.name).all()
+    for i, m in enumerate(ordered):  # normalise to remove ties
+        m.sort_order = i
+    idx = next((i for i, m in enumerate(ordered) if m.id == module_id), None)
+    if idx is not None:
+        j = idx - 1 if direction == "up" else idx + 1
+        if 0 <= j < len(ordered):
+            ordered[idx].sort_order, ordered[j].sort_order = (
+                ordered[j].sort_order, ordered[idx].sort_order)
+    db.session.commit()
+    return redirect(url_for("admin.modules"))
+
+
+@admin_bp.route("/modules/<int:module_id>/delete", methods=["POST"])
+@admin_required
+def delete_module(module_id: int):
+    module = db.session.get(Module, module_id) or abort(404)
+    name = module.name
+    if module.is_upload_icon and module.icon_value:
+        delete_module_icon(module.icon_value)
+    db.session.delete(module)
+    record_audit("module_deleted", f"key={module.key}")
+    db.session.commit()
+    flash(f"Module '{name}' has been deleted.", "success")
+    return redirect(url_for("admin.modules"))
+
+
+@admin_bp.route("/roles/<int:role_id>/modules", methods=["GET", "POST"])
+@admin_required
+def manage_role_modules(role_id: int):
+    role = db.session.get(Role, role_id) or abort(404)
+    all_modules = Module.query.order_by(
+        Module.category, Module.sort_order, Module.name
+    ).all()
+    if request.method == "POST":
+        chosen = {int(x) for x in request.form.getlist("module_ids")}
+        role.modules = [m for m in all_modules if m.id in chosen]
+        record_audit(
+            "role_modules_updated", f"role={role.name} count={len(role.modules)}")
+        db.session.commit()
+        flash(f"Modules for role '{role.name}' have been updated.", "success")
+        return redirect(url_for("admin.roles"))
+    enabled = {m.id for m in role.modules}
+    return render_template(
+        "admin/role_modules.html", role=role, modules=all_modules, enabled=enabled)
 
 
 @admin_bp.route("/audit")

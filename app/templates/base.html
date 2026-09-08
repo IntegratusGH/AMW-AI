@@ -25,6 +25,10 @@
         </a>
         {% if current_user.is_administrator %}
         <div class="nav-section">Administration</div>
+        <a class="nav-link {{ 'active' if request.endpoint in ['admin.modules', 'admin.create_module', 'admin.edit_module'] }}"
+           href="{{ url_for('admin.modules') }}">
+          <span class="nav-ico">🧩</span> Modules
+        </a>
         <a class="nav-link {{ 'active' if request.endpoint == 'admin.users' or request.endpoint == 'admin.create_user' or request.endpoint == 'admin.edit_user' }}"
            href="{{ url_for('admin.users') }}">
           <span class="nav-ico">👥</span> Users

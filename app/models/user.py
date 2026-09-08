@@ -30,6 +30,9 @@ class Role(db.Model):
     description = db.Column(db.String(255))
 
     users = db.relationship("User", back_populates="role", lazy="dynamic")
+    modules = db.relationship(
+        "Module", secondary="role_modules", back_populates="roles"
+    )
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Role {self.name}>"

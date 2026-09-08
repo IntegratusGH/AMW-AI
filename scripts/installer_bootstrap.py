@@ -133,6 +133,13 @@ def seed(app) -> None:
     log.info("Roles/admin seeded.")
 
 
+def seed_modules(app) -> None:
+    from scripts.init_db import seed_modules as _seed_modules
+
+    _seed_modules(app)  # default AI modules + role mappings (idempotent)
+    log.info("Modules seeded.")
+
+
 def _step(name: str, func, *args):
     """Run a named step with start/finish logging so a failing step is obvious."""
     log.info("---- step: %s ----", name)
@@ -158,6 +165,7 @@ def main() -> None:
     app = _step("create_app", create_app)
     _step("migrate_db", migrate_db, app)
     _step("seed", seed, app)
+    _step("seed_modules", seed_modules, app)
     log.info("Bootstrap complete.")
 
 

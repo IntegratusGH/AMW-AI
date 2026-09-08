@@ -1,6 +1,7 @@
 """Application factory for the AMW-AI web application."""
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
 from flask import Flask
@@ -12,6 +13,12 @@ from app.extensions import csrf, db, login_manager, migrate
 def create_app(config_class: type = Config) -> Flask:
     app = Flask(__name__)
     app.config.from_object(config_class)
+
+    # Ensure the writable uploads directory exists (module icons).
+    try:
+        os.makedirs(app.config["MODULE_ICON_DIR"], exist_ok=True)
+    except OSError:
+        pass
 
     # Initialise extensions
     db.init_app(app)
