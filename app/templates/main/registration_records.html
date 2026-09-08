@@ -2,6 +2,7 @@
 {% from "main/_icons.html" import icon %}
 {% block title %}Extracted records{% endblock %}
 {% block page_title %}Extracted records &mdash; {{ upload.filename }}{% endblock %}
+{% block content_class %}content--wide{% endblock %}
 
 {% block content %}
 {% if kind == 'cr' %}{% set review_count = records|selectattr('needs_review')|list|length %}{% endif %}
