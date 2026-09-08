@@ -11,7 +11,7 @@
 {% endmacro %}
 
 {% macro uploads_table(kind, uploads) %}
-<div class="card table-card">
+<div class="card table-card reg-uploads">
   <table class="table">
     <thead>
       <tr><th>ID</th><th>File</th><th>Uploaded</th><th>Status</th>
@@ -60,37 +60,35 @@
 {% block content %}
 {% if module.description %}<p class="muted reg-intro">{{ module.description }}</p>{% endif %}
 
-<div class="reg-grid">
-  <section class="reg-col">
-    <div class="upload-tile card">
-      <span class="upload-ico">{{ icon('file-check', 30) }}</span>
-      <h3>CR Book upload</h3>
-      <p class="muted">Upload a scanned CR-book PDF (may contain many CR books).</p>
-      <form method="post" enctype="multipart/form-data" class="upload-form">
-        {{ cr_form.hidden_tag() }}
-        {{ cr_form.file(class="file-input", accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff") }}
-        {% for e in cr_form.file.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
-        {{ cr_form.submit_cr(class="btn btn-primary") }}
-      </form>
-    </div>
-    <h4 class="reg-subtitle">CR Book uploads</h4>
-    {{ uploads_table('cr', cr_uploads) }}
-  </section>
+<div class="reg-tiles">
+  <div class="upload-tile card">
+    <span class="upload-ico">{{ icon('file-check', 30) }}</span>
+    <h3>CR Book upload</h3>
+    <p class="muted">Upload a scanned CR-book PDF (may contain many CR books).</p>
+    <form method="post" enctype="multipart/form-data" class="upload-form">
+      {{ cr_form.hidden_tag() }}
+      {{ cr_form.file(class="file-input", accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff") }}
+      {% for e in cr_form.file.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+      {{ cr_form.submit_cr(class="btn btn-primary") }}
+    </form>
+  </div>
 
-  <section class="reg-col">
-    <div class="upload-tile card">
-      <span class="upload-ico">{{ icon('credit-card', 30) }}</span>
-      <h3>Registration Receipts upload</h3>
-      <p class="muted">Upload a receipts PDF (may contain many deposit slips).</p>
-      <form method="post" enctype="multipart/form-data" class="upload-form">
-        {{ rc_form.hidden_tag() }}
-        {{ rc_form.file(class="file-input", accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff") }}
-        {% for e in rc_form.file.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
-        {{ rc_form.submit_rc(class="btn btn-primary") }}
-      </form>
-    </div>
-    <h4 class="reg-subtitle">Receipt uploads</h4>
-    {{ uploads_table('rc', rc_uploads) }}
-  </section>
+  <div class="upload-tile card">
+    <span class="upload-ico">{{ icon('credit-card', 30) }}</span>
+    <h3>Registration Receipts upload</h3>
+    <p class="muted">Upload a receipts PDF (may contain many deposit slips).</p>
+    <form method="post" enctype="multipart/form-data" class="upload-form">
+      {{ rc_form.hidden_tag() }}
+      {{ rc_form.file(class="file-input", accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff") }}
+      {% for e in rc_form.file.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+      {{ rc_form.submit_rc(class="btn btn-primary") }}
+    </form>
+  </div>
 </div>
+
+<h4 class="reg-subtitle">CR Book uploads</h4>
+{{ uploads_table('cr', cr_uploads) }}
+
+<h4 class="reg-subtitle">Receipt uploads</h4>
+{{ uploads_table('rc', rc_uploads) }}
 {% endblock %}

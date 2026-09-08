@@ -228,8 +228,9 @@ select.input { appearance: auto; }
 
 /* ---- Registration Updater workspace ------------------------------------- */
 .reg-intro { margin: -4px 0 18px; }
-.reg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
-.reg-col { min-width: 0; }
+.reg-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+.reg-uploads { overflow-x: auto; overflow-y: visible; }
+.reg-uploads .table { min-width: 780px; }
 .reg-subtitle { margin: 18px 0 10px; font-size: 13px; text-transform: uppercase;
   letter-spacing: .5px; color: var(--text-muted); }
 .upload-tile { padding: 22px; display: flex; flex-direction: column; gap: 8px; text-align: left; }
@@ -239,7 +240,7 @@ select.input { appearance: auto; }
 .upload-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 8px; }
 .file-input { flex: 1 1 220px; min-width: 0; padding: 8px; border: 1px dashed var(--border);
   border-radius: var(--radius-sm); background: var(--surface-2); font-size: 13px; }
-@media (max-width: 1100px) { .reg-grid { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .reg-tiles { grid-template-columns: 1fr; } }
 
 /* Module admin: reorder controls, icon picker, role checklist */
 .mod-order { white-space: nowrap; display: flex; gap: 4px; }
