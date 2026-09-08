@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% from "main/_icons.html" import icon %}
+{% block title %}{{ module.name }}{% endblock %}
+{% block page_title %}{{ module.name }}{% endblock %}
+
+{% macro status_badge(u) %}
+  {% if u.status == 'processing' %}<span class="badge badge-warning">Processing&hellip;</span>
+  {% elif u.processed %}<span class="badge badge-success">Processed</span>
+  {% elif u.status == 'error' %}<span class="badge badge-danger" title="{{ u.error }}">Error</span>
+  {% else %}<span class="badge badge-muted">Pending</span>{% endif %}
+{% endmacro %}
+
+{% macro uploads_table(kind, uploads) %}
+<div class="card table-card">
+  <table class="table">
+    <thead>
+      <tr><th>ID</th><th>File</th><th>Uploaded</th><th>Status</th>
+        <th>Captured</th><th>Dupes</th><th class="ta-right">Actions</th></tr>
+    </thead>
+    <tbody>
+      {% for u in uploads %}
+      <tr>
+        <td class="mono">{{ u.id }}</td>
+        <td>{{ u.filename }}</td>
+        <td>{{ u.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ status_badge(u) }}</td>
+        <td>{{ u.captured_records }}</td>
+        <td>{{ u.duplicate_records }}</td>
+        <td class="ta-right actions">
+          <form method="post" class="inline"
+                action="{{ url_for('main.process_upload', kind=kind, upload_id=u.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="act-btn" type="submit"
+                    title="{{ 'Re-process' if u.processed else 'Process' }}"
+                    aria-label="{{ 'Re-process' if u.processed else 'Process' }}"
+                    {{ 'disabled' if u.status == 'processing' else '' }}>
+              {{ icon('refresh', 16) if u.processed else icon('play', 16) }}
+            </button>
+          </form>
+          {% if u.captured_records %}
+          <a class="act-btn" title="View records" aria-label="View records"
+             href="{{ url_for('main.upload_records', kind=kind, upload_id=u.id) }}">{{ icon('list', 16) }}</a>
+          {% endif %}
+          <form method="post" class="inline"
+                action="{{ url_for('main.delete_upload', kind=kind, upload_id=u.id) }}"
+                onsubmit="return confirm('Delete {{ u.filename }} and its records?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="act-btn act-danger" type="submit" title="Delete" aria-label="Delete">{{ icon('trash', 16) }}</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted ta-center">No uploads yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}
+
+{% block content %}
+{% if module.description %}<p class="muted reg-intro">{{ module.description }}</p>{% endif %}
+
+<div class="reg-grid">
+  <section class="reg-col">
+    <div class="upload-tile card">
+      <span class="upload-ico">{{ icon('file-check', 30) }}</span>
+      <h3>CR Book upload</h3>
+      <p class="muted">Upload a scanned CR-book PDF (may contain many CR books).</p>
+      <form method="post" enctype="multipart/form-data" class="upload-form">
+        {{ cr_form.hidden_tag() }}
+        {{ cr_form.file(class="file-input", accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff") }}
+        {% for e in cr_form.file.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+        {{ cr_form.submit_cr(class="btn btn-primary") }}
+      </form>
+    </div>
+    <h4 class="reg-subtitle">CR Book uploads</h4>
+    {{ uploads_table('cr', cr_uploads) }}
+  </section>
+
+  <section class="reg-col">
+    <div class="upload-tile card">
+      <span class="upload-ico">{{ icon('credit-card', 30) }}</span>
+      <h3>Registration Receipts upload</h3>
+      <p class="muted">Upload a receipts PDF (may contain many deposit slips).</p>
+      <form method="post" enctype="multipart/form-data" class="upload-form">
+        {{ rc_form.hidden_tag() }}
+        {{ rc_form.file(class="file-input", accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff") }}
+        {% for e in rc_form.file.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+        {{ rc_form.submit_rc(class="btn btn-primary") }}
+      </form>
+    </div>
+    <h4 class="reg-subtitle">Receipt uploads</h4>
+    {{ uploads_table('rc', rc_uploads) }}
+  </section>
+</div>
+{% endblock %}

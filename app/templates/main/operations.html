@@ -15,7 +15,8 @@
   <h3 class="ops-section-title">{{ group.name }}</h3>
   <div class="auto-grid">
     {% for m in group.modules %}
-    <div class="auto-card">
+    {% set href = module_links.get(m.key) %}
+    {% if href and m.status == 'available' %}<a class="auto-card auto-card-link" href="{{ href }}">{% else %}<div class="auto-card">{% endif %}
       {% if m.status == 'available' %}
         <span class="badge badge-success auto-status">Available</span>
       {% else %}
@@ -32,7 +33,8 @@
       </span>
       <span class="auto-title">{{ m.name }}</span>
       {% if m.description %}<p class="auto-desc">{{ m.description }}</p>{% endif %}
-    </div>
+      {% if href and m.status == 'available' %}<span class="auto-open">Open &rarr;</span>{% endif %}
+    {% if href and m.status == 'available' %}</a>{% else %}</div>{% endif %}
     {% endfor %}
   </div>
 </section>

@@ -166,6 +166,8 @@ select.input { appearance: auto; }
 }
 .badge-success { background: rgba(46,158,107,.15); color: var(--success); }
 .badge-muted { background: var(--surface-2); color: var(--text-muted); }
+.badge-warning { background: rgba(217,138,31,.16); color: var(--warning); }
+.badge-danger { background: rgba(214,69,69,.15); color: var(--danger); }
 
 /* ---- Flash messages ----------------------------------------------------- */
 .flash-stack { margin-bottom: 18px; display: flex; flex-direction: column; gap: 10px; }
@@ -220,6 +222,24 @@ select.input { appearance: auto; }
 .auto-title { font-weight: 650; font-size: 15px; }
 .auto-desc { color: var(--text-muted); font-size: 13px; margin: 0; }
 .auto-status { position: absolute; top: 14px; right: 14px; }
+.auto-card-link { text-decoration: none; color: inherit; cursor: pointer; }
+.auto-card-link:hover { text-decoration: none; }
+.auto-open { margin-top: auto; font-size: 13px; font-weight: 650; color: var(--primary); }
+
+/* ---- Registration Updater workspace ------------------------------------- */
+.reg-intro { margin: -4px 0 18px; }
+.reg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+.reg-col { min-width: 0; }
+.reg-subtitle { margin: 18px 0 10px; font-size: 13px; text-transform: uppercase;
+  letter-spacing: .5px; color: var(--text-muted); }
+.upload-tile { padding: 22px; display: flex; flex-direction: column; gap: 8px; text-align: left; }
+.upload-tile h3 { margin: 4px 0 0; }
+.upload-ico { width: 54px; height: 54px; border-radius: 14px; display: grid;
+  place-items: center; background: var(--primary-soft); color: var(--primary); }
+.upload-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 8px; }
+.file-input { flex: 1 1 220px; min-width: 0; padding: 8px; border: 1px dashed var(--border);
+  border-radius: var(--radius-sm); background: var(--surface-2); font-size: 13px; }
+@media (max-width: 1100px) { .reg-grid { grid-template-columns: 1fr; } }
 
 /* Module admin: reorder controls, icon picker, role checklist */
 .mod-order { white-space: nowrap; display: flex; gap: 4px; }

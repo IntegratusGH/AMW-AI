@@ -1,6 +1,11 @@
 """Main application routes: dashboard, operations, profile, settings."""
 from __future__ import annotations
 
+import os
+import threading
+import uuid
+from datetime import datetime
+
 from flask import (
     abort,
     current_app,
@@ -12,19 +17,38 @@ from flask import (
     url_for,
 )
 from flask_login import current_user, login_required
+from sqlalchemy import inspect as sqla_inspect
+from werkzeug.utils import secure_filename
 
 from app.blueprints.main import main_bp
 from app.extensions import db
-from app.forms import ProfileForm, SettingsForm
+from app.forms import (
+    CRBookUploadForm,
+    ProfileForm,
+    ReceiptUploadForm,
+    SettingsForm,
+)
 from app.models import (
     ROLE_ADMIN,
     ROLE_OPERATOR,
+    STATUS_DONE,
+    STATUS_ERROR,
+    STATUS_PENDING,
+    STATUS_PROCESSING,
     Category,
+    CRBookRecord,
+    CRBookUpload,
     Module,
+    ReceiptRecord,
+    ReceiptUpload,
     User,
     record_audit,
     role_modules,
 )
+
+# Module keys that have a dedicated workspace page (used to make the Operations
+# tile clickable and to guard access).
+REGISTRATION_UPDATER_KEY = "registration_updater"
 
 
 @main_bp.route("/")
@@ -71,7 +95,12 @@ def operations():
         if not groups or groups[-1]["name"] != cat:
             groups.append({"name": cat, "modules": []})
         groups[-1]["modules"].append(m)
-    return render_template("main/operations.html", groups=groups)
+    # Modules that open a dedicated workspace page when their tile is clicked.
+    module_links = {
+        REGISTRATION_UPDATER_KEY: url_for("main.registration_updater"),
+    }
+    return render_template(
+        "main/operations.html", groups=groups, module_links=module_links)
 
 
 @main_bp.route("/media/module-icons/<path:filename>")
@@ -81,6 +110,219 @@ def module_icon(filename: str):
     resp = send_from_directory(current_app.config["MODULE_ICON_DIR"], filename)
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
+
+
+# ===== Registration Updater (module id 1) ================================
+def _require_module(key: str) -> Module:
+    """Return the active module by key, enforcing the current role's access."""
+    module = Module.query.filter_by(key=key, is_active=True).first()
+    if not module:
+        abort(404)
+    allowed = (
+        Module.query.filter_by(id=module.id)
+        .join(role_modules)
+        .filter(role_modules.c.role_id == current_user.role_id)
+        .first()
+    )
+    if not allowed:
+        abort(403)
+    return module
+
+
+def _save_doc(file, dest_dir: str) -> tuple[str, str]:
+    os.makedirs(dest_dir, exist_ok=True)
+    safe = secure_filename(file.filename) or "upload"
+    stored = f"{uuid.uuid4().hex}_{safe}"
+    path = os.path.join(dest_dir, stored)
+    file.save(path)
+    return file.filename or safe, path
+
+
+# Per document-type configuration for the generic processing worker.
+_DOC_KINDS = {
+    "cr": {
+        "upload_model": CRBookUpload,
+        "record_model": CRBookRecord,
+        "key_field": "chassis_no",
+        "extractor": "extract_cr_records",
+    },
+    "rc": {
+        "upload_model": ReceiptUpload,
+        "record_model": ReceiptRecord,
+        "key_field": "slip_no",
+        "extractor": "extract_receipt_records",
+    },
+}
+
+
+def _assign_columns(obj, data: dict) -> None:
+    """Copy dict values onto matching model columns, truncating long strings."""
+    for col in sqla_inspect(type(obj)).columns:
+        name = col.key
+        if name in data and data[name] is not None:
+            val = data[name]
+            length = getattr(col.type, "length", None)
+            if isinstance(val, str) and length:
+                val = val[:length]
+            setattr(obj, name, val)
+
+
+def _run_processing(app, kind: str, upload_id: int) -> None:
+    cfg = _DOC_KINDS[kind]
+    UploadModel = cfg["upload_model"]
+    RecordModel = cfg["record_model"]
+    key_field = cfg["key_field"]
+    with app.app_context():
+        from app.utils import registration_ocr
+        extractor = getattr(registration_ocr, cfg["extractor"])
+        try:
+            up = db.session.get(UploadModel, upload_id)
+            if up is None:
+                return
+            # Re-process: drop any previously extracted rows first.
+            RecordModel.query.filter_by(upload_id=upload_id).delete()
+            db.session.commit()
+
+            page_count, recs = extractor(up.stored_path)
+
+            key_col = getattr(RecordModel, key_field)
+            seen = {
+                (v[0] or "").strip().upper()
+                for v in db.session.query(key_col).filter(key_col.isnot(None)).all()
+                if v[0]
+            }
+            duplicates = 0
+            for r in recs:
+                key = (str(r.get(key_field) or "")).strip().upper()
+                is_dup = bool(key) and key in seen
+                if key:
+                    seen.add(key)
+                if is_dup:
+                    duplicates += 1
+                rec = RecordModel(upload_id=upload_id, is_duplicate=is_dup)
+                _assign_columns(rec, r)
+                db.session.add(rec)
+
+            up.page_count = page_count
+            up.captured_records = len(recs)
+            up.duplicate_records = duplicates
+            up.processed = True
+            up.status = STATUS_DONE
+            up.processed_at = datetime.utcnow()
+            up.error = None
+            db.session.commit()
+        except Exception as exc:  # pragma: no cover - background worker
+            db.session.rollback()
+            up = db.session.get(UploadModel, upload_id)
+            if up is not None:
+                up.status = STATUS_ERROR
+                up.processed = False
+                up.error = str(exc)[:1000]
+                db.session.commit()
+
+
+def _start_processing(kind: str, upload_id: int) -> None:
+    app = current_app._get_current_object()
+    threading.Thread(
+        target=_run_processing, args=(app, kind, upload_id), daemon=True
+    ).start()
+
+
+@main_bp.route("/operations/registration-updater", methods=["GET", "POST"])
+@login_required
+def registration_updater():
+    module = _require_module(REGISTRATION_UPDATER_KEY)
+    cr_form = CRBookUploadForm()
+    rc_form = ReceiptUploadForm()
+
+    if cr_form.submit_cr.data and cr_form.validate_on_submit():
+        name, path = _save_doc(
+            cr_form.file.data, current_app.config["CR_BOOK_UPLOAD_DIR"])
+        up = CRBookUpload(
+            filename=name, stored_path=path,
+            uploaded_by=current_user.id, status=STATUS_PENDING)
+        db.session.add(up)
+        record_audit("cr_book_uploaded", f"file={name}")
+        db.session.commit()
+        flash("CR Book uploaded. Click Process to extract records.", "success")
+        return redirect(url_for("main.registration_updater"))
+
+    if rc_form.submit_rc.data and rc_form.validate_on_submit():
+        name, path = _save_doc(
+            rc_form.file.data, current_app.config["RECEIPT_UPLOAD_DIR"])
+        up = ReceiptUpload(
+            filename=name, stored_path=path,
+            uploaded_by=current_user.id, status=STATUS_PENDING)
+        db.session.add(up)
+        record_audit("receipt_uploaded", f"file={name}")
+        db.session.commit()
+        flash("Receipts uploaded. Click Process to extract records.", "success")
+        return redirect(url_for("main.registration_updater"))
+
+    cr_uploads = CRBookUpload.query.order_by(CRBookUpload.uploaded_at.desc()).all()
+    rc_uploads = ReceiptUpload.query.order_by(ReceiptUpload.uploaded_at.desc()).all()
+    return render_template(
+        "main/registration_updater.html", module=module,
+        cr_form=cr_form, rc_form=rc_form,
+        cr_uploads=cr_uploads, rc_uploads=rc_uploads)
+
+
+@main_bp.route("/operations/registration-updater/<kind>/<int:upload_id>/process",
+               methods=["POST"])
+@login_required
+def process_upload(kind: str, upload_id: int):
+    _require_module(REGISTRATION_UPDATER_KEY)
+    if kind not in _DOC_KINDS:
+        abort(404)
+    up = db.session.get(_DOC_KINDS[kind]["upload_model"], upload_id) or abort(404)
+    if up.status == STATUS_PROCESSING:
+        flash("This file is already being processed.", "info")
+        return redirect(url_for("main.registration_updater"))
+    up.status = STATUS_PROCESSING
+    up.error = None
+    db.session.commit()
+    record_audit(f"{kind}_process", f"upload_id={upload_id}")
+    _start_processing(kind, upload_id)
+    flash("Processing started (OCR runs in the background). Refresh to see "
+          "results.", "success")
+    return redirect(url_for("main.registration_updater"))
+
+
+@main_bp.route("/operations/registration-updater/<kind>/<int:upload_id>/records")
+@login_required
+def upload_records(kind: str, upload_id: int):
+    _require_module(REGISTRATION_UPDATER_KEY)
+    if kind not in _DOC_KINDS:
+        abort(404)
+    up = db.session.get(_DOC_KINDS[kind]["upload_model"], upload_id) or abort(404)
+    RecordModel = _DOC_KINDS[kind]["record_model"]
+    records = (
+        RecordModel.query.filter_by(upload_id=upload_id)
+        .order_by(RecordModel.id).all()
+    )
+    return render_template(
+        "main/registration_records.html", kind=kind, upload=up, records=records)
+
+
+@main_bp.route("/operations/registration-updater/<kind>/<int:upload_id>/delete",
+               methods=["POST"])
+@login_required
+def delete_upload(kind: str, upload_id: int):
+    _require_module(REGISTRATION_UPDATER_KEY)
+    if kind not in _DOC_KINDS:
+        abort(404)
+    up = db.session.get(_DOC_KINDS[kind]["upload_model"], upload_id) or abort(404)
+    try:
+        if up.stored_path and os.path.exists(up.stored_path):
+            os.remove(up.stored_path)
+    except OSError:
+        pass
+    name = up.filename
+    db.session.delete(up)  # records cascade via FK/relationship
+    record_audit(f"{kind}_upload_deleted", f"file={name}")
+    db.session.commit()
+    flash(f"Deleted '{name}' and its extracted records.", "success")
+    return redirect(url_for("main.registration_updater"))
 
 
 @main_bp.route("/profile", methods=["GET", "POST"])

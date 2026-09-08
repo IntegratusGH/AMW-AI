@@ -86,9 +86,22 @@ class Config:
     )
     MODULE_ICON_DIR = str(Path(UPLOAD_DIR) / "modules")
     ALLOWED_ICON_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "svg"}
+
+    # --- Uploads (Registration Updater documents) ------------------------
+    # Scanned CR-book / receipt PDFs are stored under the writable ProgramData
+    # tree, one sub-directory per document type.
+    CR_BOOK_UPLOAD_DIR = str(Path(UPLOAD_DIR) / "cr_book")
+    RECEIPT_UPLOAD_DIR = str(Path(UPLOAD_DIR) / "receipt")
+    ALLOWED_DOC_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "tif", "tiff"}
+    MAX_DOC_UPLOAD_MB = int(os.getenv("MAX_DOC_UPLOAD_MB", "30"))
+
     # Global request-body cap (also bounds uploads); icons are further limited
-    # per-field in the form.
-    MAX_CONTENT_LENGTH = int(os.getenv("MAX_UPLOAD_KB", "1024")) * 1024
+    # per-field in the form.  Sized to the larger document uploads so scanned
+    # CR-book batches are accepted.
+    MAX_CONTENT_LENGTH = max(
+        int(os.getenv("MAX_UPLOAD_KB", "1024")) * 1024,
+        MAX_DOC_UPLOAD_MB * 1024 * 1024,
+    )
 
     # Default admin bootstrap (used by scripts/init_db.py)
     DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")

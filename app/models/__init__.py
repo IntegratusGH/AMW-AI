@@ -22,6 +22,17 @@ from app.models.module import (
     Module,
     role_modules,
 )
+from app.models.registration import (
+    STATUS_DONE,
+    STATUS_ERROR,
+    STATUS_PENDING,
+    STATUS_PROCESSING,
+    UPLOAD_STATUSES,
+    CRBookRecord,
+    CRBookUpload,
+    ReceiptRecord,
+    ReceiptUpload,
+)
 
 __all__ = [
     "AuditLog",
@@ -36,6 +47,15 @@ __all__ = [
     "Module",
     "Category",
     "role_modules",
+    "CRBookUpload",
+    "CRBookRecord",
+    "ReceiptUpload",
+    "ReceiptRecord",
+    "UPLOAD_STATUSES",
+    "STATUS_PENDING",
+    "STATUS_PROCESSING",
+    "STATUS_DONE",
+    "STATUS_ERROR",
     "BUILTIN_ICONS",
     "MODULE_STATUSES",
     "MODULE_ACCENTS",

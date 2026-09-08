@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Extracted records{% endblock %}
+{% block page_title %}Extracted records &mdash; {{ upload.filename }}{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <p class="muted">{{ records|length }} record(s) &middot; captured {{ upload.captured_records }},
+    duplicates {{ upload.duplicate_records }}</p>
+  <a class="btn" href="{{ url_for('main.registration_updater') }}">&larr; Back</a>
+</div>
+
+<div class="card table-card" style="overflow-x:auto">
+  <table class="table">
+    {% if kind == 'cr' %}
+    <thead>
+      <tr><th>#</th><th>Pg</th><th>Reg No</th><th>Chassis No</th><th>Engine No</th>
+        <th>Absolute Owner</th><th>Class</th><th>Fuel</th><th>CC</th><th>Year</th>
+        <th>Colour</th><th>Dup?</th><th>Conf</th></tr>
+    </thead>
+    <tbody>
+      {% for r in records %}
+      <tr>
+        <td class="mono">{{ r.id }}</td>
+        <td>{{ r.page_no or '' }}</td>
+        <td>{{ r.registration_no or '—' }}</td>
+        <td class="mono">{{ r.chassis_no or '—' }}</td>
+        <td class="mono">{{ r.engine_no or '—' }}</td>
+        <td>{{ r.absolute_owner or '—' }}</td>
+        <td>{{ r.class_of_vehicle or '—' }}</td>
+        <td>{{ r.fuel_type or '—' }}</td>
+        <td>{{ r.cylinder_capacity or '—' }}</td>
+        <td>{{ r.year_of_manufacture or '—' }}</td>
+        <td>{{ r.colour or '—' }}</td>
+        <td>{% if r.is_duplicate %}<span class="badge badge-warning">Dup</span>{% else %}—{% endif %}</td>
+        <td>{{ '%.2f'|format(r.confidence) if r.confidence is not none else '' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="13" class="muted ta-center">No records.</td></tr>
+      {% endfor %}
+    </tbody>
+    {% else %}
+    <thead>
+      <tr><th>#</th><th>Slip No</th><th>Receipt No</th><th>Date</th><th>Time</th>
+        <th>Vehicle No</th><th>Application No</th><th class="ta-right">Total</th>
+        <th class="ta-right">Charges</th><th class="ta-right">Bank Total</th>
+        <th>Dup?</th><th>Conf</th></tr>
+    </thead>
+    <tbody>
+      {% for r in records %}
+      <tr>
+        <td class="mono">{{ r.id }}</td>
+        <td class="mono">{{ r.slip_no or '—' }}</td>
+        <td>{{ r.receipt_no or '—' }}</td>
+        <td>{{ r.receipt_date or '—' }}</td>
+        <td>{{ r.receipt_time or '—' }}</td>
+        <td class="mono">{{ r.vehicle_no or '—' }}</td>
+        <td class="mono">{{ r.application_no or '—' }}</td>
+        <td class="ta-right">{{ '%.2f'|format(r.total_amount) if r.total_amount is not none else '—' }}</td>
+        <td class="ta-right">{{ '%.2f'|format(r.bank_charges) if r.bank_charges is not none else '—' }}</td>
+        <td class="ta-right">{{ '%.2f'|format(r.bank_total) if r.bank_total is not none else '—' }}</td>
+        <td>{% if r.is_duplicate %}<span class="badge badge-warning">Dup</span>{% else %}—{% endif %}</td>
+        <td>{{ '%.2f'|format(r.confidence) if r.confidence is not none else '' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="12" class="muted ta-center">No records.</td></tr>
+      {% endfor %}
+    </tbody>
+    {% endif %}
+  </table>
+</div>
+{% endblock %}

@@ -22,5 +22,11 @@ waitress
 # Pinned: supports Python 3.14 (required by the embeddable runtime).
 pywin32==312
 
+# Document processing & offline OCR (Registration Updater module)
+# PyMuPDF renders scanned PDF pages to images; RapidOCR (ONNX PP-OCR) performs
+# fully offline OCR with models bundled in the wheel (no native binary).
+PyMuPDF
+rapidocr-onnxruntime
+
 # Active Directory / LDAP authentication (pure-Python; embeddable-runtime safe)
 ldap3

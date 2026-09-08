@@ -10,6 +10,7 @@ from app.forms.admin import (
 )
 from app.forms.auth import ChangePasswordForm, LoginForm
 from app.forms.profile import ProfileForm, SettingsForm
+from app.forms.registration import CRBookUploadForm, ReceiptUploadForm
 
 __all__ = [
     "LoginForm",
@@ -23,4 +24,6 @@ __all__ = [
     "ModuleForm",
     "ProfileForm",
     "SettingsForm",
+    "CRBookUploadForm",
+    "ReceiptUploadForm",
 ]

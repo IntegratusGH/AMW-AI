@@ -24,3 +24,17 @@ typing_extensions==4.16.0
 waitress==3.0.2
 Werkzeug==3.1.8
 WTForms==3.2.2
+# Document processing & offline OCR (Registration Updater module)
+PyMuPDF==1.28.2
+rapidocr-onnxruntime==1.2.3
+onnxruntime==1.29.0
+opencv-python==5.0.0.93
+numpy==2.5.3
+pillow==12.3.0
+pyclipper==1.4.0
+shapely==2.1.2
+PyYAML==6.0.3
+flatbuffers==25.12.19
+protobuf==7.36.1
+packaging==26.3
+six==1.17.0
