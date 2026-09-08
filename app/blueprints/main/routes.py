@@ -205,6 +205,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             }
             captured = 0
             duplicates = 0
+            cr_pending = []  # (rec_obj, data) kept for the batch template pass
             try:
                 for i in range(total):
                     if kind == "cr":
@@ -227,6 +228,8 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         rec_obj = RecordModel(upload_id=upload_id, is_duplicate=is_dup)
                         _assign_columns(rec_obj, r)
                         db.session.add(rec_obj)
+                        if kind == "cr":
+                            cr_pending.append((rec_obj, r))
                         captured += 1
 
                     up.progress_done = i + 1
@@ -238,6 +241,45 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                     db.session.commit()
             finally:
                 doc.close()
+
+            # Batch chassis template: learn which positions are numeric across
+            # the whole upload, then enforce it so systematic S->5 (etc.)
+            # misreads are corrected against the batch's own consistent chars.
+            if kind == "cr" and cr_pending:
+                mask = ocr.build_chassis_mask(
+                    [r.get("_chassis_cands") for _, r in cr_pending])
+                if mask:
+                    up.progress_message = "Applying batch chassis template\u2026"
+                    db.session.commit()
+                    ext_seen = {
+                        (v[0] or "").strip().upper()
+                        for v in db.session.query(key_col).filter(
+                            key_col.isnot(None),
+                            RecordModel.upload_id != upload_id).all()
+                        if v[0]}
+                    batch_seen = set()
+                    duplicates = 0
+                    for rec_obj, r in cr_pending:
+                        new_ch, changed = ocr.apply_chassis_mask(
+                            rec_obj.chassis_no, mask)
+                        if changed:
+                            rec_obj.chassis_no = new_ch
+                        rec_obj.needs_review = bool(
+                            ocr.chassis_needs_review(
+                                rec_obj.chassis_no, mask,
+                                rec_obj.chassis_no_confidence)
+                            or ocr._reg_review(
+                                rec_obj.registration_no,
+                                rec_obj.registration_no_confidence))
+                        key = (rec_obj.chassis_no or "").strip().upper()
+                        is_dup = bool(key) and (key in ext_seen or key in batch_seen)
+                        if key:
+                            batch_seen.add(key)
+                        rec_obj.is_duplicate = is_dup
+                        if is_dup:
+                            duplicates += 1
+                    up.duplicate_records = duplicates
+                    db.session.commit()
 
             up.processed = True
             up.status = STATUS_DONE

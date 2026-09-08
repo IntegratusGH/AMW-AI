@@ -275,11 +275,105 @@ def _reg_review(rg: str | None, conf) -> bool:
     return conf < 0.55 or not (2 <= len(tail) <= 5) or not tail.isdigit()
 
 
+# Well-known OCR digit<->letter confusions (letter -> the digit it is usually a
+# misread of).  Used to correct characters in positions that are structurally
+# numeric (chassis serial tail, registration plate-number group).
+_DIGIT_MAP = {"S": "5", "B": "8", "G": "6", "Z": "2",
+              "O": "0", "I": "1", "D": "0", "Q": "0"}
+
+
+def _to_digits(s: str) -> str:
+    return "".join(_DIGIT_MAP.get(c, c) for c in s)
+
+
+def _fix_reg_number(rg: str | None) -> str | None:
+    """Map digit-confusable letters -> digits in the trailing plate-number
+    group (which is always numeric), e.g. 'WPBLM-1S21' -> 'WPBLM-1521'."""
+    if not rg:
+        return rg
+    m = re.search(r"([0-9SBGZOIDQ]{2,4})$", rg)
+    if not m:
+        return rg
+    fixed = _to_digits(m.group(1))
+    return rg[:m.start(1)] + fixed if fixed.isdigit() else rg
+
+
+def build_chassis_mask(cand_lists, min_records: int = 4, min_len: int = 11):
+    """Learn a chassis 'template' from a whole batch: the per-position digit
+    probability across every recognition pass of every record whose length
+    matches the dominant one.  Letter positions (WMI etc.) stay near 0%,
+    numeric positions near 100%; the S<->5 misreads sit in between.
+
+    Returns ``(length, [digit_prob_per_position])`` or ``None`` when the batch
+    is too small / heterogeneous to trust."""
+    from collections import Counter
+    lens: Counter = Counter()
+    per_record_lens = []
+    for cl in cand_lists:
+        ls = {len(s) for s in (cl or [])}
+        per_record_lens.append(ls)
+        for s in (cl or []):
+            lens[len(s)] += 1
+    if not lens:
+        return None
+    length = lens.most_common(1)[0][0]
+    if length < min_len:
+        return None
+    if sum(1 for ls in per_record_lens if length in ls) < min_records:
+        return None
+    strings = [s for cl in cand_lists for s in (cl or []) if len(s) == length]
+    if not strings:
+        return None
+    digitp = [sum(1 for s in strings if s[i].isdigit()) / len(strings)
+              for i in range(length)]
+    return (length, digitp)
+
+
+def apply_chassis_mask(value: str | None, mask, thr: float = 0.40):
+    """Enforce the learned template on one chassis: at positions the batch
+    shows are numeric, map a digit-confusable letter to its digit.  Returns
+    ``(value, changed)``; records whose length differs are left untouched."""
+    if not mask or not value:
+        return value, False
+    length, digitp = mask
+    if len(value) != length:
+        return value, False
+    out = list(value)
+    changed = False
+    for i, ch in enumerate(out):
+        if digitp[i] >= thr and ch in _DIGIT_MAP:
+            out[i] = _DIGIT_MAP[ch]
+            changed = True
+    return "".join(out), changed
+
+
+def chassis_needs_review(value: str | None, mask, conf,
+                         thr: float = 0.40, alpha_thr: float = 0.10) -> bool:
+    """Template-aware review flag: after enforcement, a numeric position still
+    not a digit (an un-mappable letter) or a letter position holding a digit
+    means the record does not fit the batch template -> needs a check."""
+    if not value:
+        return True
+    if not mask:
+        return _chassis_review(value, conf)
+    length, digitp = mask
+    if len(value) != length:
+        return True
+    for i, ch in enumerate(value):
+        if digitp[i] >= thr and not ch.isdigit():
+            return True
+        if digitp[i] <= alpha_thr and not ch.isalpha():
+            return True
+    return False
+
+
 def _refine_field(page, line, full_zoom, kind, fallback):
     """High-accuracy value for a critical field via multi-scale recognition-only
-    OCR of its cropped region + voting.  Returns ``(value, confidence)``."""
+    OCR of its cropped region + voting.  Returns ``(value, confidence, cands)``
+    where ``cands`` are the normalised chassis candidate strings (for batch
+    template learning) and ``[]`` for other fields."""
     if page is None or line is None:
-        return fallback, None
+        return fallback, None, []
     import pymupdf
     rect = pymupdf.Rect(
         line["x0"] / full_zoom - 4, line["y0"] / full_zoom - 3,
@@ -292,17 +386,20 @@ def _refine_field(page, line, full_zoom, kind, fallback):
             if len(fb) >= 6:
                 cands.append((fb, 0.5))
         text, conf = _vote(cands, prefer_len=17)
-    else:
-        cands = [(_norm_reg(t), w) for t, w in raw
-                 if len(_norm_reg(t)) >= 4 and any(c.isdigit() for c in _norm_reg(t))]
-        if fallback:
-            fb = _norm_reg(fallback)
-            if len(fb) >= 4:
-                cands.append((fb, 0.5))
-        text, conf = _vote(cands)
+        cand_strs = [c for c, _ in cands if len(c) >= 15]
+        if not text:
+            return fallback, None, cand_strs
+        return text, conf, cand_strs
+    cands = [(_norm_reg(t), w) for t, w in raw
+             if len(_norm_reg(t)) >= 4 and any(c.isdigit() for c in _norm_reg(t))]
+    if fallback:
+        fb = _norm_reg(fallback)
+        if len(fb) >= 4:
+            cands.append((fb, 0.5))
+    text, conf = _vote(cands)
     if not text:
-        return fallback, None
-    return text, conf
+        return fallback, None, []
+    return _fix_reg_number(text), conf, []
 
 
 def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0) -> dict:
@@ -351,16 +448,17 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0) -> dict
     # full-page pass makes.
     ch_lbl = _find_label(lines, _CR_LABELS["chassis_no"])
     ch_line = _line_below(lines, ch_lbl) if ch_lbl else None
-    ch_val, ch_conf = _refine_field(page, ch_line, full_zoom, "chassis",
-                                    rec.get("chassis_no"))
+    ch_val, ch_conf, ch_cands = _refine_field(page, ch_line, full_zoom, "chassis",
+                                              rec.get("chassis_no"))
     if ch_val:
         rec["chassis_no"] = ch_val
     rec["chassis_no_confidence"] = ch_conf
+    rec["_chassis_cands"] = ch_cands
 
     rg_lbl = _find_label(lines, _CR_LABELS["registration_no"])
     rg_line = _line_below(lines, rg_lbl) if rg_lbl else None
-    rg_val, rg_conf = _refine_field(page, rg_line, full_zoom, "reg",
-                                    rec.get("registration_no"))
+    rg_val, rg_conf, _ = _refine_field(page, rg_line, full_zoom, "reg",
+                                       rec.get("registration_no"))
     if rg_val:
         rec["registration_no"] = rg_val
     rec["registration_no_confidence"] = rg_conf
