@@ -102,6 +102,10 @@ class CRBookRecord(db.Model):
 
     is_duplicate = db.Column(db.Boolean, default=False, nullable=False)
     confidence = db.Column(db.Float, nullable=True)
+    # Per-field confidence for the two critical identifiers + review flag.
+    chassis_no_confidence = db.Column(db.Float, nullable=True)
+    registration_no_confidence = db.Column(db.Float, nullable=True)
+    needs_review = db.Column(db.Boolean, default=False, nullable=False)
     raw_text = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 

@@ -3,9 +3,11 @@
 {% block page_title %}Extracted records &mdash; {{ upload.filename }}{% endblock %}
 
 {% block content %}
+{% if kind == 'cr' %}{% set review_count = records|selectattr('needs_review')|list|length %}{% endif %}
 <div class="toolbar">
   <p class="muted">{{ records|length }} record(s) &middot; captured {{ upload.captured_records }},
-    duplicates {{ upload.duplicate_records }}</p>
+    duplicates {{ upload.duplicate_records }}{% if kind == 'cr' %} &middot;
+    <strong>{{ review_count }} need review</strong>{% endif %}</p>
   <a class="btn" href="{{ url_for('main.registration_updater') }}">&larr; Back</a>
 </div>
 
@@ -13,17 +15,18 @@
   <table class="table">
     {% if kind == 'cr' %}
     <thead>
-      <tr><th>#</th><th>Pg</th><th>Reg No</th><th>Chassis No</th><th>Engine No</th>
+      <tr><th>#</th><th>Pg</th><th>Review</th><th>Reg No</th><th>Chassis No</th><th>Engine No</th>
         <th>Absolute Owner</th><th>Class</th><th>Fuel</th><th>CC</th><th>Year</th>
-        <th>Colour</th><th>Dup?</th><th>Conf</th></tr>
+        <th>Colour</th><th>Dup?</th></tr>
     </thead>
     <tbody>
       {% for r in records %}
-      <tr>
+      <tr class="{{ 'row-review' if r.needs_review else '' }}">
         <td class="mono">{{ r.id }}</td>
         <td>{{ r.page_no or '' }}</td>
-        <td>{{ r.registration_no or '—' }}</td>
-        <td class="mono">{{ r.chassis_no or '—' }}</td>
+        <td>{% if r.needs_review %}<span class="badge badge-warning">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
+        <td class="mono" title="confidence {{ '%.2f'|format(r.registration_no_confidence) if r.registration_no_confidence is not none else 'n/a' }}">{{ r.registration_no or '—' }}</td>
+        <td class="mono" title="confidence {{ '%.2f'|format(r.chassis_no_confidence) if r.chassis_no_confidence is not none else 'n/a' }}">{{ r.chassis_no or '—' }}</td>
         <td class="mono">{{ r.engine_no or '—' }}</td>
         <td>{{ r.absolute_owner or '—' }}</td>
         <td>{{ r.class_of_vehicle or '—' }}</td>
@@ -32,7 +35,6 @@
         <td>{{ r.year_of_manufacture or '—' }}</td>
         <td>{{ r.colour or '—' }}</td>
         <td>{% if r.is_duplicate %}<span class="badge badge-warning">Dup</span>{% else %}—{% endif %}</td>
-        <td>{{ '%.2f'|format(r.confidence) if r.confidence is not none else '' }}</td>
       </tr>
       {% else %}
       <tr><td colspan="13" class="muted ta-center">No records.</td></tr>

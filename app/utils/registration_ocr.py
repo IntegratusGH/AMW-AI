@@ -62,6 +62,66 @@ def _ocr(png_bytes: bytes) -> list[dict]:
     return lines
 
 
+def _get_recognizer():
+    return _get_engine().text_recognizer
+
+
+def _rec_only(img) -> list[tuple[str, float]]:
+    """Recognition-only on a single-line crop (skips detection entirely)."""
+    rec = _get_recognizer()
+    with _engine_lock:
+        res = rec([img])
+    items = res[0] if isinstance(res, tuple) and res and isinstance(res[0], list) else res
+    out: list[tuple[str, float]] = []
+    for it in (items or []):
+        if isinstance(it, (list, tuple)) and len(it) >= 2 and isinstance(it[0], str):
+            try:
+                out.append((it[0], float(it[1])))
+            except (TypeError, ValueError):
+                out.append((it[0], 0.0))
+    return out
+
+
+def _crop_bgr(page, rect, zoom: float):
+    import numpy as np
+    import cv2
+    import pymupdf
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), clip=rect)
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+    if pix.n == 4:
+        return cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+    if pix.n == 1:
+        return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+
+def _preprocess_variants(bgr):
+    """Return several renderings of a crop so systematic misreads (e.g. 5<->S)
+    differ across at least one variant, giving the vote a chance to correct."""
+    import cv2
+    import numpy as np
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    adaptive = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10)
+    sharp = cv2.filter2D(bgr, -1, np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]]))
+    return [
+        bgr,
+        cv2.cvtColor(otsu, cv2.COLOR_GRAY2BGR),
+        cv2.cvtColor(adaptive, cv2.COLOR_GRAY2BGR),
+        sharp,
+    ]
+
+
+def _rec_candidates(page, rect, zooms=(4, 6, 8, 10)) -> list[tuple[str, float]]:
+    """Recognize a cropped region at several zooms x preprocessing variants."""
+    out: list[tuple[str, float]] = []
+    for z in zooms:
+        for im in _preprocess_variants(_crop_bgr(page, rect, z)):
+            out.extend(_rec_only(im))
+    return out
+
+
 def _norm(s: str) -> str:
     """Lowercase, alphanumerics only -- for fuzzy label matching."""
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
@@ -110,7 +170,7 @@ def _looks_like_label(line: dict) -> bool:
     return any(frag in n for frag in _ALL_LABEL_FRAGMENTS)
 
 
-def _value_below(lines: list[dict], label: dict, max_dy: float = 90.0) -> str | None:
+def _line_below(lines: list[dict], label: dict, max_dy: float = 90.0) -> dict | None:
     """Nearest non-label line beneath the label with horizontal overlap."""
     best, best_dy = None, None
     for ln in lines:
@@ -124,6 +184,11 @@ def _value_below(lines: list[dict], label: dict, max_dy: float = 90.0) -> str | 
             continue
         if best_dy is None or dy < best_dy:
             best, best_dy = ln, dy
+    return best
+
+
+def _value_below(lines: list[dict], label: dict, max_dy: float = 90.0) -> str | None:
+    best = _line_below(lines, label, max_dy)
     return best["text"].strip() if best else None
 
 
@@ -142,7 +207,105 @@ def _clean(v: str | None) -> str | None:
     return v or None
 
 
-def _parse_cr_page(lines: list[dict]) -> dict:
+# A VIN / chassis number never contains I, O or Q -- map common misreads.
+_VIN_FIX = str.maketrans({"I": "1", "O": "0", "Q": "0"})
+
+
+def _norm_chassis(t: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", (t or "")).upper().translate(_VIN_FIX)
+
+
+def _norm_reg(t: str) -> str:
+    return re.sub(r"[^A-Za-z0-9-]", "", (t or "")).upper()
+
+
+def _vote(cands: list[tuple[str, float]], prefer_len: int | None = None):
+    """Length + per-character weighted majority vote across OCR passes.
+
+    Groups candidates by length (with an optional prior for ``prefer_len``),
+    then for each position picks the highest-weight character.  Returns
+    ``(text, confidence)`` where confidence blends mean OCR score, per-character
+    agreement and length agreement."""
+    from collections import defaultdict
+
+    cands = [(t, w) for t, w in cands if t]
+    if not cands:
+        return None, 0.0
+    lenw: dict[int, float] = defaultdict(float)
+    for t, w in cands:
+        lenw[len(t)] += w
+    if prefer_len and prefer_len in lenw:
+        lenw[prefer_len] *= 1.15
+    best_len = max(lenw, key=lambda k: lenw[k])
+    grp = [(t, w) for t, w in cands if len(t) == best_len]
+    total_all = sum(w for _, w in cands) or 1.0
+    len_agree = sum(w for _, w in grp) / total_all
+    chars, agrees = [], []
+    for i in range(best_len):
+        cw: dict[str, float] = defaultdict(float)
+        for t, w in grp:
+            cw[t[i]] += w
+        ch = max(cw, key=lambda k: cw[k])
+        tot = sum(cw.values()) or 1.0
+        chars.append(ch)
+        agrees.append(cw[ch] / tot)
+    char_agree = sum(agrees) / len(agrees) if agrees else 0.0
+    mean_score = sum(w for _, w in grp) / len(grp) if grp else 0.0
+    conf = round(mean_score * char_agree * len_agree, 4)
+    return "".join(chars), conf
+
+
+def _chassis_review(ch: str | None, conf) -> bool:
+    """Flag a chassis for human check: low confidence, non-17 length, or a
+    digit-confusable letter (S/B/G/Z/D) in the numeric serial tail."""
+    if not ch or conf is None:
+        return True
+    if len(ch) != 17 or conf < 0.70:
+        return True
+    return any(c in "SBGZD" for c in ch[-7:])
+
+
+def _reg_review(rg: str | None, conf) -> bool:
+    """Flag a registration no for check: low confidence, or a non-numeric
+    trailing plate group (e.g. '1S21' where '1521' is expected)."""
+    if not rg or conf is None:
+        return True
+    tail = rg.split("-")[-1]
+    tail = re.sub(r"[^A-Z0-9]", "", tail.upper())
+    return conf < 0.55 or not (2 <= len(tail) <= 5) or not tail.isdigit()
+
+
+def _refine_field(page, line, full_zoom, kind, fallback):
+    """High-accuracy value for a critical field via multi-scale recognition-only
+    OCR of its cropped region + voting.  Returns ``(value, confidence)``."""
+    if page is None or line is None:
+        return fallback, None
+    import pymupdf
+    rect = pymupdf.Rect(
+        line["x0"] / full_zoom - 4, line["y0"] / full_zoom - 3,
+        line["x1"] / full_zoom + 16, line["y1"] / full_zoom + 3)
+    raw = _rec_candidates(page, rect)
+    if kind == "chassis":
+        cands = [(_norm_chassis(t), w) for t, w in raw if len(_norm_chassis(t)) >= 6]
+        if fallback:
+            fb = _norm_chassis(fallback)
+            if len(fb) >= 6:
+                cands.append((fb, 0.5))
+        text, conf = _vote(cands, prefer_len=17)
+    else:
+        cands = [(_norm_reg(t), w) for t, w in raw
+                 if len(_norm_reg(t)) >= 4 and any(c.isdigit() for c in _norm_reg(t))]
+        if fallback:
+            fb = _norm_reg(fallback)
+            if len(fb) >= 4:
+                cands.append((fb, 0.5))
+        text, conf = _vote(cands)
+    if not text:
+        return fallback, None
+    return text, conf
+
+
+def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0) -> dict:
     rec: dict = {}
     for field, frags in _CR_LABELS.items():
         lbl = _find_label(lines, frags)
@@ -173,13 +336,37 @@ def _parse_cr_page(lines: list[dict]) -> dict:
     if m:
         rec["date_first_registration"] = rec.get("date_first_registration") or m.group(1)
 
-    # light validation / cleanup on key identifiers
+    # light validation / cleanup on key identifiers (fallback values)
     if rec.get("chassis_no"):
         m = re.search(r"[A-Z0-9]{8,20}", rec["chassis_no"].replace(" ", ""))
         rec["chassis_no"] = m.group(0) if m else rec["chassis_no"]
     if rec.get("year_of_manufacture"):
         m = re.search(r"(19|20)\d{2}", rec["year_of_manufacture"])
         rec["year_of_manufacture"] = m.group(0) if m else None
+
+    # ---- High-accuracy refinement of the two critical fields --------------
+    # Chassis No and Registration No are re-read from a high-zoom crop with
+    # multi-scale recognition-only OCR + character voting, correcting the
+    # digit/letter confusions (5<->S, 8<->B, I->1, O->0, ...) the single
+    # full-page pass makes.
+    ch_lbl = _find_label(lines, _CR_LABELS["chassis_no"])
+    ch_line = _line_below(lines, ch_lbl) if ch_lbl else None
+    ch_val, ch_conf = _refine_field(page, ch_line, full_zoom, "chassis",
+                                    rec.get("chassis_no"))
+    if ch_val:
+        rec["chassis_no"] = ch_val
+    rec["chassis_no_confidence"] = ch_conf
+
+    rg_lbl = _find_label(lines, _CR_LABELS["registration_no"])
+    rg_line = _line_below(lines, rg_lbl) if rg_lbl else None
+    rg_val, rg_conf = _refine_field(page, rg_line, full_zoom, "reg",
+                                    rec.get("registration_no"))
+    if rg_val:
+        rec["registration_no"] = rg_val
+    rec["registration_no_confidence"] = rg_conf
+
+    rec["needs_review"] = bool(_chassis_review(rec.get("chassis_no"), ch_conf)
+                               or _reg_review(rec.get("registration_no"), rg_conf))
 
     rec["raw_text"] = full
     rec["confidence"] = _mean_score(lines)
@@ -198,7 +385,7 @@ def extract_cr_page(page, zoom: float = 3.0) -> dict | None:
     lines = _ocr(_render_page_png(page, zoom))
     if not lines:
         return None
-    return _parse_cr_page(lines)
+    return _parse_cr_page(lines, page=page, full_zoom=zoom)
 
 
 def extract_cr_records(path: str, zoom: float = 3.0) -> tuple[int, list[dict]]:
