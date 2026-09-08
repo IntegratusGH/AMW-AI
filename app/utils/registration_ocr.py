@@ -186,17 +186,29 @@ def _parse_cr_page(lines: list[dict]) -> dict:
     return rec
 
 
-def extract_cr_records(path: str, zoom: float = 3.0) -> tuple[int, list[dict]]:
+def open_document(path: str):
+    """Open a PDF/image with PyMuPDF; caller is responsible for closing it."""
     import pymupdf
     doc = pymupdf.open(path)
-    page_count = doc.page_count
+    return doc, doc.page_count
+
+
+def extract_cr_page(page, zoom: float = 3.0) -> dict | None:
+    """OCR + parse a single CR-book page (one vehicle).  None if page is blank."""
+    lines = _ocr(_render_page_png(page, zoom))
+    if not lines:
+        return None
+    return _parse_cr_page(lines)
+
+
+def extract_cr_records(path: str, zoom: float = 3.0) -> tuple[int, list[dict]]:
+    doc, page_count = open_document(path)
     records: list[dict] = []
     try:
         for i in range(page_count):
-            lines = _ocr(_render_page_png(doc[i], zoom))
-            if not lines:
+            rec = extract_cr_page(doc[i], zoom)
+            if rec is None:
                 continue
-            rec = _parse_cr_page(lines)
             rec["page_no"] = i + 1
             records.append(rec)
     finally:
@@ -289,23 +301,29 @@ def _segment_receipts(lines: list[dict]) -> list[list[dict]]:
     return segments
 
 
+def extract_receipt_page(page, zoom: float = 2.0) -> list[dict]:
+    """OCR + parse one receipts page into its deposit-slip records."""
+    lines = _ocr(_render_page_png(page, zoom))
+    out: list[dict] = []
+    for seg in _segment_receipts(lines):
+        if not seg:
+            continue
+        rec = _parse_receipt_segment(seg)
+        # skip empty noise segments (no slip and no vehicle/application)
+        if not any(rec.get(k) for k in
+                   ("slip_no", "vehicle_no", "application_no", "receipt_no")):
+            continue
+        out.append(rec)
+    return out
+
+
 def extract_receipt_records(path: str, zoom: float = 2.0) -> tuple[int, list[dict]]:
-    import pymupdf
-    doc = pymupdf.open(path)
-    page_count = doc.page_count
+    doc, page_count = open_document(path)
     records: list[dict] = []
     seg_no = 0
     try:
         for i in range(page_count):
-            lines = _ocr(_render_page_png(doc[i], zoom))
-            for seg in _segment_receipts(lines):
-                if not seg:
-                    continue
-                rec = _parse_receipt_segment(seg)
-                # skip empty noise segments (no slip and no vehicle/application)
-                if not any(rec.get(k) for k in
-                           ("slip_no", "vehicle_no", "application_no", "receipt_no")):
-                    continue
+            for rec in extract_receipt_page(doc[i], zoom):
                 seg_no += 1
                 rec["segment_no"] = seg_no
                 records.append(rec)

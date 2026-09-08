@@ -3,9 +3,14 @@
 {% block title %}{{ module.name }}{% endblock %}
 {% block page_title %}{{ module.name }}{% endblock %}
 
-{% macro status_badge(u) %}
-  {% if u.status == 'processing' %}<span class="badge badge-warning">Processing&hellip;</span>
-  {% elif u.processed %}<span class="badge badge-success">Processed</span>
+{% macro status_cell(u) %}
+  {% if u.status == 'processing' %}
+    {% set pct = (100 * u.progress_done / u.progress_total) if u.progress_total else 0 %}
+    <div class="proc">
+      <div class="progress"><div class="progress-bar" style="width:{{ pct|round(0,'floor') }}%"></div></div>
+      <span class="proc-msg">{{ u.progress_message or 'Processing…' }}</span>
+    </div>
+  {% elif u.processed %}<span class="badge badge-success" title="{{ u.progress_message }}">Processed</span>
   {% elif u.status == 'error' %}<span class="badge badge-danger" title="{{ u.error }}">Error</span>
   {% else %}<span class="badge badge-muted">Pending</span>{% endif %}
 {% endmacro %}
@@ -19,13 +24,13 @@
     </thead>
     <tbody>
       {% for u in uploads %}
-      <tr>
+      <tr data-kind="{{ kind }}" data-id="{{ u.id }}" data-status="{{ u.status }}">
         <td class="mono">{{ u.id }}</td>
         <td>{{ u.filename }}</td>
         <td>{{ u.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
-        <td>{{ status_badge(u) }}</td>
-        <td>{{ u.captured_records }}</td>
-        <td>{{ u.duplicate_records }}</td>
+        <td class="status-cell">{{ status_cell(u) }}</td>
+        <td class="cap-cell">{{ u.captured_records }}</td>
+        <td class="dup-cell">{{ u.duplicate_records }}</td>
         <td class="ta-right actions">
           <form method="post" class="inline"
                 action="{{ url_for('main.process_upload', kind=kind, upload_id=u.id) }}">
@@ -91,4 +96,49 @@
 
 <h4 class="reg-subtitle">Receipt uploads</h4>
 {{ uploads_table('rc', rc_uploads) }}
+
+<script>
+(function () {
+  var STATUS_URL = "{{ url_for('main.registration_status') }}";
+  function badge(cls, text, title) {
+    return '<span class="badge ' + cls + '"' + (title ? ' title="' + title + '"' : '') + '>' + text + '</span>';
+  }
+  function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+  function renderStatus(u) {
+    if (u.status === 'processing') {
+      var pct = u.progress_total ? Math.floor(100 * u.progress_done / u.progress_total) : 0;
+      return '<div class="proc"><div class="progress"><div class="progress-bar" style="width:' + pct +
+             '%"></div></div><span class="proc-msg">' + esc(u.message || 'Processing\u2026') + '</span></div>';
+    }
+    if (u.status === 'error') return badge('badge-danger', 'Error', esc(u.message || ''));
+    if (u.processed) return badge('badge-success', 'Processed', esc(u.message || ''));
+    return badge('badge-muted', 'Pending');
+  }
+  function anyProcessing() {
+    return document.querySelector('tr[data-status="processing"]') !== null;
+  }
+  function poll() {
+    fetch(STATUS_URL, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var reload = false;
+        (d.uploads || []).forEach(function (u) {
+          var row = document.querySelector('tr[data-kind="' + u.kind + '"][data-id="' + u.id + '"]');
+          if (!row) return;
+          var prev = row.getAttribute('data-status');
+          var cap = row.querySelector('.cap-cell'); if (cap) cap.textContent = u.captured;
+          var dup = row.querySelector('.dup-cell'); if (dup) dup.textContent = u.duplicates;
+          var sc = row.querySelector('.status-cell'); if (sc) sc.innerHTML = renderStatus(u);
+          if (prev === 'processing' && u.status !== 'processing') reload = true;
+          row.setAttribute('data-status', u.status);
+        });
+        // A finished job needs its action buttons / records link refreshed.
+        if (reload) { window.location.reload(); return; }
+        if (anyProcessing()) setTimeout(poll, 2500);
+      })
+      .catch(function () { setTimeout(poll, 5000); });
+  }
+  if (anyProcessing()) setTimeout(poll, 2000);
+})();
+</script>
 {% endblock %}

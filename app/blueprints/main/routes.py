@@ -144,13 +144,13 @@ _DOC_KINDS = {
         "upload_model": CRBookUpload,
         "record_model": CRBookRecord,
         "key_field": "chassis_no",
-        "extractor": "extract_cr_records",
+        "noun": "CR book",
     },
     "rc": {
         "upload_model": ReceiptUpload,
         "record_model": ReceiptRecord,
         "key_field": "slip_no",
-        "extractor": "extract_receipt_records",
+        "noun": "receipt",
     },
 }
 
@@ -168,22 +168,34 @@ def _assign_columns(obj, data: dict) -> None:
 
 
 def _run_processing(app, kind: str, upload_id: int) -> None:
+    """OCR a document page-by-page, committing records and live progress after
+    each page so the polling UI can show it advancing."""
     cfg = _DOC_KINDS[kind]
     UploadModel = cfg["upload_model"]
     RecordModel = cfg["record_model"]
     key_field = cfg["key_field"]
+    noun = cfg["noun"]
     with app.app_context():
-        from app.utils import registration_ocr
-        extractor = getattr(registration_ocr, cfg["extractor"])
+        from app.utils import registration_ocr as ocr
         try:
             up = db.session.get(UploadModel, upload_id)
             if up is None:
                 return
-            # Re-process: drop any previously extracted rows first.
+            # Re-process: drop any previously extracted rows and reset counters.
             RecordModel.query.filter_by(upload_id=upload_id).delete()
+            up.captured_records = 0
+            up.duplicate_records = 0
+            up.page_count = 0
+            up.progress_done = 0
+            up.progress_total = 0
+            up.progress_message = "Opening document\u2026"
             db.session.commit()
 
-            page_count, recs = extractor(up.stored_path)
+            doc, total = ocr.open_document(up.stored_path)
+            up.page_count = total
+            up.progress_total = total
+            up.progress_message = f"Starting OCR on {total} page(s)\u2026"
+            db.session.commit()
 
             key_col = getattr(RecordModel, key_field)
             seen = {
@@ -191,24 +203,48 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 for v in db.session.query(key_col).filter(key_col.isnot(None)).all()
                 if v[0]
             }
+            captured = 0
             duplicates = 0
-            for r in recs:
-                key = (str(r.get(key_field) or "")).strip().upper()
-                is_dup = bool(key) and key in seen
-                if key:
-                    seen.add(key)
-                if is_dup:
-                    duplicates += 1
-                rec = RecordModel(upload_id=upload_id, is_duplicate=is_dup)
-                _assign_columns(rec, r)
-                db.session.add(rec)
+            try:
+                for i in range(total):
+                    if kind == "cr":
+                        rec = ocr.extract_cr_page(doc[i])
+                        page_recs = [rec] if rec else []
+                        for r in page_recs:
+                            r["page_no"] = i + 1
+                    else:
+                        page_recs = ocr.extract_receipt_page(doc[i])
 
-            up.page_count = page_count
-            up.captured_records = len(recs)
-            up.duplicate_records = duplicates
+                    for r in page_recs:
+                        if kind == "rc":
+                            r["segment_no"] = captured + 1
+                        key = (str(r.get(key_field) or "")).strip().upper()
+                        is_dup = bool(key) and key in seen
+                        if key:
+                            seen.add(key)
+                        if is_dup:
+                            duplicates += 1
+                        rec_obj = RecordModel(upload_id=upload_id, is_duplicate=is_dup)
+                        _assign_columns(rec_obj, r)
+                        db.session.add(rec_obj)
+                        captured += 1
+
+                    up.progress_done = i + 1
+                    up.captured_records = captured
+                    up.duplicate_records = duplicates
+                    up.progress_message = (
+                        f"Processed page {i + 1} of {total} \u2014 "
+                        f"{captured} {noun}(s) captured, {duplicates} duplicate(s)")
+                    db.session.commit()
+            finally:
+                doc.close()
+
             up.processed = True
             up.status = STATUS_DONE
             up.processed_at = datetime.utcnow()
+            up.progress_message = (
+                f"Completed \u2014 {captured} {noun}(s) captured, "
+                f"{duplicates} duplicate(s)")
             up.error = None
             db.session.commit()
         except Exception as exc:  # pragma: no cover - background worker
@@ -218,6 +254,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 up.status = STATUS_ERROR
                 up.processed = False
                 up.error = str(exc)[:1000]
+                up.progress_message = f"Error: {str(exc)[:150]}"
                 db.session.commit()
 
 
@@ -286,6 +323,27 @@ def process_upload(kind: str, upload_id: int):
     flash("Processing started (OCR runs in the background). Refresh to see "
           "results.", "success")
     return redirect(url_for("main.registration_updater"))
+
+
+@main_bp.route("/operations/registration-updater/status")
+@login_required
+def registration_status():
+    _require_module(REGISTRATION_UPDATER_KEY)
+
+    def _ser(u, kind):
+        return {
+            "kind": kind, "id": u.id, "status": u.status,
+            "processed": bool(u.processed),
+            "captured": u.captured_records, "duplicates": u.duplicate_records,
+            "page_count": u.page_count,
+            "progress_done": u.progress_done, "progress_total": u.progress_total,
+            "message": u.progress_message,
+            "has_records": u.captured_records > 0,
+        }
+
+    data = ([_ser(u, "cr") for u in CRBookUpload.query.all()]
+            + [_ser(u, "rc") for u in ReceiptUpload.query.all()])
+    return {"uploads": data}
 
 
 @main_bp.route("/operations/registration-updater/<kind>/<int:upload_id>/records")

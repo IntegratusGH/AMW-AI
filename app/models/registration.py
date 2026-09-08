@@ -39,6 +39,11 @@ class _UploadMixin:
     error = db.Column(db.Text, nullable=True)
     processed_at = db.Column(db.DateTime, nullable=True)
 
+    # Live progress written incrementally by the OCR worker (per page).
+    progress_done = db.Column(db.Integer, default=0, nullable=False)
+    progress_total = db.Column(db.Integer, default=0, nullable=False)
+    progress_message = db.Column(db.String(200), nullable=True)
+
 
 class CRBookUpload(_UploadMixin, db.Model):
     __tablename__ = "cr_book_uploads"
