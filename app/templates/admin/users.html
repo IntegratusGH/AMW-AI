@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "main/_icons.html" import icon %}
 {% block title %}Users{% endblock %}
 {% block page_title %}User management{% endblock %}
 
@@ -11,8 +12,8 @@
   </div>
 </div>
 
-<div class="card table-card">
-  <table class="table">
+<div class="card table-card users-card">
+  <table class="table users-table">
     <thead>
       <tr>
         <th>Username</th><th>Full name</th><th>Email</th><th>Role</th>
@@ -36,20 +37,18 @@
         </td>
         <td>{{ u.last_login_at.strftime('%Y-%m-%d %H:%M') if u.last_login_at else '—' }}</td>
         <td class="ta-right actions">
-          <a class="btn btn-sm" href="{{ url_for('admin.edit_user', user_id=u.id) }}">Edit</a>
+          <a class="act-btn" href="{{ url_for('admin.edit_user', user_id=u.id) }}" title="Edit" aria-label="Edit user">{{ icon('pencil', 16) }}</a>
           {% if not u.is_ad_user %}
-          <a class="btn btn-sm" href="{{ url_for('admin.reset_password', user_id=u.id) }}">Reset</a>
+          <a class="act-btn" href="{{ url_for('admin.reset_password', user_id=u.id) }}" title="Reset password" aria-label="Reset password">{{ icon('key', 16) }}</a>
           {% endif %}
           <form method="post" action="{{ url_for('admin.toggle_active', user_id=u.id) }}" class="inline">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button class="btn btn-sm {{ 'btn-warning' if u.is_active else 'btn-success' }}">
-              {{ 'Deactivate' if u.is_active else 'Activate' }}
-            </button>
+            <button class="act-btn" title="{{ 'Deactivate' if u.is_active else 'Activate' }}" aria-label="{{ 'Deactivate' if u.is_active else 'Activate' }} user">{{ icon('power', 16) }}</button>
           </form>
           <form method="post" action="{{ url_for('admin.delete_user', user_id=u.id) }}"
                 class="inline" onsubmit="return confirm('Delete user {{ u.username }}?');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button class="btn btn-sm btn-danger">Delete</button>
+            <button class="act-btn act-danger" title="Delete" aria-label="Delete user">{{ icon('trash', 16) }}</button>
           </form>
         </td>
       </tr>
