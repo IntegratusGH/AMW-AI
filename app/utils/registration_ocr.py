@@ -266,13 +266,17 @@ def _chassis_review(ch: str | None, conf) -> bool:
 
 
 def _reg_review(rg: str | None, conf) -> bool:
-    """Flag a registration no for check: low confidence, or a non-numeric
-    trailing plate group (e.g. '1S21' where '1521' is expected)."""
-    if not rg or conf is None:
+    """Flag a registration no for check unless it is a valid Sri Lankan plate
+    with adequate confidence: modern '[A-Z]{2,5}-<digits>' (a 4-5 letter block
+    must start with a known province code) or legacy numeric 'NN-NNNN'."""
+    if not rg or conf is None or conf < 0.55:
         return True
-    tail = rg.split("-")[-1]
-    tail = re.sub(r"[^A-Z0-9]", "", tail.upper())
-    return conf < 0.55 or not (2 <= len(tail) <= 5) or not tail.isdigit()
+    s = rg.upper()
+    m = re.fullmatch(r"([A-Z]{2,5})-(\d{1,4})", s)
+    if m:
+        letters = m.group(1)
+        return len(letters) >= 4 and letters[:2] not in _LK_PROVINCES
+    return re.fullmatch(r"\d{1,3}-\d{4}", s) is None
 
 
 # Well-known OCR digit<->letter confusions (letter -> the digit it is usually a
@@ -286,6 +290,21 @@ def _to_digits(s: str) -> str:
     return "".join(_DIGIT_MAP.get(c, c) for c in s)
 
 
+# Inverse map (digit -> the letter it is usually a misread of), used to correct
+# the alphabetic zone of a Sri Lankan plate (province + class letters).
+_LETTER_MAP = {"0": "O", "1": "I", "2": "Z", "4": "A",
+               "5": "S", "6": "G", "8": "B"}
+
+
+def _to_letters(s: str) -> str:
+    return "".join(_LETTER_MAP.get(c, c) for c in s)
+
+
+# Two-letter provincial identification codes used on Sri Lankan plates
+# (2000-2022), plus the legacy transitional NE code.
+_LK_PROVINCES = {"WP", "CP", "SP", "NP", "EP", "NW", "NC", "UP", "SG", "NE"}
+
+
 def _fix_reg_number(rg: str | None) -> str | None:
     """Map digit-confusable letters -> digits in the trailing plate-number
     group (which is always numeric), e.g. 'WPBLM-1S21' -> 'WPBLM-1521'."""
@@ -296,6 +315,32 @@ def _fix_reg_number(rg: str | None) -> str | None:
         return rg
     fixed = _to_digits(m.group(1))
     return rg[:m.start(1)] + fixed if fixed.isdigit() else rg
+
+
+def _fix_reg_lk(rg: str | None) -> str | None:
+    """Normalise a captured value to the Sri Lankan plate format
+    '[province][class letters]-[serial]' (letters then digits) or the legacy
+    numeric 'NN-NNNN'.  OCR confusions are corrected per zone - digit-confusable
+    letters in the serial become digits, letter-confusable digits in the
+    alphabetic block become letters - and a single hyphen joins the two zones."""
+    if not rg:
+        return rg
+    s = re.sub(r"[^A-Za-z0-9-]", "", rg).upper()
+    if "-" in s:
+        left, right = s.rsplit("-", 1)
+    else:
+        m = re.search(r"([0-9]{1,4})$", s)
+        left, right = (s[:m.start()], m.group(1)) if (m and m.start()) else (s, "")
+    left = left.replace("-", "")
+    right = right.replace("-", "")
+    num = _to_digits(right)
+    # Purely-numeric leading zone => legacy numeric province code; otherwise it
+    # is the alphabetic (province + class letters) block.
+    lead = _to_digits(left) if (left and not any(c.isalpha() for c in left)) \
+        else _to_letters(left)
+    if lead and num:
+        return f"{lead}-{num}"
+    return (lead + num) or s
 
 
 def build_chassis_mask(cand_lists, min_records: int = 4, min_len: int = 11):
@@ -500,7 +545,7 @@ def _refine_field(page, line, full_zoom, kind, fallback):
     text, conf = _vote(cands)
     if not text:
         return fallback, None, []
-    return _fix_reg_number(text), conf, []
+    return _fix_reg_lk(text), conf, []
 
 
 def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0):
