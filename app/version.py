@@ -1,3 +1,3 @@
-__version__ = "1.3.5"
-__build__ = 5
+__version__ = "1.3.6"
+__build__ = 6
 

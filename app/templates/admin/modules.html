@@ -15,13 +15,14 @@
   <table class="table">
     <thead>
       <tr>
-        <th>Order</th><th>Icon</th><th>Name</th><th>Category</th>
+        <th>ID</th><th>Order</th><th>Icon</th><th>Name</th><th>Category</th>
         <th>Status</th><th>Roles</th><th>Active</th><th class="ta-right">Actions</th>
       </tr>
     </thead>
     <tbody>
       {% for m in modules %}
       <tr>
+        <td class="mono">{{ m.id }}</td>
         <td class="mod-order">
           <form method="post" action="{{ url_for('admin.move_module', module_id=m.id) }}" class="inline">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -69,7 +70,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="8" class="muted ta-center">No modules yet. Create the first one.</td></tr>
+      <tr><td colspan="9" class="muted ta-center">No modules yet. Create the first one.</td></tr>
       {% endfor %}
     </tbody>
   </table>
