@@ -272,11 +272,14 @@ def _reg_review(rg: str | None, conf) -> bool:
     if not rg or conf is None or conf < 0.55:
         return True
     s = rg.upper()
-    m = re.fullmatch(r"([A-Z]{2,5})-(\d{1,4})", s)
+    # Province-prefix: 'PP LLL-NNNN' (province must be a known code).
+    m = re.fullmatch(r"([A-Z]{2}) [A-Z]{2,3}-\d{1,4}", s)
     if m:
-        letters = m.group(1)
-        return len(letters) >= 4 and letters[:2] not in _LK_PROVINCES
-    return re.fullmatch(r"\d{1,3}-\d{4}", s) is None
+        return m.group(1) not in _LK_PROVINCES
+    # National series 'LLL-NNNN' (2-3 letters) or legacy numeric 'NN-NNNN'.
+    if re.fullmatch(r"[A-Z]{2,3}-\d{1,4}", s) or re.fullmatch(r"\d{1,3}-\d{4}", s):
+        return False
+    return True
 
 
 # Well-known OCR digit<->letter confusions (letter -> the digit it is usually a
@@ -318,11 +321,12 @@ def _fix_reg_number(rg: str | None) -> str | None:
 
 
 def _fix_reg_lk(rg: str | None) -> str | None:
-    """Normalise a captured value to the Sri Lankan plate format
-    '[province][class letters]-[serial]' (letters then digits) or the legacy
-    numeric 'NN-NNNN'.  OCR confusions are corrected per zone - digit-confusable
-    letters in the serial become digits, letter-confusable digits in the
-    alphabetic block become letters - and a single hyphen joins the two zones."""
+    """Normalise a captured value to the Sri Lankan plate format: province-prefix
+    plates as 'PP LLL-NNNN' (e.g. 'NW BLM-1516'), the national series as
+    'LLL-NNNN' (e.g. 'CAB-1234') and legacy plates as numeric 'NN-NNNN'.  OCR
+    confusions are corrected per zone - digit-confusable letters in the serial
+    become digits, letter-confusable digits in the alphabetic block become
+    letters."""
     if not rg:
         return rg
     s = re.sub(r"[^A-Za-z0-9-]", "", rg).upper()
@@ -339,6 +343,10 @@ def _fix_reg_lk(rg: str | None) -> str | None:
     lead = _to_digits(left) if (left and not any(c.isalpha() for c in left)) \
         else _to_letters(left)
     if lead and num:
+        # Province-prefix plate: separate the 2-letter province from the class
+        # letters with a space (e.g. 'NWBLM' + '1516' -> 'NW BLM-1516').
+        if len(lead) >= 4 and lead[:2] in _LK_PROVINCES:
+            return f"{lead[:2]} {lead[2:]}-{num}"
         return f"{lead}-{num}"
     return (lead + num) or s
 
