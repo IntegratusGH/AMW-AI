@@ -299,13 +299,16 @@ def _fix_reg_number(rg: str | None) -> str | None:
 
 
 def build_chassis_mask(cand_lists, min_records: int = 4, min_len: int = 11):
-    """Learn a chassis 'template' from a whole batch: the per-position digit
-    probability across every recognition pass of every record whose length
-    matches the dominant one.  Letter positions (WMI etc.) stay near 0%,
-    numeric positions near 100%; the S<->5 misreads sit in between.
+    """Learn a chassis 'template' from a whole batch.  For each position it
+    records, across every recognition pass of every record whose length matches
+    the dominant one:
+      * ``digitp`` - probability the character is a digit (letter positions stay
+        near 0%, numeric positions near 100%; S<->5 misreads sit in between);
+      * ``consensus`` - the modal character (the fleet's fixed skeleton, e.g.
+        the ``ME1RG``/``T``/leading-``0`` positions);
+      * ``freq`` - how dominant that modal character is (anchor strength).
 
-    Returns ``(length, [digit_prob_per_position])`` or ``None`` when the batch
-    is too small / heterogeneous to trust."""
+    Returns a dict, or ``None`` when the batch is too small / heterogeneous."""
     from collections import Counter
     lens: Counter = Counter()
     per_record_lens = []
@@ -324,27 +327,125 @@ def build_chassis_mask(cand_lists, min_records: int = 4, min_len: int = 11):
     strings = [s for cl in cand_lists for s in (cl or []) if len(s) == length]
     if not strings:
         return None
-    digitp = [sum(1 for s in strings if s[i].isdigit()) / len(strings)
-              for i in range(length)]
-    return (length, digitp)
+    n = len(strings)
+    digitp, consensus, freq = [], [], []
+    for i in range(length):
+        col = Counter(s[i] for s in strings)
+        ch, cnt = col.most_common(1)[0]
+        consensus.append(ch)
+        freq.append(cnt / n)
+        digitp.append(sum(1 for s in strings if s[i].isdigit()) / n)
+    return {"length": length, "digitp": digitp,
+            "consensus": consensus, "freq": freq}
 
 
-def apply_chassis_mask(value: str | None, mask, thr: float = 0.40):
-    """Enforce the learned template on one chassis: at positions the batch
-    shows are numeric, map a digit-confusable letter to its digit.  Returns
-    ``(value, changed)``; records whose length differs are left untouched."""
-    if not mask or not value:
+def _recover_zeros(value: str, mask):
+    """Reinsert dropped zeros so a short chassis matches the batch length.
+    Handles filled/touching 0s the recognizer omitted (e.g. 'T46587' for
+    'T0046587').  Only '0' is ever inserted, and only where the batch consensus
+    is '0', so no digit is invented.  Returns ``(value, recovered)``."""
+    import math
+    length = mask["length"]
+    cons = mask["consensus"]
+    freq = mask["freq"]
+    n = len(value)
+    if n >= length or (length - n) > 4:
         return value, False
-    length, digitp = mask
+    need = length - n
+    inf = math.inf
+    dp = [[inf] * (length + 1) for _ in range(n + 1)]
+    bk = [[None] * (length + 1) for _ in range(n + 1)]
+    dp[0][0] = 0.0
+    for j in range(length + 1):
+        for i in range(n + 1):
+            c = dp[i][j]
+            if c == inf:
+                continue
+            if i < n and j < length:  # consume value[i] at template pos j
+                cost = (0.05 if freq[j] < 0.60
+                        else (0.0 if value[i] == cons[j] else 0.4))
+                if c + cost < dp[i + 1][j + 1]:
+                    dp[i + 1][j + 1] = c + cost
+                    bk[i + 1][j + 1] = ("m", i, j)
+            if j < length and cons[j] == "0":  # insert a dropped zero
+                if c + 0.2 < dp[i][j + 1]:
+                    dp[i][j + 1] = c + 0.2
+                    bk[i][j + 1] = ("i", i, j)
+    if dp[n][length] == inf:
+        return value, False
+    out, inserts, i, j = [], 0, n, length
+    while (i, j) != (0, 0):
+        step = bk[i][j]
+        if step is None:
+            return value, False
+        kind, pi, pj = step
+        if kind == "m":
+            out.append(value[pi])
+        else:
+            out.append("0")
+            inserts += 1
+        i, j = pi, pj
+    out.reverse()
+    res = "".join(out)
+    if len(res) != length or inserts != need:
+        return value, False
+    return res, True
+
+
+# At a near-constant position, only these consensus -> misread swaps are trusted
+# as OCR confusions safe to snap back.  Deliberately excludes 0<->6 so genuine
+# 'T0645' style serials are never clobbered; targets the reported filled-0
+# (read as 1 or 8) case.
+_ANCHOR_FIX = {
+    "0": {"1", "8", "D", "O", "Q"},
+    "1": {"7", "I"},
+    "5": {"S"},
+    "8": {"B"},
+    "6": {"G"},
+    "2": {"Z"},
+}
+
+
+def _enforce_anchors(value: str, mask, freq_min: float = 0.85):
+    """At near-constant 'anchor' positions (one character dominates the batch),
+    snap a disagreeing character back to the consensus - but only when it is a
+    recognised OCR confusion of that consensus (e.g. an ink-filled 0 read as 1
+    or 8 in the fixed leading 'T0' region).  Genuinely variable positions and
+    non-confusion characters are left untouched.  Returns ``(value, changed)``."""
+    length = mask["length"]
+    cons = mask["consensus"]
+    freq = mask["freq"]
     if len(value) != length:
         return value, False
     out = list(value)
     changed = False
-    for i, ch in enumerate(out):
-        if digitp[i] >= thr and ch in _DIGIT_MAP:
-            out[i] = _DIGIT_MAP[ch]
+    for i in range(length):
+        c = cons[i]
+        if freq[i] >= freq_min and out[i] != c and out[i] in _ANCHOR_FIX.get(c, ()):
+            out[i] = c
             changed = True
     return "".join(out), changed
+
+
+def apply_chassis_mask(value: str | None, mask, thr: float = 0.40):
+    """Reconcile one chassis against the batch template: recover dropped zeros,
+    snap constant anchor positions to consensus, then map digit-confusable
+    letters to digits at numeric positions.  Returns
+    ``(value, changed, recovered)`` where ``recovered`` means the length had to
+    be reconstructed (kept flagged for a human check)."""
+    if not mask or not value:
+        return value, False, False
+    orig = value
+    value, recovered = _recover_zeros(value, mask)
+    value, _ = _enforce_anchors(value, mask)
+    length, digitp = mask["length"], mask["digitp"]
+    if len(value) == length:
+        out = list(value)
+        for i, ch in enumerate(out):
+            if digitp[i] >= thr and ch in _DIGIT_MAP:
+                out[i] = _DIGIT_MAP[ch]
+        value = "".join(out)
+    return value, value != orig, recovered
 
 
 def chassis_needs_review(value: str | None, mask, conf,
@@ -356,7 +457,7 @@ def chassis_needs_review(value: str | None, mask, conf,
         return True
     if not mask:
         return _chassis_review(value, conf)
-    length, digitp = mask
+    length, digitp = mask["length"], mask["digitp"]
     if len(value) != length:
         return True
     for i, ch in enumerate(value):

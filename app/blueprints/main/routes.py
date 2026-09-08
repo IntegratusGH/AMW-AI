@@ -260,12 +260,13 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                     batch_seen = set()
                     duplicates = 0
                     for rec_obj, r in cr_pending:
-                        new_ch, changed = ocr.apply_chassis_mask(
+                        new_ch, changed, recovered = ocr.apply_chassis_mask(
                             rec_obj.chassis_no, mask)
                         if changed:
                             rec_obj.chassis_no = new_ch
                         rec_obj.needs_review = bool(
-                            ocr.chassis_needs_review(
+                            recovered
+                            or ocr.chassis_needs_review(
                                 rec_obj.chassis_no, mask,
                                 rec_obj.chassis_no_confidence)
                             or ocr._reg_review(
