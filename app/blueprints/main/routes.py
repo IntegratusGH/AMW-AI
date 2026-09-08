@@ -50,16 +50,14 @@ def dashboard():
 def operations():
     if not current_user.has_role(ROLE_OPERATOR, ROLE_ADMIN):
         abort(403)
-    query = Module.query.filter_by(is_active=True)
-    # Administrators see every active module; other roles see only the modules
-    # mapped to their role.
-    if not current_user.is_administrator:
-        query = query.join(role_modules).filter(
-            role_modules.c.role_id == current_user.role_id
-        )
-    mods = query.order_by(
-        Module.category, Module.sort_order, Module.name
-    ).all()
+    # Show only the active modules mapped to the current user's role.
+    mods = (
+        Module.query.filter_by(is_active=True)
+        .join(role_modules)
+        .filter(role_modules.c.role_id == current_user.role_id)
+        .order_by(Module.category, Module.sort_order, Module.name)
+        .all()
+    )
     # Group by category, preserving the ordered sequence.
     groups: list[dict] = []
     for m in mods:
