@@ -42,6 +42,7 @@ from app.models import (  # noqa: E402
     DEFAULT_ROLES,
     ROLE_ADMIN,
     ROLE_OPERATOR,
+    Category,
     Module,
     Role,
     User,
@@ -120,6 +121,15 @@ DEFAULT_MODULES = [
 OPERATOR_MODULE_KEYS = [
     "registration_updater", "service_scheduler",
     "payment_reconciliation", "email_message_handler",
+]
+
+# Category display order (first appearance in DEFAULT_MODULES).
+DEFAULT_CATEGORY_ORDER = [
+    "Registration & Compliance",
+    "After-Sales & Service",
+    "Finance & Leasing",
+    "Sales & Customer Engagement",
+    "Back-office & Insight",
 ]
 
 
@@ -416,10 +426,18 @@ def seed_modules(app) -> None:
             print("      Modules already present; skipping module seed.")
             return
         print("Seeding AI modules ...")
+        cat_by_name: dict[str, Category] = {}
+        for i, cname in enumerate(DEFAULT_CATEGORY_ORDER):
+            category = Category(name=cname, is_active=True, sort_order=i)
+            db.session.add(category)
+            cat_by_name[cname] = category
+        db.session.flush()  # assign category ids before linking modules
+
         created: dict[str, Module] = {}
         for data in DEFAULT_MODULES:
             module = Module(
-                key=data["key"], name=data["name"], category=data["category"],
+                key=data["key"], name=data["name"],
+                category=cat_by_name.get(data["category"]),
                 description=data["description"], icon_kind="builtin",
                 icon_value=data["icon"], icon_size=32, accent=data["accent"],
                 status=data["status"], is_active=True, sort_order=data["sort"],

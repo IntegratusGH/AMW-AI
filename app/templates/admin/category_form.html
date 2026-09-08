@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit category' if mode == 'edit' else 'New category' }}{% endblock %}
+{% block page_title %}{{ 'Edit category' if mode == 'edit' else 'New category' }}{% endblock %}
+
+{% block content %}
+<div class="card narrow">
+  <form method="post" novalidate>
+    {{ form.hidden_tag() }}
+    <div class="field">
+      {{ form.name.label }}
+      {{ form.name(class="input", placeholder="e.g. After-Sales & Service") }}
+      {% for e in form.name.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+    </div>
+    <div class="field-inline">
+      <label class="checkbox">{{ form.is_active() }} <span>Active</span></label>
+    </div>
+    <p class="muted">Disabling a category hides all its modules on the Operations page.</p>
+    <div class="form-actions">
+      {{ form.submit(class="btn btn-primary") }}
+      <a class="btn btn-ghost" href="{{ url_for('admin.modules') }}">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

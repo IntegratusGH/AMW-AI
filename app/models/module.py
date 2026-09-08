@@ -39,6 +39,31 @@ role_modules = db.Table(
 )
 
 
+class Category(db.Model):
+    """Grouping for modules (the section headings on the Operations page).
+
+    A disabled category hides all its modules on the Operations page.  Deleting
+    a category leaves its modules uncategorised (category_id -> NULL).
+    """
+
+    __tablename__ = "categories"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(80), unique=True, nullable=False, index=True)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+    sort_order = db.Column(db.Integer, default=0, nullable=False)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    modules = db.relationship("Module", back_populates="category")
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<Category {self.name}>"
+
+
 class Module(db.Model):
     __tablename__ = "modules"
 
@@ -46,7 +71,12 @@ class Module(db.Model):
     key = db.Column(db.String(64), unique=True, nullable=False, index=True)
     name = db.Column(db.String(120), nullable=False)
     description = db.Column(db.String(400))
-    category = db.Column(db.String(80))
+    category_id = db.Column(
+        db.Integer,
+        db.ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     status = db.Column(db.String(20), default="planned", nullable=False)
     accent = db.Column(db.String(20), default="blue", nullable=False)
 
@@ -64,6 +94,7 @@ class Module(db.Model):
         db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
     )
 
+    category = db.relationship("Category", back_populates="modules")
     roles = db.relationship(
         "Role", secondary="role_modules", back_populates="modules"
     )

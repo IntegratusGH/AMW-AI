@@ -19,6 +19,7 @@ from app.forms import ProfileForm, SettingsForm
 from app.models import (
     ROLE_ADMIN,
     ROLE_OPERATOR,
+    Category,
     Module,
     User,
     record_audit,
@@ -50,18 +51,23 @@ def dashboard():
 def operations():
     if not current_user.has_role(ROLE_OPERATOR, ROLE_ADMIN):
         abort(403)
-    # Show only the active modules mapped to the current user's role.
+    # Show only the active modules mapped to the current user's role, hiding
+    # any whose category has been disabled.  Uncategorised modules are shown.
     mods = (
         Module.query.filter_by(is_active=True)
         .join(role_modules)
         .filter(role_modules.c.role_id == current_user.role_id)
-        .order_by(Module.category, Module.sort_order, Module.name)
+        .outerjoin(Category, Module.category_id == Category.id)
+        .filter(db.or_(Module.category_id.is_(None),
+                       Category.is_active == True))  # noqa: E712
+        .order_by(Category.sort_order, Category.name,
+                  Module.sort_order, Module.name)
         .all()
     )
     # Group by category, preserving the ordered sequence.
     groups: list[dict] = []
     for m in mods:
-        cat = m.category or "General"
+        cat = m.category.name if m.category else "General"
         if not groups or groups[-1]["name"] != cat:
             groups.append({"name": cat, "modules": []})
         groups[-1]["modules"].append(m)

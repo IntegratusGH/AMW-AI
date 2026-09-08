@@ -7,6 +7,7 @@ from flask_login import current_user
 from app.blueprints.admin import admin_bp
 from app.extensions import db
 from app.forms import (
+    CategoryForm,
     CreateADUserForm,
     CreateUserForm,
     EditUserForm,
@@ -23,6 +24,7 @@ from app.models import (
     ICON_UPLOAD,
     ROLE_ADMIN,
     AuditLog,
+    Category,
     Module,
     Role,
     User,
@@ -39,6 +41,15 @@ def _role_choices():
 
 def _builtin_icon_choices():
     return [(n, n) for n in BUILTIN_ICONS]
+
+
+def _category_choices():
+    """Dropdown options for a module's category (0 == none). Inactive
+    categories are still offered, flagged, so existing links are not lost."""
+    cats = Category.query.order_by(Category.sort_order, Category.name).all()
+    return [(0, "— None —")] + [
+        (c.id, c.name if c.is_active else f"{c.name} (disabled)") for c in cats
+    ]
 
 
 def _clamp_icon_size(value) -> int:
@@ -252,9 +263,13 @@ def roles():
 @admin_required
 def modules():
     all_modules = Module.query.order_by(
-        Module.sort_order, Module.category, Module.name
+        Module.sort_order, Module.category_id, Module.name
     ).all()
-    return render_template("admin/modules.html", modules=all_modules)
+    categories = Category.query.order_by(
+        Category.sort_order, Category.name
+    ).all()
+    return render_template(
+        "admin/modules.html", modules=all_modules, categories=categories)
 
 
 def _apply_icon(form, module) -> bool:
@@ -285,6 +300,7 @@ def _apply_icon(form, module) -> bool:
 def create_module():
     form = ModuleForm()
     form.icon_builtin.choices = _builtin_icon_choices()
+    form.category_id.choices = _category_choices()
     if form.validate_on_submit():
         key = (form.key.data or slugify(form.name.data)).strip()
         if Module.query.filter_by(key=key).first():
@@ -294,7 +310,7 @@ def create_module():
                 key=key,
                 name=form.name.data.strip(),
                 description=(form.description.data or "").strip() or None,
-                category=(form.category.data or "").strip() or None,
+                category_id=form.category_id.data or None,
                 status=form.status.data,
                 accent=form.accent.data,
                 icon_size=_clamp_icon_size(form.icon_size.data),
@@ -325,8 +341,10 @@ def edit_module(module_id: int):
     module = db.session.get(Module, module_id) or abort(404)
     form = ModuleForm(obj=module)
     form.icon_builtin.choices = _builtin_icon_choices()
+    form.category_id.choices = _category_choices()
     if request.method == "GET":
         form.icon_kind.data = module.icon_kind
+        form.category_id.data = module.category_id or 0
         form.icon_builtin.data = (
             module.icon_value if not module.is_upload_icon else BUILTIN_ICONS[0]
         )
@@ -347,7 +365,7 @@ def edit_module(module_id: int):
         module.key = key
         module.name = form.name.data.strip()
         module.description = (form.description.data or "").strip() or None
-        module.category = (form.category.data or "").strip() or None
+        module.category_id = form.category_id.data or None
         module.status = form.status.data
         module.accent = form.accent.data
         module.icon_size = _clamp_icon_size(form.icon_size.data)
@@ -408,12 +426,90 @@ def delete_module(module_id: int):
     return redirect(url_for("admin.modules"))
 
 
+# ===== Module categories =================================================
+@admin_bp.route("/categories/create", methods=["GET", "POST"])
+@admin_required
+def create_category():
+    form = CategoryForm()
+    if form.validate_on_submit():
+        name = form.name.data.strip()
+        if Category.query.filter_by(name=name).first():
+            flash(f"A category named '{name}' already exists.", "danger")
+        else:
+            last = Category.query.order_by(Category.sort_order.desc()).first()
+            category = Category(
+                name=name,
+                is_active=form.is_active.data,
+                sort_order=(last.sort_order + 1) if last else 0,
+            )
+            db.session.add(category)
+            record_audit("category_created", f"name={name}")
+            db.session.commit()
+            flash(f"Category '{name}' has been created.", "success")
+            return redirect(url_for("admin.modules"))
+    return render_template("admin/category_form.html", form=form, mode="create")
+
+
+@admin_bp.route("/categories/<int:category_id>/edit", methods=["GET", "POST"])
+@admin_required
+def edit_category(category_id: int):
+    category = db.session.get(Category, category_id) or abort(404)
+    form = CategoryForm(obj=category)
+    if form.validate_on_submit():
+        name = form.name.data.strip()
+        dup = Category.query.filter(
+            Category.name == name, Category.id != category.id
+        ).first()
+        if dup:
+            flash(f"A category named '{name}' already exists.", "danger")
+            return render_template(
+                "admin/category_form.html", form=form, mode="edit",
+                category=category)
+        category.name = name
+        category.is_active = form.is_active.data
+        record_audit("category_updated", f"name={name}")
+        db.session.commit()
+        flash(f"Category '{name}' has been updated.", "success")
+        return redirect(url_for("admin.modules"))
+    return render_template(
+        "admin/category_form.html", form=form, mode="edit", category=category)
+
+
+@admin_bp.route("/categories/<int:category_id>/toggle-active", methods=["POST"])
+@admin_required
+def toggle_category(category_id: int):
+    category = db.session.get(Category, category_id) or abort(404)
+    category.is_active = not category.is_active
+    record_audit(
+        "category_activated" if category.is_active else "category_deactivated",
+        f"name={category.name}",
+    )
+    db.session.commit()
+    state = "activated" if category.is_active else "deactivated"
+    flash(f"Category '{category.name}' has been {state}.", "success")
+    return redirect(url_for("admin.modules"))
+
+
+@admin_bp.route("/categories/<int:category_id>/delete", methods=["POST"])
+@admin_required
+def delete_category(category_id: int):
+    category = db.session.get(Category, category_id) or abort(404)
+    name = category.name
+    # Modules keep existing; their category_id is cleared (uncategorised).
+    db.session.delete(category)
+    record_audit("category_deleted", f"name={name}")
+    db.session.commit()
+    flash(f"Category '{name}' has been deleted; its modules are now "
+          f"uncategorised.", "success")
+    return redirect(url_for("admin.modules"))
+
+
 @admin_bp.route("/roles/<int:role_id>/modules", methods=["GET", "POST"])
 @admin_required
 def manage_role_modules(role_id: int):
     role = db.session.get(Role, role_id) or abort(404)
     all_modules = Module.query.order_by(
-        Module.category, Module.sort_order, Module.name
+        Module.category_id, Module.sort_order, Module.name
     ).all()
     if request.method == "POST":
         chosen = {int(x) for x in request.form.getlist("module_ids")}

@@ -1,5 +1,6 @@
 """Forms package."""
 from app.forms.admin import (
+    CategoryForm,
     CreateADUserForm,
     CreateUserForm,
     EditUserForm,
@@ -18,6 +19,7 @@ __all__ = [
     "EditUserForm",
     "ResetPasswordForm",
     "RoleForm",
+    "CategoryForm",
     "ModuleForm",
     "ProfileForm",
     "SettingsForm",

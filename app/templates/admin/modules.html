@@ -4,10 +4,12 @@
 {% block page_title %}AI Modules{% endblock %}
 
 {% block content %}
-<div class="toolbar">
-  <p class="muted">{{ modules|length }} module(s)</p>
-  <a class="btn btn-primary" href="{{ url_for('admin.create_module') }}">+ New module</a>
-</div>
+<div class="modules-layout">
+  <section class="modules-col">
+    <div class="toolbar">
+      <h3 class="col-title">Modules <span class="muted">({{ modules|length }})</span></h3>
+      <a class="btn btn-primary" href="{{ url_for('admin.create_module') }}">+ New module</a>
+    </div>
 
 <div class="card table-card">
   <table class="table">
@@ -43,7 +45,7 @@
           <strong>{{ m.name }}</strong>
           <div class="muted mono">{{ m.key }}</div>
         </td>
-        <td>{{ m.category or '—' }}</td>
+        <td>{{ m.category.name if m.category else '—' }}</td>
         <td>
           {% if m.status == 'available' %}<span class="badge badge-success">Available</span>
           {% else %}<span class="badge badge-muted">Planned</span>{% endif %}
@@ -71,5 +73,43 @@
       {% endfor %}
     </tbody>
   </table>
+</div>
+  </section>
+
+  <section class="categories-col">
+    <div class="toolbar">
+      <h3 class="col-title">Categories <span class="muted">({{ categories|length }})</span></h3>
+      <a class="btn btn-primary" href="{{ url_for('admin.create_category') }}">+ New Category</a>
+    </div>
+
+    <div class="card">
+      <ul class="cat-list">
+        {% for c in categories %}
+        <li class="cat-item">
+          <div class="cat-meta">
+            <span class="cat-name">{{ c.name }}</span>
+            {% if c.is_active %}<span class="badge badge-success">On</span>
+            {% else %}<span class="badge badge-muted">Off</span>{% endif %}
+            <span class="muted">{{ c.modules|length }} module(s)</span>
+          </div>
+          <div class="cat-actions">
+            <a class="btn btn-sm" href="{{ url_for('admin.edit_category', category_id=c.id) }}">Edit</a>
+            <form method="post" action="{{ url_for('admin.toggle_category', category_id=c.id) }}" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-sm" type="submit">{{ 'Disable' if c.is_active else 'Enable' }}</button>
+            </form>
+            <form method="post" action="{{ url_for('admin.delete_category', category_id=c.id) }}" class="inline"
+                  onsubmit="return confirm('Delete category {{ c.name }}? Its modules will become uncategorised.');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-sm btn-danger" type="submit">Delete</button>
+            </form>
+          </div>
+        </li>
+        {% else %}
+        <li class="muted ta-center">No categories yet. Create the first one.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
 </div>
 {% endblock %}

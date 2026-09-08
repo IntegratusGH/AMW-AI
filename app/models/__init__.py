@@ -18,6 +18,7 @@ from app.models.module import (
     ICON_UPLOAD,
     MODULE_ACCENTS,
     MODULE_STATUSES,
+    Category,
     Module,
     role_modules,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "AUTH_LOCAL",
     "AUTH_AD",
     "Module",
+    "Category",
     "role_modules",
     "BUILTIN_ICONS",
     "MODULE_STATUSES",

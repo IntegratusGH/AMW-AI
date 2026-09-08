@@ -25,9 +25,10 @@
           {% for e in form.description.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
         </div>
         <div class="field">
-          {{ form.category.label }}
-          {{ form.category(class="input", placeholder="e.g. After-Sales & Service") }}
-          {% for e in form.category.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+          {{ form.category_id.label }}
+          {{ form.category_id(class="input") }}
+          {% for e in form.category_id.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
+          <span class="muted">Manage categories from the AI Modules page.</span>
         </div>
         <div class="field">
           {{ form.status.label }}

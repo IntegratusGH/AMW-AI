@@ -92,6 +92,14 @@ class RoleForm(FlaskForm):
     submit = SubmitField("Save role")
 
 
+class CategoryForm(FlaskForm):
+    """Create/edit a module category (Administrator only)."""
+
+    name = StringField("Category name", validators=[DataRequired(), Length(max=80)])
+    is_active = BooleanField("Active", default=True)
+    submit = SubmitField("Save category")
+
+
 class ModuleForm(FlaskForm):
     """Create/edit an AI automation module (Administrator only).
 
@@ -110,7 +118,8 @@ class ModuleForm(FlaskForm):
         ],
     )
     description = TextAreaField("Description", validators=[Optional(), Length(max=400)])
-    category = StringField("Category", validators=[Optional(), Length(max=80)])
+    # Choices are populated in the route from the Category table; 0 == none.
+    category_id = SelectField("Category", coerce=int, validators=[Optional()], choices=[])
     status = SelectField("Status", choices=[(s, s.title()) for s in MODULE_STATUSES])
     accent = SelectField("Accent colour", choices=[(a, a.title()) for a in MODULE_ACCENTS])
     icon_kind = SelectField(
