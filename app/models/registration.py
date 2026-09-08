@@ -86,6 +86,10 @@ class CRBookRecord(db.Model):
     registration_no = db.Column(db.String(60), nullable=True, index=True)
     chassis_no = db.Column(db.String(60), nullable=True, index=True)
     engine_no = db.Column(db.String(60), nullable=True)
+    # Filenames of the cropped scan of each value region (for visual
+    # verification / correction on the records page).
+    chassis_crop = db.Column(db.String(255), nullable=True)
+    reg_crop = db.Column(db.String(255), nullable=True)
     current_owner = db.Column(db.String(200), nullable=True)
     current_owner_address = db.Column(db.String(400), nullable=True)
     absolute_owner = db.Column(db.String(300), nullable=True)

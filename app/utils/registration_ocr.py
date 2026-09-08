@@ -503,6 +503,21 @@ def _refine_field(page, line, full_zoom, kind, fallback):
     return _fix_reg_number(text), conf, []
 
 
+def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0):
+    """Render just a field's value region to a PNG (bytes) for display beside the
+    captured text.  ``line`` is the OCR value line (coords in ``full_zoom``
+    pixel space); a little padding keeps the value fully visible.  Returns
+    ``None`` when the region is unavailable."""
+    if page is None or line is None:
+        return None
+    import pymupdf
+    rect = pymupdf.Rect(
+        line["x0"] / full_zoom - 6, line["y0"] / full_zoom - 4,
+        line["x1"] / full_zoom + 18, line["y1"] / full_zoom + 4)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(disp_zoom, disp_zoom), clip=rect)
+    return pix.tobytes("png")
+
+
 def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0) -> dict:
     rec: dict = {}
     for field, frags in _CR_LABELS.items():
@@ -555,6 +570,7 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0) -> dict
         rec["chassis_no"] = ch_val
     rec["chassis_no_confidence"] = ch_conf
     rec["_chassis_cands"] = ch_cands
+    rec["_chassis_crop_png"] = crop_value_png(page, ch_line, full_zoom)
 
     rg_lbl = _find_label(lines, _CR_LABELS["registration_no"])
     rg_line = _line_below(lines, rg_lbl) if rg_lbl else None
@@ -563,6 +579,7 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0) -> dict
     if rg_val:
         rec["registration_no"] = rg_val
     rec["registration_no_confidence"] = rg_conf
+    rec["_reg_crop_png"] = crop_value_png(page, rg_line, full_zoom)
 
     rec["needs_review"] = bool(_chassis_review(rec.get("chassis_no"), ch_conf)
                                or _reg_review(rec.get("registration_no"), rg_conf))

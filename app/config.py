@@ -92,6 +92,9 @@ class Config:
     # tree, one sub-directory per document type.
     CR_BOOK_UPLOAD_DIR = str(Path(UPLOAD_DIR) / "cr_book")
     RECEIPT_UPLOAD_DIR = str(Path(UPLOAD_DIR) / "receipt")
+    # Cropped value-region scans (Chassis No / Reg No) per CR-book record,
+    # grouped in a sub-directory per upload id.
+    CR_BOOK_CROP_DIR = str(Path(UPLOAD_DIR) / "cr_book_crops")
     ALLOWED_DOC_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "tif", "tiff"}
     MAX_DOC_UPLOAD_MB = int(os.getenv("MAX_DOC_UPLOAD_MB", "30"))
 

@@ -183,6 +183,11 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 return
             # Re-process: drop any previously extracted rows and reset counters.
             RecordModel.query.filter_by(upload_id=upload_id).delete()
+            if kind == "cr":
+                import shutil
+                shutil.rmtree(
+                    os.path.join(app.config["CR_BOOK_CROP_DIR"], str(upload_id)),
+                    ignore_errors=True)
             up.captured_records = 0
             up.duplicate_records = 0
             up.page_count = 0
@@ -281,6 +286,26 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                             duplicates += 1
                     up.duplicate_records = duplicates
                     db.session.commit()
+
+            # Persist the cropped value-region scans (Chassis No / Reg No) so the
+            # records page can show the original image beside each captured value.
+            if kind == "cr" and cr_pending:
+                crop_dir = os.path.join(
+                    app.config["CR_BOOK_CROP_DIR"], str(upload_id))
+                os.makedirs(crop_dir, exist_ok=True)
+                for rec_obj, r in cr_pending:
+                    for field, src in (("chassis", "_chassis_crop_png"),
+                                       ("reg", "_reg_crop_png")):
+                        png = r.get(src)
+                        if not png:
+                            continue
+                        fn = f"{rec_obj.id}_{field}.png"
+                        with open(os.path.join(crop_dir, fn), "wb") as fh:
+                            fh.write(png)
+                        setattr(rec_obj,
+                                "chassis_crop" if field == "chassis" else "reg_crop",
+                                fn)
+                db.session.commit()
 
             up.processed = True
             up.status = STATUS_DONE
@@ -405,6 +430,44 @@ def upload_records(kind: str, upload_id: int):
         "main/registration_records.html", kind=kind, upload=up, records=records)
 
 
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>"
+               "/crop/<int:record_id>/<field>")
+@login_required
+def cr_value_crop(upload_id: int, record_id: int, field: str):
+    """Serve the cropped value-region scan (chassis|reg) for one CR record."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    if field not in ("chassis", "reg"):
+        abort(404)
+    rec = db.session.get(CRBookRecord, record_id) or abort(404)
+    if rec.upload_id != upload_id:
+        abort(404)
+    fn = rec.chassis_crop if field == "chassis" else rec.reg_crop
+    if not fn:
+        abort(404)
+    crop_dir = os.path.join(current_app.config["CR_BOOK_CROP_DIR"], str(upload_id))
+    resp = send_from_directory(crop_dir, fn)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>"
+               "/record/<int:record_id>/edit", methods=["POST"])
+@login_required
+def cr_edit_record(upload_id: int, record_id: int):
+    """Save an operator's correction of a CR record's Chassis/Reg No."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    rec = db.session.get(CRBookRecord, record_id) or abort(404)
+    if rec.upload_id != upload_id:
+        abort(404)
+    rec.registration_no = (request.form.get("registration_no") or "").strip()[:60] or None
+    rec.chassis_no = (request.form.get("chassis_no") or "").strip()[:60] or None
+    rec.needs_review = False  # an operator has verified/corrected this row
+    record_audit("cr_record_edited", f"record_id={record_id}")
+    db.session.commit()
+    flash("Record updated.", "success")
+    return redirect(url_for("main.upload_records", kind="cr", upload_id=upload_id))
+
+
 @main_bp.route("/operations/registration-updater/<kind>/<int:upload_id>/delete",
                methods=["POST"])
 @login_required
@@ -418,6 +481,11 @@ def delete_upload(kind: str, upload_id: int):
             os.remove(up.stored_path)
     except OSError:
         pass
+    if kind == "cr":
+        import shutil
+        shutil.rmtree(
+            os.path.join(current_app.config["CR_BOOK_CROP_DIR"], str(upload_id)),
+            ignore_errors=True)
     name = up.filename
     db.session.delete(up)  # records cascade via FK/relationship
     record_audit(f"{kind}_upload_deleted", f"file={name}")
