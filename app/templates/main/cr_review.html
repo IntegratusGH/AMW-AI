@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% from "main/_icons.html" import icon %}
+{% block title %}CR-book review{% endblock %}
+{% block page_title %}CR-book review &mdash; {{ upload.filename }}{% endblock %}
+
+{% block content %}
+{% set attention = pages|selectattr('status', 'in', ['not_cr', 'unknown_format'])|list %}
+{% set known = pages|selectattr('status', 'equalto', 'known')|list %}
+
+<div class="toolbar">
+  <p class="muted">
+    {{ pages|length }} page(s) &middot; {{ known|length }} recognised &middot;
+    <strong>{{ attention|length }} need attention</strong>
+  </p>
+  <div class="toolbar-actions" style="display:flex; gap:10px;">
+    <a class="btn" href="{{ url_for('main.registration_updater', tab='cr') }}">&larr; Back</a>
+    {% if upload.review_status != 'detecting' %}
+    <form method="post" class="inline"
+          action="{{ url_for('main.cr_recheck', upload_id=upload.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn" type="submit">{{ icon('refresh', 16) }} Re-check format</button>
+    </form>
+    {% endif %}
+    {% if upload.review_status == 'ready' %}
+    <form method="post" class="inline"
+          action="{{ url_for('main.process_upload', kind='cr', upload_id=upload.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button class="btn btn-primary" type="submit">{{ icon('play', 16) }} Process now</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if upload.review_status == 'detecting' %}
+<div class="card">
+  <p>{{ icon('scan', 18) }} Checking every page against the known CR-book formats&hellip;
+     <span class="muted">This page refreshes automatically.</span></p>
+</div>
+<script>setTimeout(function(){ location.reload(); }, 3000);</script>
+{% elif upload.review_status == 'error' %}
+<div class="card"><p class="field-error">Detection failed: {{ upload.error }}</p></div>
+{% endif %}
+
+{% if attention %}
+<h4 class="reg-subtitle">Pages needing attention</h4>
+{% for p in attention %}
+<div class="card review-card">
+  <div class="review-card__img">
+    <button type="button" class="view-img review-thumb-btn"
+            data-img="{{ url_for('main.cr_page_image', upload_id=upload.id, page_no=p.page_no) }}"
+            data-title="Page {{ p.page_no }}" title="Click to zoom / rotate">
+      <img class="review-thumb" loading="lazy" alt="Page {{ p.page_no }} scan"
+           src="{{ url_for('main.cr_page_image', upload_id=upload.id, page_no=p.page_no) }}">
+    </button>
+    <span class="muted ta-center">{{ icon('zoom-in', 14) }} Click to zoom / rotate</span>
+  </div>
+  <div class="review-card__body">
+    <h3>Page {{ p.page_no }}</h3>
+    {% if p.status == 'not_cr' %}
+      <span class="badge badge-danger">Not a CR Book</span>
+      <p class="muted">Only {{ p.core_hits }} core CR field label(s) were detected on
+        this page, so it does not look like a Certificate of Registration.
+        Remove it from the batch before processing.</p>
+      <form method="post"
+            action="{{ url_for('main.cr_remove_page', upload_id=upload.id, page_no=p.page_no) }}"
+            onsubmit="return confirm('Remove page {{ p.page_no }} from the PDF? This cannot be undone.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn btn-danger" type="submit">{{ icon('trash', 16) }} Remove this page</button>
+      </form>
+    {% else %}
+      <span class="badge badge-warning">New / unknown format</span>
+      <p class="muted">This looks like a CR book, but its layout does not match any
+        known format. Name the new format (or assign it to one you already
+        created); pages in this upload with the same layout are grouped with it.</p>
+      <form method="post" class="review-form"
+            action="{{ url_for('main.cr_define_format', upload_id=upload.id, page_no=p.page_no) }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% if formats %}
+        <label class="field">
+          <span>Assign to an existing format</span>
+          <select class="input" name="existing_format_id">
+            <option value="">&mdash; create a new format &mdash;</option>
+            {% for f in formats %}
+            <option value="{{ f.id }}">{{ f.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        {% endif %}
+        <label class="field">
+          <span>New format name</span>
+          <input class="input" type="text" name="format_name"
+                 placeholder="e.g. NewCRBook 2024" maxlength="120">
+        </label>
+        <button class="btn btn-primary" type="submit">{{ icon('check', 16) }} Save format &amp; assign</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<div class="card">
+  <p>{{ icon('check', 18) }} All pages are recognised CR-book formats.
+     {% if upload.review_status == 'ready' %}Use <strong>Process now</strong> above to extract records.{% endif %}</p>
+</div>
+{% endif %}
+
+{% if known %}
+<h4 class="reg-subtitle">Recognised pages</h4>
+<div class="card table-card" style="overflow-x:auto">
+  <table class="table">
+    <thead><tr><th>Page</th><th>Format</th><th>CR fields</th></tr></thead>
+    <tbody>
+      {% for p in known %}
+      <tr>
+        <td class="mono">{{ p.page_no }}</td>
+        <td>{{ p.format.name if p.format else 'OldCRBook' }}</td>
+        <td>{{ p.core_hits }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% include "main/_image_viewer.html" %}
+{% endblock %}

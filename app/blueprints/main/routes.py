@@ -1,12 +1,15 @@
 """Main application routes: dashboard, operations, profile, settings."""
 from __future__ import annotations
 
+import json
 import os
+import re
 import threading
 import uuid
 from datetime import datetime
 
 from flask import (
+    Response,
     abort,
     current_app,
     flash,
@@ -29,6 +32,13 @@ from app.forms import (
     SettingsForm,
 )
 from app.models import (
+    CR_PAGE_KNOWN,
+    CR_PAGE_NOT_CR,
+    CR_PAGE_UNKNOWN,
+    REVIEW_DETECTING,
+    REVIEW_ERROR,
+    REVIEW_NEEDS,
+    REVIEW_READY,
     ROLE_ADMIN,
     ROLE_OPERATOR,
     STATUS_DONE,
@@ -38,6 +48,8 @@ from app.models import (
     Category,
     CRBookRecord,
     CRBookUpload,
+    CRFormat,
+    CRUploadPage,
     Module,
     ReceiptRecord,
     ReceiptUpload,
@@ -213,10 +225,18 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             duplicates = 0
             cr_pending = []  # (rec_obj, data) kept for the batch template pass
             rc_pending = []  # (rec_obj, data) kept for receipt image crops
+            # Per-page OCR rule set chosen by the detection pass (per format).
+            page_rules: dict[int, str] = {}
+            if kind == "cr":
+                for p in CRUploadPage.query.filter_by(upload_id=upload_id).all():
+                    page_rules[p.page_no] = (
+                        p.format.rule_set if p.format else "_generic")
             try:
                 for i in range(total):
                     if kind == "cr":
-                        rec = ocr.extract_cr_page(doc[i])
+                        rec = ocr.extract_cr_page(
+                            doc[i],
+                            rule_set=page_rules.get(i + 1, "oldcrbook"))
                         page_recs = [rec] if rec else []
                         for r in page_recs:
                             r["page_no"] = i + 1
@@ -368,6 +388,122 @@ def _start_processing(kind: str, upload_id: int) -> None:
     ).start()
 
 
+# ===== CR-book format detection (runs on upload, before Process) ==========
+def _load_sig(raw: str | None) -> dict:
+    try:
+        return json.loads(raw) if raw else {"labels": [], "pos": {}}
+    except (ValueError, TypeError):
+        return {"labels": [], "pos": {}}
+
+
+def ensure_builtin_cr_formats() -> CRFormat:
+    """Get-or-create the built-in 'OldCRBook' format (the current, tuned rules).
+    Its positions are learned from the first CR page seen during detection."""
+    fmt = CRFormat.query.filter_by(key="oldcrbook").first()
+    if fmt is None:
+        from app.utils import registration_ocr as ocr
+        sig = {"labels": list(ocr._CR_LABELS.keys()), "pos": {}}
+        fmt = CRFormat(key="oldcrbook", name="OldCRBook",
+                       signature=json.dumps(sig), rule_set="oldcrbook",
+                       is_builtin=True, is_active=True)
+        db.session.add(fmt)
+        db.session.commit()
+    return fmt
+
+
+def _recompute_cr_review_status(up: CRBookUpload) -> None:
+    pages = CRUploadPage.query.filter_by(upload_id=up.id).all()
+    needs = any(p.status in (CR_PAGE_NOT_CR, CR_PAGE_UNKNOWN) for p in pages)
+    up.review_status = REVIEW_NEEDS if needs else REVIEW_READY
+
+
+def _run_cr_detection(app, upload_id: int) -> None:
+    """Label-only pass classifying every page of a CR-book upload as a known
+    format, an unknown format, or not-a-CR-book, so the operator can resolve
+    problems before the heavy Process step."""
+    with app.app_context():
+        from app.utils import registration_ocr as ocr
+        up = db.session.get(CRBookUpload, upload_id)
+        if up is None:
+            return
+        try:
+            ensure_builtin_cr_formats()
+            up.review_status = REVIEW_DETECTING
+            up.progress_message = "Checking CR-book format\u2026"
+            CRUploadPage.query.filter_by(upload_id=upload_id).delete()
+            db.session.commit()
+
+            doc, total = ocr.open_document(up.stored_path)
+            up.page_count = total
+            up.progress_total = total
+            up.progress_done = 0
+            db.session.commit()
+
+            dets = []
+            try:
+                for i in range(total):
+                    dets.append(ocr.detect_cr_page(doc[i]))
+                    up.progress_done = i + 1
+                    up.progress_message = f"Checked page {i + 1} of {total}\u2026"
+                    db.session.commit()
+            finally:
+                doc.close()
+
+            # Learn OldCRBook's layout from the first CR page ever seen so a
+            # genuinely different layout no longer matches it.
+            old = CRFormat.query.filter_by(key="oldcrbook").first()
+            if old is not None and not _load_sig(old.signature).get("pos"):
+                for d in dets:
+                    if d["is_cr"]:
+                        old.signature = json.dumps(d["signature"])
+                        db.session.commit()
+                        break
+
+            active = CRFormat.query.filter_by(is_active=True).all()
+            formats = [(f.key, _load_sig(f.signature)) for f in active]
+            by_key = {f.key: f for f in active}
+            for i, d in enumerate(dets):
+                status, key = ocr.classify_cr_page(d, formats)
+                fmt = by_key.get(key) if key else None
+                db.session.add(CRUploadPage(
+                    upload_id=upload_id, page_no=i + 1, status=status,
+                    format_id=fmt.id if fmt else None,
+                    core_hits=d["core_hits"],
+                    signature=json.dumps(d["signature"])))
+            _recompute_cr_review_status(up)
+            up.progress_message = (
+                f"{up.review_pending_count} page(s) need review"
+                if up.review_status == REVIEW_NEEDS
+                else "Format OK \u2014 ready to process")
+            db.session.commit()
+        except Exception as exc:  # pragma: no cover - background worker
+            db.session.rollback()
+            up = db.session.get(CRBookUpload, upload_id)
+            if up is not None:
+                up.review_status = REVIEW_ERROR
+                up.error = str(exc)[:1000]
+                up.progress_message = f"Detection error: {str(exc)[:150]}"
+                db.session.commit()
+
+
+def _start_cr_detection(upload_id: int) -> None:
+    app = current_app._get_current_object()
+    threading.Thread(
+        target=_run_cr_detection, args=(app, upload_id), daemon=True
+    ).start()
+
+
+def _unique_format_key(name: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-") or "format"
+    if base in ("oldcrbook", "_generic"):
+        base = f"{base}-fmt"
+    key, n = base, 1
+    while CRFormat.query.filter_by(key=key).first() is not None:
+        n += 1
+        key = f"{base}-{n}"
+    return key[:60]
+
+
 @main_bp.route("/operations/registration-updater", methods=["GET", "POST"])
 @login_required
 def registration_updater():
@@ -380,11 +516,14 @@ def registration_updater():
             cr_form.file.data, current_app.config["CR_BOOK_UPLOAD_DIR"])
         up = CRBookUpload(
             filename=name, stored_path=path,
-            uploaded_by=current_user.id, status=STATUS_PENDING)
+            uploaded_by=current_user.id, status=STATUS_PENDING,
+            review_status=REVIEW_DETECTING)
         db.session.add(up)
         record_audit("cr_book_uploaded", f"file={name}")
         db.session.commit()
-        flash("CR Book uploaded. Click Process to extract records.", "success")
+        _start_cr_detection(up.id)
+        flash("CR Book uploaded \u2014 checking format against known CR books\u2026",
+              "success")
         return redirect(url_for("main.registration_updater", tab="cr"))
 
     if rc_form.submit_rc.data and rc_form.validate_on_submit():
@@ -423,6 +562,9 @@ def process_upload(kind: str, upload_id: int):
     if up.status == STATUS_PROCESSING:
         flash("This file is already being processed.", "info")
         return redirect(url_for("main.registration_updater", tab=kind))
+    if kind == "cr" and up.review_status != REVIEW_READY:
+        flash("Resolve the CR-book format review before processing.", "info")
+        return redirect(url_for("main.cr_review", upload_id=upload_id))
     up.status = STATUS_PROCESSING
     up.error = None
     db.session.commit()
@@ -447,6 +589,7 @@ def registration_status():
             "progress_done": u.progress_done, "progress_total": u.progress_total,
             "message": u.progress_message,
             "has_records": u.captured_records > 0,
+            "review": getattr(u, "review_status", None),
         }
 
     data = ([_ser(u, "cr") for u in CRBookUpload.query.all()]
@@ -521,6 +664,130 @@ def cr_edit_record(upload_id: int, record_id: int):
     db.session.commit()
     flash("Record updated.", "success")
     return redirect(url_for("main.upload_records", kind="cr", upload_id=upload_id))
+
+
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>/review")
+@login_required
+def cr_review(upload_id: int):
+    """Review screen for the CR-book format/validity pre-check."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    pages = up.pages
+    formats = (CRFormat.query.filter_by(is_active=True)
+               .order_by(CRFormat.name).all())
+    return render_template(
+        "main/cr_review.html", upload=up, pages=pages, formats=formats)
+
+
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>/recheck",
+               methods=["POST"])
+@login_required
+def cr_recheck(upload_id: int):
+    """Re-run the CR-book format/validity detection pass for an upload."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    up.review_status = REVIEW_DETECTING
+    up.progress_message = "Checking CR-book format\u2026"
+    db.session.commit()
+    _start_cr_detection(up.id)
+    flash("Re-checking CR-book format\u2026", "success")
+    return redirect(url_for("main.cr_review", upload_id=upload_id))
+
+
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>"
+               "/page-image/<int:page_no>")
+@login_required
+def cr_page_image(upload_id: int, page_no: int):
+    """Render a CR-book page live (for the review image viewer)."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    from app.utils import registration_ocr as ocr
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        if page_no < 1 or page_no > total:
+            abort(404)
+        png = ocr._render_page_png(doc[page_no - 1], 2.0)
+    finally:
+        doc.close()
+    resp = Response(png, mimetype="image/png")
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>"
+               "/remove-page/<int:page_no>", methods=["POST"])
+@login_required
+def cr_remove_page(upload_id: int, page_no: int):
+    """Drop a page from the stored CR-book PDF and re-index the page rows."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    import pymupdf
+    doc = pymupdf.open(up.stored_path)
+    try:
+        if page_no < 1 or page_no > doc.page_count:
+            abort(404)
+        doc.delete_page(page_no - 1)
+        tmp = up.stored_path + ".tmp"
+        doc.save(tmp, garbage=3, deflate=True)
+    finally:
+        doc.close()
+    os.replace(tmp, up.stored_path)
+    CRUploadPage.query.filter_by(upload_id=upload_id, page_no=page_no).delete()
+    for p in (CRUploadPage.query
+              .filter(CRUploadPage.upload_id == upload_id,
+                      CRUploadPage.page_no > page_no).all()):
+        p.page_no -= 1
+    up.page_count = max(0, (up.page_count or 1) - 1)
+    _recompute_cr_review_status(up)
+    record_audit("cr_page_removed", f"upload_id={upload_id} page={page_no}")
+    db.session.commit()
+    flash(f"Removed page {page_no} from '{up.filename}'.", "success")
+    return redirect(url_for("main.cr_review", upload_id=upload_id))
+
+
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>"
+               "/define-format/<int:page_no>", methods=["POST"])
+@login_required
+def cr_define_format(upload_id: int, page_no: int):
+    """Create/assign a CR-book format for an unknown-format page (and any other
+    unknown pages in this upload whose signature matches it)."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    page = (CRUploadPage.query
+            .filter_by(upload_id=upload_id, page_no=page_no).first() or abort(404))
+    from app.utils import registration_ocr as ocr
+
+    existing_id = (request.form.get("existing_format_id") or "").strip()
+    if existing_id:
+        fmt = db.session.get(CRFormat, int(existing_id)) or abort(404)
+    else:
+        name = (request.form.get("format_name") or "").strip()
+        if not name:
+            flash("Enter a name for the new format.", "danger")
+            return redirect(url_for("main.cr_review", upload_id=upload_id))
+        fmt = CRFormat(
+            key=_unique_format_key(name), name=name[:120],
+            signature=page.signature, rule_set=_unique_format_key(name),
+            is_builtin=False, is_active=True, created_by=current_user.id)
+        # rule_set must equal the (unique) key so code rules can key off it later.
+        fmt.rule_set = fmt.key
+        db.session.add(fmt)
+        db.session.flush()
+
+    target_sig = _load_sig(fmt.signature)
+    assigned = 0
+    for p in CRUploadPage.query.filter_by(
+            upload_id=upload_id, status=CR_PAGE_UNKNOWN).all():
+        if p.page_no == page_no or \
+                ocr.format_match_score(_load_sig(p.signature), target_sig) >= 0.55:
+            p.status = CR_PAGE_KNOWN
+            p.format_id = fmt.id
+            assigned += 1
+    _recompute_cr_review_status(up)
+    record_audit("cr_format_assigned", f"key={fmt.key} pages={assigned}")
+    db.session.commit()
+    flash(f"Assigned {assigned} page(s) to format '{fmt.name}'.", "success")
+    return redirect(url_for("main.cr_review", upload_id=upload_id))
 
 
 @main_bp.route("/operations/registration-updater/<kind>/<int:upload_id>/delete",

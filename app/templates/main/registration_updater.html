@@ -24,14 +24,30 @@
     </thead>
     <tbody>
       {% for u in uploads %}
-      <tr data-kind="{{ kind }}" data-id="{{ u.id }}" data-status="{{ u.status }}">
+      <tr data-kind="{{ kind }}" data-id="{{ u.id }}" data-status="{{ u.status }}"
+          {% if kind == 'cr' %}data-review="{{ u.review_status }}"{% endif %}>
         <td class="mono">{{ u.id }}</td>
         <td>{{ u.filename }}</td>
         <td>{{ u.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
-        <td class="status-cell">{{ status_cell(u) }}</td>
+        <td class="status-cell">
+          {% if kind == 'cr' and u.review_status == 'detecting' %}<span class="badge badge-info">Checking format…</span>
+          {% elif kind == 'cr' and u.review_status == 'needs_review' %}<span class="badge badge-warning">Review needed</span>
+          {% elif kind == 'cr' and u.review_status == 'error' %}<span class="badge badge-danger">Detection error</span>
+          {% else %}{{ status_cell(u) }}{% endif %}
+        </td>
         <td class="cap-cell">{{ u.captured_records }}</td>
         <td class="dup-cell">{{ u.duplicate_records }}</td>
         <td class="ta-right actions">
+          {% if kind == 'cr' and u.review_status != 'ready' %}
+            {% if u.review_status in ['pending', 'detecting'] %}
+            <button class="act-btn" type="button" disabled
+                    title="Checking format…" aria-label="Checking format">{{ icon('play', 16) }}</button>
+            {% else %}
+            <a class="act-btn" title="Review format ({{ u.review_pending_count }})"
+               aria-label="Review format"
+               href="{{ url_for('main.cr_review', upload_id=u.id) }}">{{ icon('scan', 16) }}</a>
+            {% endif %}
+          {% else %}
           <form method="post" class="inline"
                 action="{{ url_for('main.process_upload', kind=kind, upload_id=u.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -42,6 +58,11 @@
               {{ icon('refresh', 16) if u.processed else icon('play', 16) }}
             </button>
           </form>
+          {% if kind == 'cr' %}
+          <a class="act-btn" title="Format review" aria-label="Format review"
+             href="{{ url_for('main.cr_review', upload_id=u.id) }}">{{ icon('scan', 16) }}</a>
+          {% endif %}
+          {% endif %}
           {% if u.captured_records %}
           <a class="act-btn" title="View records" aria-label="View records"
              href="{{ url_for('main.upload_records', kind=kind, upload_id=u.id) }}">{{ icon('list', 16) }}</a>
@@ -128,8 +149,8 @@
     if (u.processed) return badge('badge-success', 'Processed', esc(u.message || ''));
     return badge('badge-muted', 'Pending');
   }
-  function anyProcessing() {
-    return document.querySelector('tr[data-status="processing"]') !== null;
+  function anyActive() {
+    return document.querySelector('tr[data-status="processing"], tr[data-review="detecting"]') !== null;
   }
   function poll() {
     fetch(STATUS_URL, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -140,19 +161,27 @@
           var row = document.querySelector('tr[data-kind="' + u.kind + '"][data-id="' + u.id + '"]');
           if (!row) return;
           var prev = row.getAttribute('data-status');
+          var prevReview = row.getAttribute('data-review');
           var cap = row.querySelector('.cap-cell'); if (cap) cap.textContent = u.captured;
           var dup = row.querySelector('.dup-cell'); if (dup) dup.textContent = u.duplicates;
-          var sc = row.querySelector('.status-cell'); if (sc) sc.innerHTML = renderStatus(u);
+          var sc = row.querySelector('.status-cell');
+          if (sc) {
+            if (u.kind === 'cr' && u.review === 'detecting') sc.innerHTML = badge('badge-info', 'Checking format\u2026');
+            else if (u.kind === 'cr' && u.review === 'needs_review') sc.innerHTML = badge('badge-warning', 'Review needed');
+            else sc.innerHTML = renderStatus(u);
+          }
           if (prev === 'processing' && u.status !== 'processing') reload = true;
+          // CR detection finished (or state changed): refresh action buttons.
+          if (u.kind === 'cr' && prevReview && u.review && u.review !== prevReview) reload = true;
           row.setAttribute('data-status', u.status);
+          if (u.kind === 'cr' && u.review) row.setAttribute('data-review', u.review);
         });
-        // A finished job needs its action buttons / records link refreshed.
         if (reload) { window.location.reload(); return; }
-        if (anyProcessing()) setTimeout(poll, 2500);
+        if (anyActive()) setTimeout(poll, 2500);
       })
       .catch(function () { setTimeout(poll, 5000); });
   }
-  if (anyProcessing()) setTimeout(poll, 2000);
+  if (anyActive()) setTimeout(poll, 2000);
 })();
 </script>
 {% endblock %}

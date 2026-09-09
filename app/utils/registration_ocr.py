@@ -209,6 +209,94 @@ def _looks_like_label(line: dict) -> bool:
     return any(frag in n for frag in _ALL_LABEL_FRAGMENTS)
 
 
+# --- CR-book format detection --------------------------------------------
+# The core identity labels a genuine CR book always carries.  A page with
+# fewer than _CR_MIN_CORE of these present is treated as "not a CR book".
+_CR_CORE_LABELS = ["registration_no", "chassis_no", "engine_no",
+                   "absolute_owner", "class_of_vehicle"]
+_CR_MIN_CORE = 2
+# Similarity thresholds for matching a page to a known format's signature.
+_FMT_MATCH_THRESHOLD = 0.55
+_FMT_POS_TOL = 0.10
+
+
+def cr_page_signature(lines: list[dict], page_w: float, page_h: float) -> dict:
+    """Signature of a CR page: which field labels are present and where (each
+    label centre as a fraction of page size).  Used to match a page to a
+    format and to seed a new format the operator names."""
+    labels: list[str] = []
+    pos: dict[str, list[float]] = {}
+    pw = page_w or 1.0
+    ph = page_h or 1.0
+    for key, frags in _CR_LABELS.items():
+        lbl = _find_label(lines, frags)
+        if lbl:
+            labels.append(key)
+            pos[key] = [round(lbl["cx"] / pw, 4), round(lbl["cy"] / ph, 4)]
+    return {"labels": labels, "pos": pos}
+
+
+def detect_cr_page(page, zoom: float = 2.0) -> dict:
+    """Fast label-only pass classifying a single page for the review step.
+    Returns {signature, core_hits, is_cr}."""
+    lines = _ocr_page(page, zoom)
+    sig = cr_page_signature(
+        lines, page.rect.width * zoom, page.rect.height * zoom)
+    core = sum(1 for k in _CR_CORE_LABELS if k in sig["labels"])
+    return {"signature": sig, "core_hits": core, "is_cr": core >= _CR_MIN_CORE}
+
+
+def format_match_score(page_sig: dict, fmt_sig: dict) -> float:
+    """0..1 similarity between a page signature and a format signature.  Label
+    overlap (Jaccard) for a format with no learned positions; a blend of label
+    overlap and positional agreement once positions are known, so two layouts
+    sharing field names but differing in placement are still told apart."""
+    pl = set(page_sig.get("labels") or [])
+    fl = set(fmt_sig.get("labels") or [])
+    if not pl or not fl:
+        return 0.0
+    jac = len(pl & fl) / len(pl | fl)
+    fpos = fmt_sig.get("pos") or {}
+    if not fpos:
+        return jac
+    ppos = page_sig.get("pos") or {}
+    matched = 0
+    for k in (pl & fl):
+        a, b = fpos.get(k), ppos.get(k)
+        if a and b and abs(a[0] - b[0]) <= _FMT_POS_TOL \
+                and abs(a[1] - b[1]) <= _FMT_POS_TOL:
+            matched += 1
+    return 0.5 * jac + 0.5 * (matched / len(fl))
+
+
+def classify_cr_page(detect: dict, formats: list[tuple[str, dict]]):
+    """Return (status, format_key): known / unknown_format / not_cr.  ``formats``
+    is a list of (key, signature_dict) for the active known formats."""
+    if not detect.get("is_cr"):
+        return ("not_cr", None)
+    best_key, best_score = None, 0.0
+    for key, sig in formats:
+        s = format_match_score(detect["signature"], sig)
+        if s > best_score:
+            best_key, best_score = key, s
+    if best_key and best_score >= _FMT_MATCH_THRESHOLD:
+        return ("known", best_key)
+    return ("unknown_format", None)
+
+
+# Per-format OCR rule sets.  "oldcrbook" is the current, tuned extractor; a
+# newly detected format uses "_generic" (same pipeline) until dedicated rules
+# are written for it and added here keyed by the format's slug.
+CR_RULE_SETS = {
+    "oldcrbook": {"labels": _CR_LABELS},
+    "_generic": {"labels": _CR_LABELS},
+}
+
+
+def get_rule_set(key: str | None) -> dict:
+    return CR_RULE_SETS.get(key or "", CR_RULE_SETS["_generic"])
+
+
 def _line_below(lines: list[dict], label: dict, max_dy: float = 90.0) -> dict | None:
     """Nearest non-label line beneath the label with horizontal overlap."""
     best, best_dy = None, None
@@ -610,9 +698,10 @@ def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0):
     return pix.tobytes("png")
 
 
-def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0) -> dict:
+def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
+                   rule_set: str = "oldcrbook") -> dict:
     rec: dict = {}
-    for field, frags in _CR_LABELS.items():
+    for field, frags in get_rule_set(rule_set)["labels"].items():
         lbl = _find_label(lines, frags)
         if not lbl:
             continue
@@ -688,12 +777,14 @@ def open_document(path: str):
     return doc, doc.page_count
 
 
-def extract_cr_page(page, zoom: float = 3.0) -> dict | None:
-    """OCR + parse a single CR-book page (one vehicle).  None if page is blank."""
+def extract_cr_page(page, zoom: float = 3.0,
+                    rule_set: str = "oldcrbook") -> dict | None:
+    """OCR + parse a single CR-book page (one vehicle).  None if page is blank.
+    ``rule_set`` selects the per-format extractor (see CR_RULE_SETS)."""
     lines = _ocr(_render_page_png(page, zoom))
     if not lines:
         return None
-    return _parse_cr_page(lines, page=page, full_zoom=zoom)
+    return _parse_cr_page(lines, page=page, full_zoom=zoom, rule_set=rule_set)
 
 
 def extract_cr_records(path: str, zoom: float = 3.0) -> tuple[int, list[dict]]:
