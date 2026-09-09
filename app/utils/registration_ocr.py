@@ -220,11 +220,12 @@ def _mean_score(lines: list[dict]) -> float | None:
 # English label fragments (already normalised) used to locate each field's
 # value, which on this form sits just below (or to the right of) the label.
 _CR_LABELS = {
-    # Tolerate OCR misreads of the trailing "No." (e.g. "Chassis Na.",
-    # "Registration N0.") by keying on the field word rather than "...no".
-    # Keep "registrationn" (matches "Registration No./Na.") narrow enough to
-    # avoid the "CERTIFICATE OF REGISTRATION" page title.
-    "registration_no": ["registrationn"],
+    # Tolerate OCR misreads of the trailing "No." (e.g. "Chassis Na.") and of
+    # the field word itself ("Registratlon", "Registratian", "Registrationt")
+    # by keying on the stable stem.  "registrat" also appears in the page title
+    # "CERTIFICATE OF REGISTRATION OF MOTOR VEHICLE"; that line is filtered out
+    # via _CR_LABEL_EXCLUDE below.
+    "registration_no": ["registrat"],
     "chassis_no": ["chassis"],
     "engine_no": ["engine"],
     "current_owner": ["currentow", "currentowher", "currentowner"],
@@ -239,6 +240,13 @@ _CR_LABELS = {
     "country_of_origin": ["countryoforig", "untryoforig"],
     "provincial_council": ["provincialcoun", "rovincialcoun"],
     "date_first_registration": ["firstregistra", "dateoffirstreg"],
+}
+
+# Per-field label lines to skip while matching (normalised substrings).  The
+# broad "registrat" stem would otherwise catch the "CERTIFICATE OF REGISTRATION
+# OF MOTOR VEHICLE" title, which sits above the real "Registration No." label.
+_CR_LABEL_EXCLUDE = {
+    "registration_no": ["certificate", "motorveh"],
 }
 
 # Any line whose normalised text contains one of these is itself a label and so
@@ -276,7 +284,7 @@ def cr_page_signature(lines: list[dict], page_w: float, page_h: float) -> dict:
     pw = page_w or 1.0
     ph = page_h or 1.0
     for key, frags in _CR_LABELS.items():
-        lbl = _find_label(lines, frags)
+        lbl = _find_label(lines, frags, _CR_LABEL_EXCLUDE.get(key))
         if lbl:
             labels.append(key)
             pos[key] = [round(lbl["cx"] / pw, 4), round(lbl["cy"] / ph, 4)]
@@ -366,9 +374,12 @@ def _value_below(lines: list[dict], label: dict, max_dy: float = 90.0) -> str | 
     return best["text"].strip() if best else None
 
 
-def _find_label(lines: list[dict], fragments: list[str]) -> dict | None:
+def _find_label(lines: list[dict], fragments: list[str],
+                exclude: list[str] | None = None) -> dict | None:
     for ln in lines:
         n = _norm(ln["text"])
+        if exclude and any(x in n for x in exclude):
+            continue
         if any(frag in n for frag in fragments):
             return ln
     return None
@@ -797,7 +808,7 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
                    rule_set: str = "oldcrbook") -> dict:
     rec: dict = {}
     for field, frags in get_rule_set(rule_set)["labels"].items():
-        lbl = _find_label(lines, frags)
+        lbl = _find_label(lines, frags, _CR_LABEL_EXCLUDE.get(field))
         if not lbl:
             continue
         rec[field] = _clean(_value_below(lines, lbl))
@@ -848,7 +859,8 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     rec["_chassis_cands"] = ch_cands
     rec["_chassis_crop_png"] = crop_value_png(page, ch_line, full_zoom)
 
-    rg_lbl = _find_label(lines, _CR_LABELS["registration_no"])
+    rg_lbl = _find_label(lines, _CR_LABELS["registration_no"],
+                         _CR_LABEL_EXCLUDE["registration_no"])
     rg_line = _line_below(lines, rg_lbl) if rg_lbl else None
     rg_val, rg_conf, _ = _refine_field(page, rg_line, full_zoom, "reg",
                                        rec.get("registration_no"))
