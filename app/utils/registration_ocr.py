@@ -488,8 +488,12 @@ def _vote(cands: list[tuple[str, float]], prefer_len: int | None = None,
     char_agree = sum(agrees) / len(agrees) if agrees else 0.0
     mean_score = sum(w for _, w in grp) / len(grp) if grp else 0.0
     # ``mean_score`` can exceed 1.0 when validator up-weighting is applied; clamp
-    # so confidence stays in [0, 1] for the review thresholds.
-    conf = round(min(mean_score, 1.0) * char_agree * len_agree, 4)
+    # so confidence stays in [0, 1] for the review thresholds.  Length
+    # disagreement across passes (common for variable-length fields like engine
+    # numbers, where a trailing digit is sometimes dropped/added) should discount
+    # confidence, not annihilate it - per-character agreement already captures
+    # how reliable the chosen reading is - so cap the length penalty at 50%.
+    conf = round(min(mean_score, 1.0) * char_agree * (0.5 + 0.5 * len_agree), 4)
     return "".join(chars), conf
 
 
@@ -522,8 +526,10 @@ def _reg_review(rg: str | None, conf) -> bool:
 
 def _engine_review(en: str | None, conf) -> bool:
     """Flag an engine no for human check on low confidence, an implausible
-    length, or a value with no digits (engine serials always carry digits)."""
-    if not en or conf is None or conf < 0.60:
+    length, or a value with no digits (engine serials always carry digits).
+    The threshold is lower than the other fields because engine numbers have no
+    fixed structure to validate against, so their vote confidence runs lower."""
+    if not en or conf is None or conf < 0.55:
         return True
     if not (5 <= len(en) <= 17):
         return True
