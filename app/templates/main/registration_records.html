@@ -5,10 +5,10 @@
 {% block content_class %}content--wide{% endblock %}
 
 {% block content %}
-{% if kind == 'cr' %}{% set review_count = records|selectattr('needs_review')|list|length %}{% endif %}
+{% if kind in ['cr', 'rc'] %}{% set review_count = records|selectattr('needs_review')|list|length %}{% endif %}
 <div class="toolbar">
   <p class="muted">{{ records|length }} record(s) &middot; captured {{ upload.captured_records }},
-    duplicates {{ upload.duplicate_records }}{% if kind == 'cr' %} &middot;
+    duplicates {{ upload.duplicate_records }}{% if kind in ['cr', 'rc'] %} &middot;
     <strong>{{ review_count }} need review</strong>{% endif %}</p>
   <a class="btn" href="{{ url_for('main.registration_updater') }}">&larr; Back</a>
 </div>
@@ -59,14 +59,15 @@
     </tbody>
     {% else %}
     <thead>
-      <tr><th>Slip No</th><th>Receipt No</th><th>Date</th><th>Time</th>
+      <tr><th>Review</th><th>Slip No</th><th>Receipt No</th><th>Date</th><th>Time</th>
         <th>Vehicle No</th><th>Application No</th><th class="ta-right">Total</th>
         <th class="ta-right">Charges</th><th class="ta-right">Bank Total</th>
         <th>Dup?</th><th>Conf</th><th class="ta-right">Image</th></tr>
     </thead>
     <tbody>
       {% for r in records %}
-      <tr>
+      <tr class="{{ 'row-review' if r.needs_review else '' }}">
+        <td>{% if r.needs_review %}<span class="badge badge-warning">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
         <td class="mono">{{ r.slip_no or '—' }}</td>
         <td>{{ r.receipt_no or '—' }}</td>
         <td>{{ r.receipt_date or '—' }}</td>
@@ -88,7 +89,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="12" class="muted ta-center">No records.</td></tr>
+      <tr><td colspan="13" class="muted ta-center">No records.</td></tr>
       {% endfor %}
     </tbody>
     {% endif %}

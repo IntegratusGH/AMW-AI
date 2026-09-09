@@ -147,6 +147,9 @@ class ReceiptRecord(db.Model):
     image_crop = db.Column(db.String(255), nullable=True)
 
     is_duplicate = db.Column(db.Boolean, default=False, nullable=False)
+    # Set when the Total/Charges/Bank Total figures do not balance (or a value
+    # had to be derived/corrected), so an operator verifies the amounts.
+    needs_review = db.Column(db.Boolean, default=False, nullable=False)
     confidence = db.Column(db.Float, nullable=True)
     raw_text = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)

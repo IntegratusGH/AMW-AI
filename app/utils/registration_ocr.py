@@ -748,6 +748,51 @@ def _amount_after(seg: list[dict], fragments: list[str]):
     return None
 
 
+def _norm_amount(t: str) -> str | None:
+    """Canonicalise a recognised amount token to 'digits.dd' (or None)."""
+    if not t:
+        return None
+    m = _AMOUNT_RE.search(t.replace(" ", ""))
+    return m.group(0).replace(",", "") if m else None
+
+
+def _find_amount(seg: list[dict], fragments: list[str]):
+    """Return ``(Decimal|None, line)`` for the amount on, or on the same row to
+    the right of / just below, a line matching a label fragment.  The line is
+    returned so the value cell can be re-OCR'd for accuracy.  Scanning continues
+    past a matching label that has no amount nearby (e.g. the 'CASH PAYING'
+    header for the 'cash' fragment), so a later real label still resolves."""
+    for i, ln in enumerate(seg):
+        n = _norm(ln["text"])
+        if not any(f in n for f in fragments):
+            continue
+        m = _AMOUNT_RE.search(ln["text"])
+        if m:
+            return _to_decimal(m.group(0)), ln
+        ly0, ly1, lx1 = ln["y0"], ln["y1"], ln.get("x1", 0)
+        cy = (ly0 + ly1) / 2
+        best = None  # (row_dist, x0), decimal, line
+        for o in seg:
+            if o is ln:
+                continue
+            oy = (o["y0"] + o["y1"]) / 2
+            # same row (tight, so an adjacent row's amount does not bleed in) and
+            # to the right of the label; pick the closest row, then leftmost.
+            if abs(oy - cy) <= 14 and o.get("x0", 0) >= lx1 - 40:
+                mm = _AMOUNT_RE.search(o["text"])
+                if mm:
+                    key = (abs(oy - cy), o.get("x0", 0))
+                    if best is None or key < best[0]:
+                        best = (key, _to_decimal(mm.group(0)), o)
+        if best:
+            return best[1], best[2]
+        for nxt in seg[i + 1:i + 3]:
+            mm = _AMOUNT_RE.search(nxt["text"])
+            if mm:
+                return _to_decimal(mm.group(0)), nxt
+    return None, None
+
+
 def _refine_vehicle(page, line, full_zoom, fallback):
     """High-accuracy vehicle number via multi-scale recognition-only OCR of the
     plate line + voting, normalised to the Sri Lankan plate format.  Returns
@@ -774,6 +819,73 @@ def _refine_vehicle(page, line, full_zoom, fallback):
     if not text:
         return _fix_reg_lk(fallback), None
     return _fix_reg_lk(text), conf
+
+
+def _refine_amount(page, line, full_zoom, fallback):
+    """High-accuracy currency amount via multi-scale recognition-only OCR of the
+    amount cell + value-frequency voting (a single wrong digit changes the whole
+    value, so whole-value votes beat per-character ones here).  Returns
+    ``(Decimal|None, confidence)``."""
+    if page is None or line is None:
+        return fallback, None
+    import pymupdf
+    from collections import defaultdict
+    rect = pymupdf.Rect(
+        line["x0"] / full_zoom - 8, line["y0"] / full_zoom - 4,
+        line["x1"] / full_zoom + 12, line["y1"] / full_zoom + 4)
+    raw = _rec_candidates(page, rect, zooms=(3, 4, 6, 8, 10))
+    votes: dict[str, float] = defaultdict(float)
+    for t, w in raw:
+        v = _norm_amount(t)
+        if v is not None:
+            votes[v] += w
+    if fallback is not None:
+        votes[f"{fallback:.2f}"] += 0.5
+    if not votes:
+        return fallback, None
+    best = max(votes, key=lambda k: votes[k])
+    tot = sum(votes.values()) or 1.0
+    return _to_decimal(best), round(votes[best] / tot, 4)
+
+
+def _reconcile_amounts(total, charges, btotal, ct, cc, cb):
+    """Cross-check the slip's Bank Total = Total + Charges.  Derives a single
+    missing value, corrects the least-confident value on a mismatch, and flags
+    for review when the numbers still cannot balance (or are implausible).
+    Returns ``(total, charges, btotal, needs_review)``."""
+    cent = Decimal("0.01")
+
+    def eq(a, b):
+        return a is not None and b is not None and abs(a - b) <= cent
+
+    def ok(*vals):
+        return all(v is not None and v >= 0 for v in vals)
+
+    missing = [i for i, v in enumerate((total, charges, btotal)) if v is None]
+    if len(missing) == 1:
+        i = missing[0]
+        if i == 0 and ok(btotal, charges):
+            total = btotal - charges
+        elif i == 1 and ok(btotal, total):
+            charges = btotal - total
+        elif i == 2 and ok(total, charges):
+            btotal = total + charges
+        return total, charges, btotal, not ok(total, charges, btotal)
+    if missing:
+        return total, charges, btotal, True
+    if eq(total + charges, btotal):
+        return total, charges, btotal, False
+    # mismatch: recompute the least-confident field from the other two.
+    confs = [ct or 0.0, cc or 0.0, cb or 0.0]
+    weak = confs.index(min(confs))
+    if weak == 0:
+        total = btotal - charges
+    elif weak == 1:
+        charges = btotal - total
+    else:
+        btotal = total + charges
+    # a correction was applied, so surface the record for a human check.
+    return total, charges, btotal, True
 
 
 def reconcile_receipt_numbers(seq: list) -> list:
@@ -887,10 +999,18 @@ def _parse_receipt_segment(seg: list[dict]) -> dict:
                         break
             break
 
-    rec["bank_charges"] = _amount_after(seg, ["servicecharg", "charges"])
-    rec["bank_total"] = _amount_after(seg, ["banktotal", "anetotal", "tanktatal"])
-    rec["total_amount"] = _amount_after(seg, ["rmvtotal", "rhvtotal", "rwvtotal"]) \
-        or _amount_after(seg, ["amount", "cash"])
+    # amounts: capture each value's line so the cell can be re-OCR'd at multiple
+    # zooms, and so the Total/Charges/Bank Total formula can be cross-checked.
+    ch_amt, ch_line = _find_amount(seg, ["charg"])
+    bt_amt, bt_line = _find_amount(seg, ["banktota", "anktota", "anetota"])
+    tt_amt, tt_line = _find_amount(seg, ["vtota", "rmvtota", "rnvtota"])
+    if tt_amt is None:
+        tt_amt, tt_line = _find_amount(seg, ["cash", "amount", "aaount", "anount"])
+    rec["bank_charges"] = ch_amt
+    rec["bank_total"] = bt_amt
+    rec["total_amount"] = tt_amt
+    rec["_amt_lines"] = {"bank_charges": ch_line, "bank_total": bt_line,
+                         "total_amount": tt_line}
     return rec
 
 
@@ -977,6 +1097,20 @@ def extract_receipt_page(page, zoom: float = 2.0) -> list[dict]:
         v, _vconf = _refine_vehicle(page, vline, zoom, rec.get("vehicle_no"))
         if v:
             rec["vehicle_no"] = v
+        # refine the currency amounts the same way, then cross-check the slip's
+        # Bank Total = Total + Charges formula (correct/flag on mismatch).
+        al = rec.pop("_amt_lines", {}) or {}
+        tt, ct = _refine_amount(page, al.get("total_amount"), zoom,
+                                rec.get("total_amount"))
+        ch, cc = _refine_amount(page, al.get("bank_charges"), zoom,
+                                rec.get("bank_charges"))
+        bt, cb = _refine_amount(page, al.get("bank_total"), zoom,
+                                rec.get("bank_total"))
+        tt, ch, bt, review = _reconcile_amounts(tt, ch, bt, ct, cc, cb)
+        rec["total_amount"] = tt
+        rec["bank_charges"] = ch
+        rec["bank_total"] = bt
+        rec["needs_review"] = review
         # crop from the PEOPLE'S header (segment top) to the Cashier footer.
         y0_px = min(ln["y0"] for ln in seg)
         csh = [ln for ln in seg if _is_cashier(ln["text"])]
