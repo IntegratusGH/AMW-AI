@@ -183,11 +183,12 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 return
             # Re-process: drop any previously extracted rows and reset counters.
             RecordModel.query.filter_by(upload_id=upload_id).delete()
-            if kind == "cr":
-                import shutil
-                shutil.rmtree(
-                    os.path.join(app.config["CR_BOOK_CROP_DIR"], str(upload_id)),
-                    ignore_errors=True)
+            import shutil
+            shutil.rmtree(
+                os.path.join(
+                    app.config["CR_BOOK_CROP_DIR" if kind == "cr"
+                               else "RECEIPT_CROP_DIR"], str(upload_id)),
+                ignore_errors=True)
             up.captured_records = 0
             up.duplicate_records = 0
             up.page_count = 0
@@ -211,6 +212,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             captured = 0
             duplicates = 0
             cr_pending = []  # (rec_obj, data) kept for the batch template pass
+            rc_pending = []  # (rec_obj, data) kept for receipt image crops
             try:
                 for i in range(total):
                     if kind == "cr":
@@ -235,6 +237,8 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         db.session.add(rec_obj)
                         if kind == "cr":
                             cr_pending.append((rec_obj, r))
+                        elif kind == "rc":
+                            rc_pending.append((rec_obj, r))
                         captured += 1
 
                     up.progress_done = i + 1
@@ -305,6 +309,21 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         setattr(rec_obj,
                                 "chassis_crop" if field == "chassis" else "reg_crop",
                                 fn)
+                db.session.commit()
+
+            # Persist each receipt's cropped page region for the image viewer.
+            if kind == "rc" and rc_pending:
+                crop_dir = os.path.join(
+                    app.config["RECEIPT_CROP_DIR"], str(upload_id))
+                os.makedirs(crop_dir, exist_ok=True)
+                for rec_obj, r in rc_pending:
+                    png = r.get("_image_crop_png")
+                    if not png:
+                        continue
+                    fn = f"{rec_obj.id}.png"
+                    with open(os.path.join(crop_dir, fn), "wb") as fh:
+                        fh.write(png)
+                    rec_obj.image_crop = fn
                 db.session.commit()
 
             up.processed = True
@@ -450,6 +469,21 @@ def cr_value_crop(upload_id: int, record_id: int, field: str):
     return resp
 
 
+@main_bp.route("/operations/registration-updater/rc/<int:upload_id>"
+               "/image/<int:record_id>")
+@login_required
+def receipt_image(upload_id: int, record_id: int):
+    """Serve the cropped page-region scan of one receipt for the image viewer."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    rec = db.session.get(ReceiptRecord, record_id) or abort(404)
+    if rec.upload_id != upload_id or not rec.image_crop:
+        abort(404)
+    crop_dir = os.path.join(current_app.config["RECEIPT_CROP_DIR"], str(upload_id))
+    resp = send_from_directory(crop_dir, rec.image_crop)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>"
                "/record/<int:record_id>/edit", methods=["POST"])
 @login_required
@@ -481,11 +515,12 @@ def delete_upload(kind: str, upload_id: int):
             os.remove(up.stored_path)
     except OSError:
         pass
-    if kind == "cr":
-        import shutil
-        shutil.rmtree(
-            os.path.join(current_app.config["CR_BOOK_CROP_DIR"], str(upload_id)),
-            ignore_errors=True)
+    import shutil
+    shutil.rmtree(
+        os.path.join(
+            current_app.config["CR_BOOK_CROP_DIR" if kind == "cr"
+                               else "RECEIPT_CROP_DIR"], str(upload_id)),
+        ignore_errors=True)
     name = up.filename
     db.session.delete(up)  # records cascade via FK/relationship
     record_audit(f"{kind}_upload_deleted", f"file={name}")

@@ -95,6 +95,9 @@ class Config:
     # Cropped value-region scans (Chassis No / Reg No) per CR-book record,
     # grouped in a sub-directory per upload id.
     CR_BOOK_CROP_DIR = str(Path(UPLOAD_DIR) / "cr_book_crops")
+    # Cropped scan of each receipt's region on the source page, grouped in a
+    # sub-directory per upload id.
+    RECEIPT_CROP_DIR = str(Path(UPLOAD_DIR) / "receipt_crops")
     ALLOWED_DOC_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "tif", "tiff"}
     MAX_DOC_UPLOAD_MB = int(os.getenv("MAX_DOC_UPLOAD_MB", "30"))
 

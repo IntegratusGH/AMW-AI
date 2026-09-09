@@ -799,6 +799,26 @@ def _segment_receipts(lines: list[dict]) -> list[list[dict]]:
     return segments
 
 
+def crop_receipt_png(page, seg: list[dict], ocr_zoom: float,
+                     disp_zoom: float = 2.0, pad_pt: float = 6.0) -> bytes | None:
+    """Render the source-page region spanned by a receipt segment to a PNG
+    (bytes) for the image viewer.  Segment line coords are in full-page pixel
+    space at ``ocr_zoom``; convert to PDF points and render the full page width
+    across the segment's vertical extent (with a little padding)."""
+    if not seg:
+        return None
+    import pymupdf
+    y0 = min(ln["y0"] for ln in seg) / ocr_zoom - pad_pt
+    y1 = max(ln["y1"] for ln in seg) / ocr_zoom + pad_pt
+    y0 = max(0.0, y0)
+    y1 = min(page.rect.height, y1)
+    if y1 <= y0:
+        return None
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(disp_zoom, disp_zoom),
+                          clip=pymupdf.Rect(0, y0, page.rect.width, y1))
+    return pix.tobytes("png")
+
+
 def extract_receipt_page(page, zoom: float = 2.0) -> list[dict]:
     """OCR + parse one receipts page into its deposit-slip records."""
     lines = _ocr_page(page, zoom)
@@ -811,6 +831,7 @@ def extract_receipt_page(page, zoom: float = 2.0) -> list[dict]:
         if not any(rec.get(k) for k in
                    ("slip_no", "vehicle_no", "application_no", "receipt_no")):
             continue
+        rec["_image_crop_png"] = crop_receipt_png(page, seg, zoom)
         out.append(rec)
     return out
 

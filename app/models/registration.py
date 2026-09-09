@@ -142,6 +142,9 @@ class ReceiptRecord(db.Model):
     total_amount = db.Column(db.Numeric(12, 2), nullable=True)
     bank_charges = db.Column(db.Numeric(12, 2), nullable=True)
     bank_total = db.Column(db.Numeric(12, 2), nullable=True)
+    # Filename of the cropped scan of this receipt's region on the source page
+    # (shown in the image viewer on the records page).
+    image_crop = db.Column(db.String(255), nullable=True)
 
     is_duplicate = db.Column(db.Boolean, default=False, nullable=False)
     confidence = db.Column(db.Float, nullable=True)
