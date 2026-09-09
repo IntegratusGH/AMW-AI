@@ -424,6 +424,32 @@ def _engine_valid(t: str) -> bool:
     return 5 <= len(t) <= 17 and any(c.isdigit() for c in t)
 
 
+def _reg_wellformed(s: str) -> bool:
+    """Province-aware plate check used to choose between a coarse and a refined
+    reading (stricter than _reg_valid, which is structure-only): a province-
+    prefix plate must carry a real 2-letter province code."""
+    s = (s or "").upper()
+    m = re.fullmatch(r"([A-Z]{2}) [A-Z]{2,3}-\d{1,4}", s)
+    if m:
+        return m.group(1) in _LK_PROVINCES
+    return bool(re.fullmatch(r"[A-Z]{2,3}-\d{1,4}", s)
+                or re.fullmatch(r"\d{1,3}-\d{4}", s))
+
+
+def _prefer_coarse(refined, r_conf, coarse, c_conf, wellformed):
+    """Choose between the refined (multi-zoom crop) reading and the coarse full-
+    page reading.  A high-zoom crop can amplify noise on faint text and vote a
+    consistent-but-malformed value (e.g. a plate whose 2-letter prefix is not a
+    real province); when the refined reading is malformed and the coarse one is
+    well-formed, keep the coarse reading.  Otherwise keep the refined reading,
+    which corrects the systematic digit/letter confusions the single full-page
+    pass makes.  Returns ``(text, conf)``."""
+    if refined and coarse and refined != coarse \
+            and wellformed(coarse) and not wellformed(refined):
+        return coarse, c_conf
+    return refined, r_conf
+
+
 def _vote(cands: list[tuple[str, float]], prefer_len: int | None = None,
          validator=None):
     """Length + per-character weighted majority vote across OCR passes.
@@ -765,6 +791,9 @@ def _refine_field(page, line, full_zoom, kind, fallback):
         cand_strs = [c for c, _ in cands if len(c) >= 15]
         if not text:
             return fallback, None, cand_strs
+        fb = _norm_chassis(fallback) if fallback else ""
+        text, conf = _prefer_coarse(text, conf, fb, line.get("score"),
+                                    _chassis_valid)
         return text, conf, cand_strs
     if kind == "engine":
         cands = [(_norm_engine(t), w) for t, w in raw if len(_norm_engine(t)) >= 5]
@@ -776,6 +805,9 @@ def _refine_field(page, line, full_zoom, kind, fallback):
         cand_strs = [c for c, _ in cands if len(c) >= 6]
         if not text:
             return fallback, None, cand_strs
+        fb = _norm_engine(fallback) if fallback else ""
+        text, conf = _prefer_coarse(text, conf, fb, line.get("score"),
+                                    _engine_valid)
         return text, conf, cand_strs
     cands = [(_norm_reg(t), w) for t, w in raw
              if len(_norm_reg(t)) >= 4 and any(c.isdigit() for c in _norm_reg(t))]
@@ -786,7 +818,11 @@ def _refine_field(page, line, full_zoom, kind, fallback):
     text, conf = _vote(cands, validator=_reg_valid)
     if not text:
         return fallback, None, []
-    return _fix_reg_lk(text), conf, []
+    refined = _fix_reg_lk(text)
+    coarse = _fix_reg_lk(_norm_reg(fallback)) if fallback else ""
+    text, conf = _prefer_coarse(refined, conf, coarse, line.get("score"),
+                               _reg_wellformed)
+    return text, conf, []
 
 
 def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0):
@@ -1027,7 +1063,11 @@ def _refine_vehicle(page, line, full_zoom, fallback):
     text, conf = _vote(cands)
     if not text:
         return _fix_reg_lk(fallback), None
-    return _fix_reg_lk(text), conf
+    refined = _fix_reg_lk(text)
+    coarse = _fix_reg_lk(_norm_reg(fallback)) if fallback else ""
+    refined, conf = _prefer_coarse(refined, conf, coarse, line.get("score"),
+                                   _reg_wellformed)
+    return refined, conf
 
 
 def _refine_amount(page, line, full_zoom, fallback):
