@@ -385,7 +385,7 @@ def registration_updater():
         record_audit("cr_book_uploaded", f"file={name}")
         db.session.commit()
         flash("CR Book uploaded. Click Process to extract records.", "success")
-        return redirect(url_for("main.registration_updater"))
+        return redirect(url_for("main.registration_updater", tab="cr"))
 
     if rc_form.submit_rc.data and rc_form.validate_on_submit():
         name, path = _save_doc(
@@ -397,14 +397,19 @@ def registration_updater():
         record_audit("receipt_uploaded", f"file={name}")
         db.session.commit()
         flash("Receipts uploaded. Click Process to extract records.", "success")
-        return redirect(url_for("main.registration_updater"))
+        return redirect(url_for("main.registration_updater", tab="rc"))
 
     cr_uploads = CRBookUpload.query.order_by(CRBookUpload.uploaded_at.desc()).all()
     rc_uploads = ReceiptUpload.query.order_by(ReceiptUpload.uploaded_at.desc()).all()
+    # Keep the user on the tab they acted from: an explicit ?tab= wins, else fall
+    # back to whichever form reported validation errors (default CR).
+    active_tab = request.args.get("tab")
+    if active_tab not in ("cr", "rc"):
+        active_tab = "rc" if (rc_form.errors and not cr_form.errors) else "cr"
     return render_template(
         "main/registration_updater.html", module=module,
         cr_form=cr_form, rc_form=rc_form,
-        cr_uploads=cr_uploads, rc_uploads=rc_uploads)
+        cr_uploads=cr_uploads, rc_uploads=rc_uploads, active_tab=active_tab)
 
 
 @main_bp.route("/operations/registration-updater/<kind>/<int:upload_id>/process",
@@ -417,7 +422,7 @@ def process_upload(kind: str, upload_id: int):
     up = db.session.get(_DOC_KINDS[kind]["upload_model"], upload_id) or abort(404)
     if up.status == STATUS_PROCESSING:
         flash("This file is already being processed.", "info")
-        return redirect(url_for("main.registration_updater"))
+        return redirect(url_for("main.registration_updater", tab=kind))
     up.status = STATUS_PROCESSING
     up.error = None
     db.session.commit()
@@ -425,7 +430,7 @@ def process_upload(kind: str, upload_id: int):
     _start_processing(kind, upload_id)
     flash("Processing started (OCR runs in the background). Refresh to see "
           "results.", "success")
-    return redirect(url_for("main.registration_updater"))
+    return redirect(url_for("main.registration_updater", tab=kind))
 
 
 @main_bp.route("/operations/registration-updater/status")
@@ -542,7 +547,7 @@ def delete_upload(kind: str, upload_id: int):
     record_audit(f"{kind}_upload_deleted", f"file={name}")
     db.session.commit()
     flash(f"Deleted '{name}' and its extracted records.", "success")
-    return redirect(url_for("main.registration_updater"))
+    return redirect(url_for("main.registration_updater", tab=kind))
 
 
 @main_bp.route("/profile", methods=["GET", "POST"])

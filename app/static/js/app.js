@@ -23,6 +23,17 @@
         root.querySelectorAll(".tab-panel").forEach(function (p) {
           p.classList.toggle("is-active", p.id === target);
         });
+        // Persist the active tab in the URL so a reload (incl. the status
+        // poll's reload) or a Back navigation keeps the same tab.
+        var param = root.getAttribute("data-tabs-url-param");
+        if (param) {
+          var key = btn.getAttribute("data-tab-key") || target.replace(/^tab-/, "");
+          try {
+            var url = new URL(window.location.href);
+            url.searchParams.set(param, key);
+            window.history.replaceState(null, "", url);
+          } catch (e) {}
+        }
       });
     });
   });

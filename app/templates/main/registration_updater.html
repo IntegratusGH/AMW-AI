@@ -65,13 +65,13 @@
 {% block content %}
 {% if module.description %}<p class="muted reg-intro">{{ module.description }}</p>{% endif %}
 
-{% set active_tab = 'rc' if (rc_form.errors and not cr_form.errors) else 'cr' %}
-<div class="tabs" data-tabs>
+{% set active_tab = active_tab if active_tab is defined else ('rc' if (rc_form.errors and not cr_form.errors) else 'cr') %}
+<div class="tabs" data-tabs data-tabs-url-param="tab">
   <div class="tab-bar" role="tablist">
-    <button class="tab-btn {{ 'is-active' if active_tab == 'cr' }}" type="button" role="tab" data-tab-target="tab-cr">
+    <button class="tab-btn {{ 'is-active' if active_tab == 'cr' }}" type="button" role="tab" data-tab-target="tab-cr" data-tab-key="cr">
       {{ icon('file-check', 16) }} CR Book upload
     </button>
-    <button class="tab-btn {{ 'is-active' if active_tab == 'rc' }}" type="button" role="tab" data-tab-target="tab-rc">
+    <button class="tab-btn {{ 'is-active' if active_tab == 'rc' }}" type="button" role="tab" data-tab-target="tab-rc" data-tab-key="rc">
       {{ icon('credit-card', 16) }} Registration Receipts upload
     </button>
   </div>

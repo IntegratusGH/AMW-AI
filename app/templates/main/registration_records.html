@@ -10,10 +10,10 @@
   <p class="muted">{{ records|length }} record(s) &middot; captured {{ upload.captured_records }},
     duplicates {{ upload.duplicate_records }}{% if kind in ['cr', 'rc'] %} &middot;
     <strong>{{ review_count }} need review</strong>{% endif %}</p>
-  <a class="btn" href="{{ url_for('main.registration_updater') }}">&larr; Back</a>
+  <a class="btn" href="{{ url_for('main.registration_updater', tab=kind) }}">&larr; Back</a>
 </div>
 
-<div class="card table-card" style="overflow-x:auto">
+<div class="card table-card">
   <table class="table">
     {% if kind == 'cr' %}
     <thead>
