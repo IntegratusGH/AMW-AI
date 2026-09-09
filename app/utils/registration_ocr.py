@@ -719,6 +719,9 @@ def extract_cr_records(path: str, zoom: float = 3.0) -> tuple[int, list[dict]]:
 # slip still anchors its receipt instead of the whole receipt being dropped.
 _SLIP_RE = re.compile(r"^0\d{6,7}$")
 _AMOUNT_RE = re.compile(r"\d[\d,]*\.\d{2}")
+# Vehicle plate: 2-3 letters, then a digit group, tolerating OCR separator
+# noise between them (e.g. 'BLM--1625', 'BLM 1625').
+_VEHICLE_RE = re.compile(r"\b([A-Z]{2,3})[-\s.]{0,3}(\d{3,4})([A-Z]?)\b")
 
 
 def _to_decimal(s: str | None):
@@ -745,6 +748,90 @@ def _amount_after(seg: list[dict], fragments: list[str]):
     return None
 
 
+def _refine_vehicle(page, line, full_zoom, fallback):
+    """High-accuracy vehicle number via multi-scale recognition-only OCR of the
+    plate line + voting, normalised to the Sri Lankan plate format.  Returns
+    ``(value, confidence)``.  This field is critical, so it is recognised across
+    more zoom levels than the general refinement."""
+    if page is None or line is None:
+        return _fix_reg_lk(fallback), None
+    import pymupdf
+    rect = pymupdf.Rect(
+        line["x0"] / full_zoom - 6, line["y0"] / full_zoom - 4,
+        line["x1"] / full_zoom + 18, line["y1"] / full_zoom + 4)
+    raw = _rec_candidates(page, rect, zooms=(3, 4, 6, 8, 10))
+    cands: list[tuple[str, float]] = []
+    for t, w in raw:
+        v = _norm_reg(t).replace("-", "")
+        if 5 <= len(v) <= 8 and any(c.isalpha() for c in v) \
+                and any(c.isdigit() for c in v):
+            cands.append((v, w))
+    if fallback:
+        fb = _norm_reg(fallback).replace("-", "")
+        if 5 <= len(fb) <= 8:
+            cands.append((fb, 0.5))
+    text, conf = _vote(cands)
+    if not text:
+        return _fix_reg_lk(fallback), None
+    return _fix_reg_lk(text), conf
+
+
+def reconcile_receipt_numbers(seq: list) -> list:
+    """Enforce the printed sequential receipt numbering across a batch.
+    Receipt numbers increment by one per receipt, so anchor on the reliably
+    read values (dropping lone-spike misreads) and fill every position from the
+    nearest anchor.  Genuine gaps/discontinuities in the printed numbering are
+    preserved.  ``seq`` is the OCR'd receipt_no per receipt in order."""
+    n = len(seq)
+    anchors: list[tuple[int, int]] = []
+    for i, v in enumerate(seq):
+        if v is None:
+            continue
+        try:
+            iv = int(str(v).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1 <= iv <= 9999:
+            anchors.append((i, iv))
+    if not anchors:
+        return list(seq)
+    offs = [v - i for i, v in anchors]
+    keep = []
+    for k in range(len(anchors)):
+        prevo = offs[k - 1] if k > 0 else None
+        nexto = offs[k + 1] if k + 1 < len(offs) else None
+        if prevo is not None and nexto is not None \
+                and offs[k] != prevo and offs[k] != nexto:
+            continue  # lone-spike misread -> drop
+        keep.append(anchors[k])
+    if not keep:
+        keep = anchors
+    out = list(seq)
+    for i in range(n):
+        j, jv = min(keep, key=lambda a: (abs(a[0] - i), a[0]))
+        out[i] = str(jv + (i - j))
+    return out
+
+
+def reconcile_receipt_dates(dates: list) -> str | None:
+    """All receipts in a batch are printed the same day -> return the modal
+    valid DD/MM/YYYY date (or ``None`` when none are valid)."""
+    from collections import Counter
+    valid = []
+    for d in dates:
+        if not d:
+            continue
+        m = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", str(d).strip())
+        if not m:
+            continue
+        dd, mm, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= dd <= 31 and 1 <= mm <= 12 and 2000 <= yy <= 2100:
+            valid.append(f"{m.group(1)}/{m.group(2)}/{m.group(3)}")
+    if not valid:
+        return None
+    return Counter(valid).most_common(1)[0][0]
+
+
 def _parse_receipt_segment(seg: list[dict]) -> dict:
     text = "\n".join(ln["text"] for ln in seg)
     rec: dict = {"raw_text": text, "confidence": _mean_score(seg)}
@@ -760,21 +847,44 @@ def _parse_receipt_segment(seg: list[dict]) -> dict:
     m = re.search(r"\b(\d{2})[/\s.]{0,2}(\d{2})[/\s.]{0,2}(\d{4})\b", text)
     if m:
         rec["receipt_date"] = f"{m.group(1)}/{m.group(2)}/{m.group(3)}"
-    m = re.search(r"\b([A-Z]{2,3}-\d{3,4}[A-Z]?)\b", text)
-    if m:
-        rec["vehicle_no"] = m.group(1)
+    # vehicle no: capture the matching line so it can be re-OCR'd at multiple
+    # zooms for accuracy (this is a critical field).
+    for ln in seg:
+        mm = _VEHICLE_RE.search(ln["text"].upper())
+        if mm:
+            rec["vehicle_no"] = f"{mm.group(1)}-{mm.group(2)}{mm.group(3)}"
+            rec["_vehicle_line"] = ln
+            break
+    if "vehicle_no" not in rec:
+        mm = _VEHICLE_RE.search(text.upper())
+        if mm:
+            rec["vehicle_no"] = f"{mm.group(1)}-{mm.group(2)}{mm.group(3)}"
     m = re.search(r"\b(RK\d{6,})\b", text, re.I)
     if m:
         rec["application_no"] = m.group(1).upper()
 
-    # receipt no: small integer on the line after the "Receipt No" label
+    # receipt no: the numeric token on the same row to the right of the "Receipt
+    # No" label (the layout the printer uses), else on the line just below it.
     for i, ln in enumerate(seg):
         if "receiptno" in _norm(ln["text"]):
-            for nxt in seg[i + 1:i + 3]:
-                mm = re.search(r"\b(\d{1,5})\b", nxt["text"])
-                if mm:
-                    rec["receipt_no"] = mm.group(1)
-                    break
+            ly0, ly1, lx1 = ln["y0"], ln["y1"], ln.get("x1", 0)
+            best = None
+            for o in seg:
+                if o is ln:
+                    continue
+                oy = (o["y0"] + o["y1"]) / 2
+                if ly0 - 14 <= oy <= ly1 + 14 and o.get("x0", 0) >= lx1 - 20:
+                    mm = re.fullmatch(r"\d{1,4}", o["text"].strip())
+                    if mm and (best is None or o.get("x0", 0) < best[0]):
+                        best = (o.get("x0", 0), mm.group(0))
+            if best:
+                rec["receipt_no"] = best[1]
+            else:
+                for nxt in seg[i + 1:i + 3]:
+                    mm = re.search(r"\b(\d{1,4})\b", nxt["text"])
+                    if mm:
+                        rec["receipt_no"] = mm.group(1)
+                        break
             break
 
     rec["bank_charges"] = _amount_after(seg, ["servicecharg", "charges"])
@@ -862,6 +972,11 @@ def extract_receipt_page(page, zoom: float = 2.0) -> list[dict]:
         if not any(rec.get(k) for k in
                    ("slip_no", "vehicle_no", "application_no", "receipt_no")):
             continue
+        # refine the vehicle number with multi-scale recognition OCR + voting.
+        vline = rec.pop("_vehicle_line", None)
+        v, _vconf = _refine_vehicle(page, vline, zoom, rec.get("vehicle_no"))
+        if v:
+            rec["vehicle_no"] = v
         # crop from the PEOPLE'S header (segment top) to the Cashier footer.
         y0_px = min(ln["y0"] for ln in seg)
         csh = [ln for ln in seg if _is_cashier(ln["text"])]
