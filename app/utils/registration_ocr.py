@@ -784,34 +784,65 @@ def _parse_receipt_segment(seg: list[dict]) -> dict:
     return rec
 
 
-def _segment_receipts(lines: list[dict]) -> list[list[dict]]:
-    """Split OCR lines into per-receipt groups anchored on the slip number."""
+# A receipt's visual anchors on the Peoples-Bank slip: the bold "PEOPLE'S"
+# header (top) and the "Cashier" footer (bottom).  A single receipt runs from
+# just above its PEOPLE'S header to just after the following Cashier line.
+def _is_people(text: str) -> bool:
+    return "people" in _norm(text)
+
+
+def _is_cashier(text: str) -> bool:
+    return "cashier" in _norm(text)
+
+
+# Minimum vertical gap (px @ OCR zoom) between two headers to treat them as
+# separate receipts; closer ones are a split/duplicated header for one slip.
+_RECEIPT_MIN_GAP = 200
+
+
+def _segment_by_slip(lines: list[dict]) -> list[list[dict]]:
+    """Fallback: split OCR lines into per-receipt groups on the slip number."""
     anchors = [i for i, ln in enumerate(lines) if _SLIP_RE.match(ln["text"].strip())]
     if not anchors:
         return [lines] if lines else []
     segments = []
     for idx, start in enumerate(anchors):
         end = anchors[idx + 1] if idx + 1 < len(anchors) else len(lines)
-        # include a little context above the anchor (header lines)
         ctx = max(0, start - 6) if idx == 0 else anchors[idx - 1] + 1
         seg_start = ctx if idx == 0 else start
         segments.append(lines[seg_start:end])
     return segments
 
 
-def crop_receipt_png(page, seg: list[dict], ocr_zoom: float,
-                     disp_zoom: float = 2.0, pad_pt: float = 6.0) -> bytes | None:
-    """Render the source-page region spanned by a receipt segment to a PNG
-    (bytes) for the image viewer.  Segment line coords are in full-page pixel
-    space at ``ocr_zoom``; convert to PDF points and render the full page width
-    across the segment's vertical extent (with a little padding)."""
-    if not seg:
-        return None
+def _segment_receipts(lines: list[dict]) -> list[list[dict]]:
+    """Split OCR lines into per-receipt groups anchored on the bold PEOPLE'S
+    header, so each slip is bounded by its own header/footer.  Falls back to
+    slip-number anchoring when no headers are detected."""
+    people = []
+    for i, ln in enumerate(lines):
+        if _is_people(ln["text"]):
+            # collapse a split/duplicated header for the same slip
+            if people and (ln["y0"] - lines[people[-1]]["y0"]) < _RECEIPT_MIN_GAP:
+                continue
+            people.append(i)
+    if not people:
+        return _segment_by_slip(lines)
+    segments = []
+    for k, start in enumerate(people):
+        end = people[k + 1] if k + 1 < len(people) else len(lines)
+        segments.append(lines[start:end])
+    return segments
+
+
+def crop_receipt_png(page, y0_px: float, y1_px: float, ocr_zoom: float,
+                     disp_zoom: float = 2.0, pad_above_pt: float = 8.0,
+                     pad_below_pt: float = 10.0) -> bytes | None:
+    """Render one receipt's region (full page width, from a little above its
+    PEOPLE'S header to a little after its Cashier footer) to a PNG.  Bounds are
+    given in full-page pixel space at ``ocr_zoom``; converted to PDF points."""
     import pymupdf
-    y0 = min(ln["y0"] for ln in seg) / ocr_zoom - pad_pt
-    y1 = max(ln["y1"] for ln in seg) / ocr_zoom + pad_pt
-    y0 = max(0.0, y0)
-    y1 = min(page.rect.height, y1)
+    y0 = max(0.0, y0_px / ocr_zoom - pad_above_pt)
+    y1 = min(page.rect.height, y1_px / ocr_zoom + pad_below_pt)
     if y1 <= y0:
         return None
     pix = page.get_pixmap(matrix=pymupdf.Matrix(disp_zoom, disp_zoom),
@@ -831,7 +862,11 @@ def extract_receipt_page(page, zoom: float = 2.0) -> list[dict]:
         if not any(rec.get(k) for k in
                    ("slip_no", "vehicle_no", "application_no", "receipt_no")):
             continue
-        rec["_image_crop_png"] = crop_receipt_png(page, seg, zoom)
+        # crop from the PEOPLE'S header (segment top) to the Cashier footer.
+        y0_px = min(ln["y0"] for ln in seg)
+        csh = [ln for ln in seg if _is_cashier(ln["text"])]
+        y1_px = csh[-1]["y1"] if csh else max(ln["y1"] for ln in seg)
+        rec["_image_crop_png"] = crop_receipt_png(page, y0_px, y1_px, zoom)
         out.append(rec)
     return out
 
