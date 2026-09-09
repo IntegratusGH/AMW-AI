@@ -62,6 +62,45 @@ def _ocr(png_bytes: bytes) -> list[dict]:
     return lines
 
 
+def _ocr_page(page, zoom: float = 2.0, tile_px: int = 2000,
+              overlap_px: int = 250, max_px: int = 3000) -> list[dict]:
+    """OCR a full page.  Very tall pages (e.g. a continuous receipt-roll strip
+    with many slips stacked vertically) exceed the text detector's input size
+    and get downscaled until most text is unreadable, so render and OCR them in
+    overlapping vertical tiles and merge the lines into full-page pixel
+    coordinates.  Normal-height pages take the single-pass path unchanged."""
+    import pymupdf
+    if page.rect.height * zoom <= max_px:
+        return _ocr(_render_page_png(page, zoom))
+    w_pt = page.rect.width
+    tile_pt = tile_px / zoom
+    step_pt = (tile_px - overlap_px) / zoom
+    merged: list[dict] = []
+    y = 0.0
+    while y < page.rect.height:
+        y1 = min(y + tile_pt, page.rect.height)
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom),
+                              clip=pymupdf.Rect(0, y, w_pt, y1))
+        off = y * zoom
+        for ln in _ocr(pix.tobytes("png")):
+            ln["y0"] += off; ln["y1"] += off; ln["cy"] += off
+            merged.append(ln)
+        if y1 >= page.rect.height:
+            break
+        y += step_pt
+    merged.sort(key=lambda d: (round(d["y0"]), d["x0"]))
+    # Drop duplicates introduced by the tile overlaps (same text, same place).
+    dedup: list[dict] = []
+    for ln in merged:
+        if any(o["text"] == ln["text"]
+               and abs(o["cy"] - ln["cy"]) < 20 * zoom
+               and abs(o["x0"] - ln["x0"]) < 30 * zoom
+               for o in dedup[-40:]):
+            continue
+        dedup.append(ln)
+    return dedup
+
+
 def _get_recognizer():
     return _get_engine().text_recognizer
 
@@ -675,7 +714,10 @@ def extract_cr_records(path: str, zoom: float = 3.0) -> tuple[int, list[dict]]:
 # ---------------------------------------------------------------------------
 # Receipt extraction (many bank deposit slips per file)
 # ---------------------------------------------------------------------------
-_SLIP_RE = re.compile(r"^0\d{6}$")
+# Deposit-slip serial: a leading 0 then 6 digits.  Also accept 7 (i.e. an
+# 8-digit token) to tolerate the occasional doubled-digit OCR glitch so the
+# slip still anchors its receipt instead of the whole receipt being dropped.
+_SLIP_RE = re.compile(r"^0\d{6,7}$")
 _AMOUNT_RE = re.compile(r"\d[\d,]*\.\d{2}")
 
 
@@ -759,7 +801,7 @@ def _segment_receipts(lines: list[dict]) -> list[list[dict]]:
 
 def extract_receipt_page(page, zoom: float = 2.0) -> list[dict]:
     """OCR + parse one receipts page into its deposit-slip records."""
-    lines = _ocr(_render_page_png(page, zoom))
+    lines = _ocr_page(page, zoom)
     out: list[dict] = []
     for seg in _segment_receipts(lines):
         if not seg:
