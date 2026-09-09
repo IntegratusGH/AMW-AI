@@ -134,6 +134,44 @@ def _crop_bgr(page, rect, zoom: float):
     return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
 
+def _deskew(bgr):
+    """Correct a small rotation on a text crop so the recognizer sees a level
+    line.  Estimates the dominant text angle from the binarised foreground and
+    only rotates for a small, safe correction (<=10 deg); otherwise returns the
+    crop unchanged."""
+    import cv2
+    import numpy as np
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    th = cv2.threshold(gray, 0, 255,
+                       cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+    coords = np.column_stack(np.where(th > 0))
+    if coords.shape[0] < 20:
+        return bgr
+    angle = cv2.minAreaRect(coords.astype(np.float32))[-1]
+    if angle > 45:
+        angle -= 90
+    if abs(angle) < 0.3 or abs(angle) > 10:
+        return bgr
+    h, w = bgr.shape[:2]
+    m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)
+    return cv2.warpAffine(bgr, m, (w, h), flags=cv2.INTER_CUBIC,
+                          borderMode=cv2.BORDER_REPLICATE)
+
+
+def _fit_height(img, lo: int = 24, hi: int = 64, target: int = 48):
+    """Normalise a crop's height into the band the recognizer is trained on
+    (~32-48 px) so neither an over-zoomed nor an under-zoomed pass feeds it
+    poorly-conditioned text."""
+    import cv2
+    h = img.shape[0]
+    if h == 0 or lo <= h <= hi:
+        return img
+    scale = target / float(h)
+    w = max(1, int(round(img.shape[1] * scale)))
+    interp = cv2.INTER_AREA if h > target else cv2.INTER_CUBIC
+    return cv2.resize(img, (w, target), interpolation=interp)
+
+
 def _preprocess_variants(bgr):
     """Return several renderings of a crop so systematic misreads (e.g. 5<->S)
     differ across at least one variant, giving the vote a chance to correct."""
@@ -144,20 +182,25 @@ def _preprocess_variants(bgr):
     adaptive = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10)
     sharp = cv2.filter2D(bgr, -1, np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]]))
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
     return [
         bgr,
         cv2.cvtColor(otsu, cv2.COLOR_GRAY2BGR),
         cv2.cvtColor(adaptive, cv2.COLOR_GRAY2BGR),
         sharp,
+        cv2.cvtColor(clahe, cv2.COLOR_GRAY2BGR),
     ]
 
 
-def _rec_candidates(page, rect, zooms=(4, 6, 8, 10)) -> list[tuple[str, float]]:
-    """Recognize a cropped region at several zooms x preprocessing variants."""
+def _rec_candidates(page, rect, zooms=(4, 6, 9)) -> list[tuple[str, float]]:
+    """Recognize a cropped region at several zooms x preprocessing variants.
+    Each crop is deskewed and height-normalised so the recognizer sees text at
+    a consistent, well-conditioned scale."""
     out: list[tuple[str, float]] = []
     for z in zooms:
-        for im in _preprocess_variants(_crop_bgr(page, rect, z)):
-            out.extend(_rec_only(im))
+        base = _deskew(_crop_bgr(page, rect, z))
+        for im in _preprocess_variants(base):
+            out.extend(_rec_only(_fit_height(im)))
     return out
 
 
@@ -346,11 +389,34 @@ def _norm_reg(t: str) -> str:
     return re.sub(r"[^A-Za-z0-9-]", "", (t or "")).upper()
 
 
-def _vote(cands: list[tuple[str, float]], prefer_len: int | None = None):
+def _norm_engine(t: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", (t or "")).upper()
+
+
+# Structure validators used to *boost* (never remove) OCR candidates that match
+# each field's known shape, nudging the vote toward well-formed readings.
+def _chassis_valid(t: str) -> bool:
+    return len(t) == 17 and not any(c in "IOQ" for c in t)
+
+
+def _reg_valid(t: str) -> bool:
+    s = t.replace("-", "")
+    return bool(re.fullmatch(r"[A-Z]{2,5}\d{1,4}", s)
+                or re.fullmatch(r"\d{2,3}\d{4}", s))
+
+
+def _engine_valid(t: str) -> bool:
+    return 5 <= len(t) <= 17 and any(c.isdigit() for c in t)
+
+
+def _vote(cands: list[tuple[str, float]], prefer_len: int | None = None,
+         validator=None):
     """Length + per-character weighted majority vote across OCR passes.
 
     Groups candidates by length (with an optional prior for ``prefer_len``),
-    then for each position picks the highest-weight character.  Returns
+    then for each position picks the highest-weight character.  When a
+    ``validator`` is given, candidates matching the field's structure are
+    up-weighted (never dropped) so a well-formed reading wins ties.  Returns
     ``(text, confidence)`` where confidence blends mean OCR score, per-character
     agreement and length agreement."""
     from collections import defaultdict
@@ -358,6 +424,8 @@ def _vote(cands: list[tuple[str, float]], prefer_len: int | None = None):
     cands = [(t, w) for t, w in cands if t]
     if not cands:
         return None, 0.0
+    if validator is not None:
+        cands = [(t, w * 1.25 if validator(t) else w) for t, w in cands]
     lenw: dict[int, float] = defaultdict(float)
     for t, w in cands:
         lenw[len(t)] += w
@@ -378,7 +446,9 @@ def _vote(cands: list[tuple[str, float]], prefer_len: int | None = None):
         agrees.append(cw[ch] / tot)
     char_agree = sum(agrees) / len(agrees) if agrees else 0.0
     mean_score = sum(w for _, w in grp) / len(grp) if grp else 0.0
-    conf = round(mean_score * char_agree * len_agree, 4)
+    # ``mean_score`` can exceed 1.0 when validator up-weighting is applied; clamp
+    # so confidence stays in [0, 1] for the review thresholds.
+    conf = round(min(mean_score, 1.0) * char_agree * len_agree, 4)
     return "".join(chars), conf
 
 
@@ -407,6 +477,16 @@ def _reg_review(rg: str | None, conf) -> bool:
     if re.fullmatch(r"[A-Z]{2,3}-\d{1,4}", s) or re.fullmatch(r"\d{1,3}-\d{4}", s):
         return False
     return True
+
+
+def _engine_review(en: str | None, conf) -> bool:
+    """Flag an engine no for human check on low confidence, an implausible
+    length, or a value with no digits (engine serials always carry digits)."""
+    if not en or conf is None or conf < 0.60:
+        return True
+    if not (5 <= len(en) <= 17):
+        return True
+    return not any(c.isdigit() for c in en)
 
 
 # Well-known OCR digit<->letter confusions (letter -> the digit it is usually a
@@ -666,8 +746,19 @@ def _refine_field(page, line, full_zoom, kind, fallback):
             fb = _norm_chassis(fallback)
             if len(fb) >= 6:
                 cands.append((fb, 0.5))
-        text, conf = _vote(cands, prefer_len=17)
+        text, conf = _vote(cands, prefer_len=17, validator=_chassis_valid)
         cand_strs = [c for c, _ in cands if len(c) >= 15]
+        if not text:
+            return fallback, None, cand_strs
+        return text, conf, cand_strs
+    if kind == "engine":
+        cands = [(_norm_engine(t), w) for t, w in raw if len(_norm_engine(t)) >= 5]
+        if fallback:
+            fb = _norm_engine(fallback)
+            if len(fb) >= 5:
+                cands.append((fb, 0.5))
+        text, conf = _vote(cands, validator=_engine_valid)
+        cand_strs = [c for c, _ in cands if len(c) >= 6]
         if not text:
             return fallback, None, cand_strs
         return text, conf, cand_strs
@@ -677,7 +768,7 @@ def _refine_field(page, line, full_zoom, kind, fallback):
         fb = _norm_reg(fallback)
         if len(fb) >= 4:
             cands.append((fb, 0.5))
-    text, conf = _vote(cands)
+    text, conf = _vote(cands, validator=_reg_valid)
     if not text:
         return fallback, None, []
     return _fix_reg_lk(text), conf, []
@@ -764,10 +855,17 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
 
     en_lbl = _find_label(lines, _CR_LABELS["engine_no"])
     en_line = _line_below(lines, en_lbl) if en_lbl else None
+    en_val, en_conf, en_cands = _refine_field(page, en_line, full_zoom, "engine",
+                                              rec.get("engine_no"))
+    if en_val:
+        rec["engine_no"] = en_val
+    rec["engine_no_confidence"] = en_conf
+    rec["_engine_cands"] = en_cands
     rec["_engine_crop_png"] = crop_value_png(page, en_line, full_zoom)
 
     rec["needs_review"] = bool(_chassis_review(rec.get("chassis_no"), ch_conf)
-                               or _reg_review(rec.get("registration_no"), rg_conf))
+                               or _reg_review(rec.get("registration_no"), rg_conf)
+                               or _engine_review(rec.get("engine_no"), en_conf))
 
     rec["raw_text"] = full
     rec["confidence"] = _mean_score(lines)

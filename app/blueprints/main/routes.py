@@ -295,19 +295,39 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             if kind == "cr" and cr_pending:
                 mask = ocr.build_chassis_mask(
                     [r.get("_chassis_cands") for _, r in cr_pending])
-                if mask:
-                    up.progress_message = "Applying batch chassis template\u2026"
+                emask = ocr.build_chassis_mask(
+                    [r.get("_engine_cands") for _, r in cr_pending], min_len=6)
+                if mask or emask:
+                    up.progress_message = "Applying batch templates\u2026"
                     db.session.commit()
                     for rec_obj, r in cr_pending:
-                        new_ch, changed, recovered = ocr.apply_chassis_mask(
-                            rec_obj.chassis_no, mask)
-                        if changed:
-                            rec_obj.chassis_no = new_ch
-                        rec_obj.needs_review = bool(
-                            recovered
-                            or ocr.chassis_needs_review(
+                        recovered = False
+                        if mask:
+                            new_ch, changed, recovered = ocr.apply_chassis_mask(
+                                rec_obj.chassis_no, mask)
+                            if changed:
+                                rec_obj.chassis_no = new_ch
+                        if emask:
+                            new_en, echanged, _ = ocr.apply_chassis_mask(
+                                rec_obj.engine_no, emask)
+                            if echanged:
+                                rec_obj.engine_no = new_en
+                        chassis_bad = (
+                            ocr.chassis_needs_review(
                                 rec_obj.chassis_no, mask,
                                 rec_obj.chassis_no_confidence)
+                            if mask else ocr._chassis_review(
+                                rec_obj.chassis_no,
+                                rec_obj.chassis_no_confidence))
+                        engine_bad = (
+                            ocr.chassis_needs_review(
+                                rec_obj.engine_no, emask,
+                                rec_obj.engine_no_confidence)
+                            if emask else ocr._engine_review(
+                                rec_obj.engine_no,
+                                rec_obj.engine_no_confidence))
+                        rec_obj.needs_review = bool(
+                            recovered or chassis_bad or engine_bad
                             or ocr._reg_review(
                                 rec_obj.registration_no,
                                 rec_obj.registration_no_confidence))
