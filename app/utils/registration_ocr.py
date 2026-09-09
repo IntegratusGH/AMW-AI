@@ -762,6 +762,10 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     rec["registration_no_confidence"] = rg_conf
     rec["_reg_crop_png"] = crop_value_png(page, rg_line, full_zoom)
 
+    en_lbl = _find_label(lines, _CR_LABELS["engine_no"])
+    en_line = _line_below(lines, en_lbl) if en_lbl else None
+    rec["_engine_crop_png"] = crop_value_png(page, en_line, full_zoom)
+
     rec["needs_review"] = bool(_chassis_review(rec.get("chassis_no"), ch_conf)
                                or _reg_review(rec.get("registration_no"), rg_conf))
 

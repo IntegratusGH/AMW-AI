@@ -116,6 +116,7 @@ class CRBookRecord(db.Model):
     # verification / correction on the records page).
     chassis_crop = db.Column(db.String(255), nullable=True)
     reg_crop = db.Column(db.String(255), nullable=True)
+    engine_crop = db.Column(db.String(255), nullable=True)
     current_owner = db.Column(db.String(200), nullable=True)
     current_owner_address = db.Column(db.String(400), nullable=True)
     absolute_owner = db.Column(db.String(300), nullable=True)

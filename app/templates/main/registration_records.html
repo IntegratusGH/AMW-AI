@@ -17,21 +17,13 @@
   <table class="table">
     {% if kind == 'cr' %}
     <thead>
-      <tr><th>Image</th><th>Pg</th><th>Review</th><th>Reg No</th><th>Chassis No</th><th>Engine No</th>
+      <tr><th>Pg</th><th>Review</th><th>Reg No</th><th>Chassis No</th><th>Engine No</th>
         <th>Absolute Owner</th><th>Class</th><th>Fuel</th><th>CC</th><th>Year</th>
-        <th>Colour</th><th>Dup?</th><th>Save</th></tr>
+        <th>Colour</th><th>Save</th><th>Image</th></tr>
     </thead>
     <tbody>
       {% for r in records %}
       <tr class="{{ 'row-review' if r.needs_review else '' }}">
-        <td class="ta-center">
-          {% if r.page_no %}
-          <button type="button" class="act-btn view-img" title="View CR Book page"
-                  aria-label="View CR Book page"
-                  data-img="{{ url_for('main.cr_page_image', upload_id=upload.id, page_no=r.page_no) }}"
-                  data-title="Page {{ r.page_no }}">{{ icon('image', 16) }}</button>
-          {% else %}&mdash;{% endif %}
-        </td>
         <td>{{ r.page_no or '' }}</td>
         <td>{% if r.needs_review %}<span class="badge badge-warning">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
         <td title="confidence {{ '%.2f'|format(r.registration_no_confidence) if r.registration_no_confidence is not none else 'n/a' }}">
@@ -44,14 +36,17 @@
             src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field='chassis') }}">{% endif %}
           <input class="val-edit mono" form="rec{{ r.id }}" name="chassis_no" value="{{ r.chassis_no or '' }}">
         </td>
-        <td class="mono">{{ r.engine_no or '—' }}</td>
+        <td title="Engine No">
+          {% if r.engine_crop %}<img class="val-crop" loading="lazy" alt="Engine No scan"
+            src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field='engine') }}">{% endif %}
+          <span class="val-edit mono">{{ r.engine_no or '—' }}</span>
+        </td>
         <td>{{ r.absolute_owner or '—' }}</td>
         <td>{{ r.class_of_vehicle or '—' }}</td>
         <td>{{ r.fuel_type or '—' }}</td>
         <td>{{ r.cylinder_capacity or '—' }}</td>
         <td>{{ r.year_of_manufacture or '—' }}</td>
         <td>{{ r.colour or '—' }}</td>
-        <td>{% if r.is_duplicate %}<span class="badge badge-warning">Dup</span>{% else %}—{% endif %}</td>
         <td class="actions">
           <form id="rec{{ r.id }}" method="post" class="inline"
                 action="{{ url_for('main.cr_edit_record', upload_id=upload.id, record_id=r.id) }}">
@@ -59,9 +54,17 @@
             <button class="act-btn" type="submit" title="Save corrections" aria-label="Save">{{ icon('check', 16) }}</button>
           </form>
         </td>
+        <td class="ta-center">
+          {% if r.page_no %}
+          <button type="button" class="act-btn view-img" title="View CR Book page"
+                  aria-label="View CR Book page"
+                  data-img="{{ url_for('main.cr_page_image', upload_id=upload.id, page_no=r.page_no) }}"
+                  data-title="Page {{ r.page_no }}">{{ icon('image', 16) }}</button>
+          {% else %}&mdash;{% endif %}
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="14" class="muted ta-center">No records.</td></tr>
+      <tr><td colspan="13" class="muted ta-center">No records.</td></tr>
       {% endfor %}
     </tbody>
     {% else %}

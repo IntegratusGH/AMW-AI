@@ -179,6 +179,18 @@ def _assign_columns(obj, data: dict) -> None:
             setattr(obj, name, val)
 
 
+def _delete_cr_crops(app, rec) -> None:
+    """Remove the cropped value-region files belonging to a CR record."""
+    crop_dir = os.path.join(app.config["CR_BOOK_CROP_DIR"], str(rec.upload_id))
+    for fn in (rec.chassis_crop, rec.reg_crop,
+               getattr(rec, "engine_crop", None)):
+        if fn:
+            try:
+                os.remove(os.path.join(crop_dir, fn))
+            except OSError:
+                pass
+
+
 def _run_processing(app, kind: str, upload_id: int) -> None:
     """OCR a document page-by-page, committing records and live progress after
     each page so the polling UI can show it advancing."""
@@ -246,12 +258,18 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                     for r in page_recs:
                         if kind == "rc":
                             r["segment_no"] = captured + 1
-                        key = (str(r.get(key_field) or "")).strip().upper()
-                        is_dup = bool(key) and key in seen
-                        if key:
-                            seen.add(key)
-                        if is_dup:
-                            duplicates += 1
+                        # CR duplicates are resolved by Registration No in a
+                        # dedicated replace pass after batch correction; here
+                        # only receipts dedup (by slip no) inline.
+                        if kind == "rc":
+                            key = (str(r.get(key_field) or "")).strip().upper()
+                            is_dup = bool(key) and key in seen
+                            if key:
+                                seen.add(key)
+                            if is_dup:
+                                duplicates += 1
+                        else:
+                            is_dup = False
                         rec_obj = RecordModel(upload_id=upload_id, is_duplicate=is_dup)
                         _assign_columns(rec_obj, r)
                         db.session.add(rec_obj)
@@ -280,14 +298,6 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 if mask:
                     up.progress_message = "Applying batch chassis template\u2026"
                     db.session.commit()
-                    ext_seen = {
-                        (v[0] or "").strip().upper()
-                        for v in db.session.query(key_col).filter(
-                            key_col.isnot(None),
-                            RecordModel.upload_id != upload_id).all()
-                        if v[0]}
-                    batch_seen = set()
-                    duplicates = 0
                     for rec_obj, r in cr_pending:
                         new_ch, changed, recovered = ocr.apply_chassis_mask(
                             rec_obj.chassis_no, mask)
@@ -301,14 +311,6 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                             or ocr._reg_review(
                                 rec_obj.registration_no,
                                 rec_obj.registration_no_confidence))
-                        key = (rec_obj.chassis_no or "").strip().upper()
-                        is_dup = bool(key) and (key in ext_seen or key in batch_seen)
-                        if key:
-                            batch_seen.add(key)
-                        rec_obj.is_duplicate = is_dup
-                        if is_dup:
-                            duplicates += 1
-                    up.duplicate_records = duplicates
                     db.session.commit()
 
             # Persist the cropped value-region scans (Chassis No / Reg No) so the
@@ -317,18 +319,64 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 crop_dir = os.path.join(
                     app.config["CR_BOOK_CROP_DIR"], str(upload_id))
                 os.makedirs(crop_dir, exist_ok=True)
+                crop_fields = {
+                    "chassis": ("_chassis_crop_png", "chassis_crop"),
+                    "reg": ("_reg_crop_png", "reg_crop"),
+                    "engine": ("_engine_crop_png", "engine_crop"),
+                }
                 for rec_obj, r in cr_pending:
-                    for field, src in (("chassis", "_chassis_crop_png"),
-                                       ("reg", "_reg_crop_png")):
+                    for field, (src, attr) in crop_fields.items():
                         png = r.get(src)
                         if not png:
                             continue
                         fn = f"{rec_obj.id}_{field}.png"
                         with open(os.path.join(crop_dir, fn), "wb") as fh:
                             fh.write(png)
-                        setattr(rec_obj,
-                                "chassis_crop" if field == "chassis" else "reg_crop",
-                                fn)
+                        setattr(rec_obj, attr, fn)
+                db.session.commit()
+
+            # Registration-No replace/dedup: a record whose Registration No
+            # already exists is treated as an update — the previously stored
+            # record (an earlier upload, or earlier in this same batch) is
+            # removed and this one kept in its place, counted as a duplicate
+            # rather than a fresh capture.
+            if kind == "cr" and cr_pending:
+                up.progress_message = "Replacing existing Registration Nos\u2026"
+                db.session.commit()
+                prior_by_reg: dict[str, list] = {}
+                for other in (RecordModel.query
+                              .filter(RecordModel.upload_id != upload_id,
+                                      RecordModel.registration_no.isnot(None))
+                              .all()):
+                    k = (other.registration_no or "").strip().upper()
+                    if k:
+                        prior_by_reg.setdefault(k, []).append(other)
+                duplicates = 0
+                kept_by_reg: dict[str, object] = {}
+                for rec_obj, r in cr_pending:
+                    key = (rec_obj.registration_no or "").strip().upper()
+                    if not key:
+                        rec_obj.is_duplicate = False
+                        continue
+                    replaced = False
+                    for old in prior_by_reg.pop(key, []):
+                        _delete_cr_crops(app, old)
+                        db.session.delete(old)
+                        replaced = True
+                    earlier = kept_by_reg.get(key)
+                    if earlier is not None:
+                        _delete_cr_crops(app, earlier)
+                        db.session.delete(earlier)
+                        replaced = True
+                    rec_obj.is_duplicate = replaced
+                    kept_by_reg[key] = rec_obj
+                    if replaced:
+                        duplicates += 1
+                db.session.flush()
+                up.duplicate_records = duplicates
+                up.captured_records = (
+                    RecordModel.query.filter_by(upload_id=upload_id).count())
+                captured = up.captured_records
                 db.session.commit()
 
             # Batch reconciliation: receipt numbers are printed sequentially and
@@ -617,14 +665,15 @@ def upload_records(kind: str, upload_id: int):
                "/crop/<int:record_id>/<field>")
 @login_required
 def cr_value_crop(upload_id: int, record_id: int, field: str):
-    """Serve the cropped value-region scan (chassis|reg) for one CR record."""
+    """Serve the cropped value-region scan (chassis|reg|engine) for one record."""
     _require_module(REGISTRATION_UPDATER_KEY)
-    if field not in ("chassis", "reg"):
+    if field not in ("chassis", "reg", "engine"):
         abort(404)
     rec = db.session.get(CRBookRecord, record_id) or abort(404)
     if rec.upload_id != upload_id:
         abort(404)
-    fn = rec.chassis_crop if field == "chassis" else rec.reg_crop
+    fn = {"chassis": rec.chassis_crop, "reg": rec.reg_crop,
+          "engine": rec.engine_crop}.get(field)
     if not fn:
         abort(404)
     crop_dir = os.path.join(current_app.config["CR_BOOK_CROP_DIR"], str(upload_id))
