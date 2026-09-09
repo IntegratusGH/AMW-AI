@@ -63,6 +63,8 @@ class User(UserMixin, db.Model):
     )
     last_login_at = db.Column(db.DateTime)
     must_change_password = db.Column(db.Boolean, default=False, nullable=False)
+    # AI Trainer: may define/train new CR-book formats.
+    is_ai_trainer = db.Column(db.Boolean, default=False, nullable=False)
 
     # --- password helpers -------------------------------------------------
     def set_password(self, password: str) -> None:

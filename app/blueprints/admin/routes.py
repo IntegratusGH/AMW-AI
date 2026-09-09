@@ -92,6 +92,7 @@ def create_user():
                 full_name=form.full_name.data,
                 role_id=form.role.data,
                 is_active=form.is_active.data,
+                is_ai_trainer=form.is_ai_trainer.data,
                 must_change_password=form.must_change_password.data,
             )
             user.set_password(form.password.data)
@@ -140,6 +141,7 @@ def create_ad_user():
                 full_name=full_name,
                 role_id=form.role.data,
                 is_active=form.is_active.data,
+                is_ai_trainer=form.is_ai_trainer.data,
                 auth_source=AUTH_AD,
                 must_change_password=False,
             )
@@ -178,6 +180,7 @@ def edit_user(user_id: int):
         user.full_name = form.full_name.data
         user.role_id = form.role.data
         user.is_active = form.is_active.data
+        user.is_ai_trainer = form.is_ai_trainer.data
         record_audit("user_updated", f"username={user.username}")
         db.session.commit()
         flash(f"User '{user.username}' has been updated.", "success")

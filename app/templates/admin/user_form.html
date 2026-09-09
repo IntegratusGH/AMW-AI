@@ -26,6 +26,10 @@
       {{ form.role(class="input") }}
       {% for e in form.role.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
     </div>
+    <div class="field-inline">
+      <label class="checkbox">{{ form.is_ai_trainer() }}
+        <span>AI Trainer (may define new CR Book formats)</span></label>
+    </div>
     {% if mode == 'create' %}
     <div class="field">
       {{ form.password.label }}

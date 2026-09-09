@@ -69,6 +69,10 @@
       </form>
     {% else %}
       <span class="badge badge-warning">New / unknown format</span>
+      {% if not current_user.is_ai_trainer %}
+      <p class="field-error">The uploaded format is not trained in the AI model.
+        Please contact AI Trainer</p>
+      {% else %}
       <p class="muted">This looks like a CR book, but its layout does not match any
         known format. Name the new format (or assign it to one you already
         created); pages in this upload with the same layout are grouped with it.</p>
@@ -93,6 +97,7 @@
         </label>
         <button class="btn btn-primary" type="submit">{{ icon('check', 16) }} Save format &amp; assign</button>
       </form>
+      {% endif %}
     {% endif %}
   </div>
 </div>

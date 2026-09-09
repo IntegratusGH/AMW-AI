@@ -37,6 +37,7 @@ class CreateUserForm(FlaskForm):
     email = StringField("Email", validators=[DataRequired(), Email(), Length(max=255)])
     full_name = StringField("Full name", validators=[Optional(), Length(max=120)])
     role = SelectField("Role", coerce=int, validators=[DataRequired()])
+    is_ai_trainer = BooleanField("AI Trainer")
     password = PasswordField("Password", validators=[DataRequired(), StrongPassword()])
     confirm_password = PasswordField(
         "Confirm password",
@@ -61,6 +62,7 @@ class CreateADUserForm(FlaskForm):
     email = StringField("Email", validators=[Optional(), Email(), Length(max=255)])
     full_name = StringField("Full name", validators=[Optional(), Length(max=120)])
     role = SelectField("Role", coerce=int, validators=[DataRequired()])
+    is_ai_trainer = BooleanField("AI Trainer")
     is_active = BooleanField("Active", default=True)
     submit = SubmitField("Add AD user")
 
@@ -70,6 +72,7 @@ class EditUserForm(FlaskForm):
     email = StringField("Email", validators=[DataRequired(), Email(), Length(max=255)])
     full_name = StringField("Full name", validators=[Optional(), Length(max=120)])
     role = SelectField("Role", coerce=int, validators=[DataRequired()])
+    is_ai_trainer = BooleanField("AI Trainer")
     is_active = BooleanField("Active")
     submit = SubmitField("Save changes")
 

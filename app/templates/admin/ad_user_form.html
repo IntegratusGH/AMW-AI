@@ -32,6 +32,10 @@
       {% for e in form.role.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
     </div>
     <div class="field-inline">
+      <label class="checkbox">{{ form.is_ai_trainer() }}
+        <span>AI Trainer (may define new CR Book formats)</span></label>
+    </div>
+    <div class="field-inline">
       <label class="checkbox">{{ form.is_active() }} <span>Active</span></label>
     </div>
     <div class="form-actions">

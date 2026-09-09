@@ -404,6 +404,7 @@ def seed_roles_admin(app) -> None:
                 full_name="System Administrator",
                 role_id=admin_role.id,
                 is_active=True,
+                is_ai_trainer=True,
                 must_change_password=True,
             )
             admin.set_password(Config.DEFAULT_ADMIN_PASSWORD)

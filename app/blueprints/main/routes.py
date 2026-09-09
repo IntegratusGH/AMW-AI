@@ -750,8 +750,14 @@ def cr_remove_page(upload_id: int, page_no: int):
 @login_required
 def cr_define_format(upload_id: int, page_no: int):
     """Create/assign a CR-book format for an unknown-format page (and any other
-    unknown pages in this upload whose signature matches it)."""
+    unknown pages in this upload whose signature matches it).
+
+    Restricted to AI Trainers: only they may train the model on a new format."""
     _require_module(REGISTRATION_UPDATER_KEY)
+    if not current_user.is_ai_trainer:
+        flash("The uploaded format is not trained in the AI model. "
+              "Please contact AI Trainer", "danger")
+        return redirect(url_for("main.cr_review", upload_id=upload_id))
     up = db.session.get(CRBookUpload, upload_id) or abort(404)
     page = (CRUploadPage.query
             .filter_by(upload_id=upload_id, page_no=page_no).first() or abort(404))
