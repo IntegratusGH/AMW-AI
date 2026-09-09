@@ -17,14 +17,21 @@
   <table class="table">
     {% if kind == 'cr' %}
     <thead>
-      <tr><th>#</th><th>Pg</th><th>Review</th><th>Reg No</th><th>Chassis No</th><th>Engine No</th>
+      <tr><th>Image</th><th>Pg</th><th>Review</th><th>Reg No</th><th>Chassis No</th><th>Engine No</th>
         <th>Absolute Owner</th><th>Class</th><th>Fuel</th><th>CC</th><th>Year</th>
         <th>Colour</th><th>Dup?</th><th>Save</th></tr>
     </thead>
     <tbody>
       {% for r in records %}
       <tr class="{{ 'row-review' if r.needs_review else '' }}">
-        <td class="mono">{{ r.id }}</td>
+        <td class="ta-center">
+          {% if r.page_no %}
+          <button type="button" class="act-btn view-img" title="View CR Book page"
+                  aria-label="View CR Book page"
+                  data-img="{{ url_for('main.cr_page_image', upload_id=upload.id, page_no=r.page_no) }}"
+                  data-title="Page {{ r.page_no }}">{{ icon('image', 16) }}</button>
+          {% else %}&mdash;{% endif %}
+        </td>
         <td>{{ r.page_no or '' }}</td>
         <td>{% if r.needs_review %}<span class="badge badge-warning">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
         <td title="confidence {{ '%.2f'|format(r.registration_no_confidence) if r.registration_no_confidence is not none else 'n/a' }}">
@@ -96,5 +103,5 @@
   </table>
 </div>
 
-{% if kind == 'rc' %}{% include "main/_image_viewer.html" %}{% endif %}
+{% if kind in ['cr', 'rc'] %}{% include "main/_image_viewer.html" %}{% endif %}
 {% endblock %}
