@@ -98,6 +98,10 @@ class Config:
     # Cropped scan of each receipt's region on the source page, grouped in a
     # sub-directory per upload id.
     RECEIPT_CROP_DIR = str(Path(UPLOAD_DIR) / "receipt_crops")
+    # Persistent labeled-data store for the OCR correction feedback loop: a copy
+    # of each verified value-region crop (kept even after the source upload is
+    # deleted) plus the exported training corpus.
+    OCR_LABEL_DIR = str(Path(UPLOAD_DIR) / "ocr_labels")
     ALLOWED_DOC_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "tif", "tiff"}
     MAX_DOC_UPLOAD_MB = int(os.getenv("MAX_DOC_UPLOAD_MB", "30"))
 

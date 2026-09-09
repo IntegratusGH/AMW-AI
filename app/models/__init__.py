@@ -40,6 +40,7 @@ from app.models.registration import (
     CRBookUpload,
     CRFormat,
     CRUploadPage,
+    OcrCorrection,
     ReceiptRecord,
     ReceiptUpload,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "CRUploadPage",
     "ReceiptUpload",
     "ReceiptRecord",
+    "OcrCorrection",
     "UPLOAD_STATUSES",
     "STATUS_PENDING",
     "STATUS_PROCESSING",

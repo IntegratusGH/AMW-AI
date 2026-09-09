@@ -142,6 +142,7 @@ h1, h2, h3 { margin: 0 0 .4em; font-weight: 650; }
 }
 .card.narrow { max-width: 560px; }
 .card-title { font-size: 16px; }
+.section-title { font-size: 15px; margin: 24px 0 10px; }
 .card-hint { color: var(--text-muted); margin-top: -4px; margin-bottom: 18px; }
 .table-card { padding: 0; overflow: hidden; }
 .two-col { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; align-items: start; }

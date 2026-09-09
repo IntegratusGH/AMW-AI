@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}OCR training{% endblock %}
+{% block page_title %}OCR Training &mdash; accuracy &amp; mined rules{% endblock %}
+{% block content_class %}content--wide{% endblock %}
+
+{% macro field_label(f) -%}
+  {%- if f == 'registration_no' -%}Reg No
+  {%- elif f == 'chassis_no' -%}Chassis No
+  {%- elif f == 'engine_no' -%}Engine No
+  {%- elif f == 'vehicle_no' -%}Vehicle No
+  {%- else -%}{{ f }}{%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="toolbar">
+  <p class="muted">
+    Real accuracy is measured from operator corrections saved on the records
+    page. Mined rules are <strong>report-only</strong> &mdash; they are not applied
+    to OCR automatically.
+  </p>
+  <a class="btn" href="{{ url_for('main.ocr_training_export') }}">Export labeled data (ZIP)</a>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-value">{{ overall.pct if overall.pct is not none else '—' }}{% if overall.pct is not none %}%{% endif %}</div>
+    <div class="stat-label">Overall accuracy</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ overall.total }}</div>
+    <div class="stat-label">Verified fields</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ overall.correct }}</div>
+    <div class="stat-label">Model was correct</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-value">{{ crop_count }}</div>
+    <div class="stat-label">Labeled crops</div>
+  </div>
+</div>
+
+<h2 class="section-title">Accuracy by field</h2>
+<div class="card table-card">
+  <table class="table">
+    <thead><tr><th>Field</th><th>Verified</th><th>Correct</th><th>Accuracy</th></tr></thead>
+    <tbody>
+      {% for s in field_stats %}
+      <tr>
+        <td>{{ field_label(s.field) }}</td>
+        <td>{{ s.total }}</td>
+        <td>{{ s.correct }}</td>
+        <td>{% if s.pct is not none %}
+          <span class="badge {{ 'badge-success' if s.pct >= 90 else 'badge-warning' }}">{{ s.pct }}%</span>
+          {% else %}—{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted ta-center">No corrections captured yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2 class="section-title">Accuracy by CR format</h2>
+<div class="card table-card">
+  <table class="table">
+    <thead><tr><th>Format / rule-set</th><th>Verified</th><th>Correct</th><th>Accuracy</th></tr></thead>
+    <tbody>
+      {% for s in fmt_stats %}
+      <tr>
+        <td class="mono">{{ s.rule_set }}</td>
+        <td>{{ s.total }}</td>
+        <td>{{ s.correct }}</td>
+        <td>{% if s.pct is not none %}
+          <span class="badge {{ 'badge-success' if s.pct >= 90 else 'badge-warning' }}">{{ s.pct }}%</span>
+          {% else %}—{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted ta-center">No corrections captured yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2 class="section-title">Mined confusion rules <span class="muted">(ocr &rarr; corrected, report-only)</span></h2>
+<div class="card table-card">
+  <table class="table">
+    <thead><tr><th>Field</th><th>Read as</th><th>Should be</th><th>Count</th></tr></thead>
+    <tbody>
+      {% for c in confusions %}
+      <tr>
+        <td>{{ field_label(c.field) }}</td>
+        <td class="mono">{{ c.ocr }}</td>
+        <td class="mono">{{ c.correct }}</td>
+        <td>{{ c.count }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="muted ta-center">No character-level confusions mined yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2 class="section-title">Per-field character priors <span class="muted">(most common verified characters)</span></h2>
+<div class="card table-card">
+  <table class="table">
+    <thead><tr><th>Field</th><th>Characters (char&times;count)</th></tr></thead>
+    <tbody>
+      {% for field, chars in priors.items() %}
+      <tr>
+        <td>{{ field_label(field) }}</td>
+        <td class="mono">{% for ch, n in chars %}{{ ch }}&times;{{ n }}{% if not loop.last %} &middot; {% endif %}{% endfor %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="2" class="muted ta-center">No verified values yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if trend %}
+<h2 class="section-title">Recent trend (last 14 days)</h2>
+<div class="card table-card">
+  <table class="table">
+    <thead><tr><th>Day</th><th>Verified</th><th>Correct</th><th>Accuracy</th></tr></thead>
+    <tbody>
+      {% for d in trend %}
+      <tr>
+        <td class="mono">{{ d.day }}</td>
+        <td>{{ d.total }}</td>
+        <td>{{ d.correct }}</td>
+        <td>{% if d.pct is not none %}{{ d.pct }}%{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

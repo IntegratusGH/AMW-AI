@@ -39,7 +39,7 @@
         <td title="confidence {{ '%.2f'|format(r.engine_no_confidence) if r.engine_no_confidence is not none else 'n/a' }}">
           {% if r.engine_crop %}<img class="val-crop" loading="lazy" alt="Engine No scan"
             src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field='engine') }}">{% endif %}
-          <span class="val-edit mono">{{ r.engine_no or '—' }}</span>
+          <input class="val-edit mono" form="rec{{ r.id }}" name="engine_no" value="{{ r.engine_no or '' }}">
         </td>
         <td>{{ r.absolute_owner or '—' }}</td>
         <td>{{ r.class_of_vehicle or '—' }}</td>

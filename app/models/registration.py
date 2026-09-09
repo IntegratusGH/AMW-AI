@@ -235,3 +235,43 @@ class ReceiptRecord(db.Model):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<ReceiptRecord {self.id} slip={self.slip_no}>"
+
+
+class OcrCorrection(db.Model):
+    """Durable labeled data captured when an operator verifies/corrects a
+    record's critical field.  Stores the model's original reading, the operator's
+    final value and (a copy of) the value-region crop, so the system can report
+    real accuracy, mine confusion rules / per-field priors, and export a training
+    corpus for eventual recognizer fine-tuning.
+
+    One row per (doc_kind, record_id, field): ``ocr_value`` is captured once (the
+    model's output before the first correction) and ``corrected_value`` tracks the
+    operator's latest verified value.  ``was_correct`` records whether the model
+    already matched the operator's value.  The crop is copied into a persistent
+    label store so it survives upload/record deletion."""
+
+    __tablename__ = "ocr_corrections"
+    __table_args__ = (
+        db.UniqueConstraint("doc_kind", "record_id", "field",
+                            name="uq_ocr_corr_rec_field"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False,
+                           index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    doc_kind = db.Column(db.String(4), nullable=False)       # 'cr' | 'rc'
+    upload_id = db.Column(db.Integer, nullable=True)
+    record_id = db.Column(db.Integer, nullable=True, index=True)
+    page_no = db.Column(db.Integer, nullable=True)
+    field = db.Column(db.String(30), nullable=False, index=True)
+    ocr_value = db.Column(db.String(120), nullable=True)
+    corrected_value = db.Column(db.String(120), nullable=True)
+    was_correct = db.Column(db.Boolean, default=False, nullable=False)
+    confidence = db.Column(db.Float, nullable=True)
+    rule_set = db.Column(db.String(60), nullable=True)
+    crop_file = db.Column(db.String(255), nullable=True)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (f"<OcrCorrection {self.field} r{self.record_id} "
+                f"ok={self.was_correct}>")

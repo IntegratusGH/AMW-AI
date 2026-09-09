@@ -23,6 +23,12 @@
            href="{{ url_for('main.operations') }}">
           <span class="nav-ico">⚙</span> Operations
         </a>
+        {% if current_user.is_administrator or current_user.is_ai_trainer %}
+        <a class="nav-link {{ 'active' if request.endpoint == 'main.ocr_training' }}"
+           href="{{ url_for('main.ocr_training') }}">
+          <span class="nav-ico">🎯</span> OCR Training
+        </a>
+        {% endif %}
         {% if current_user.is_administrator %}
         <div class="nav-section">Administration</div>
         <a class="nav-link {{ 'active' if request.endpoint in ['admin.modules', 'admin.create_module', 'admin.edit_module'] }}"

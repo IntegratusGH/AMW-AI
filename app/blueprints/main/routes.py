@@ -20,6 +20,7 @@ from flask import (
     url_for,
 )
 from flask_login import current_user, login_required
+from sqlalchemy import case, func
 from sqlalchemy import inspect as sqla_inspect
 from werkzeug.utils import secure_filename
 
@@ -51,6 +52,7 @@ from app.models import (
     CRFormat,
     CRUploadPage,
     Module,
+    OcrCorrection,
     ReceiptRecord,
     ReceiptUpload,
     User,
@@ -717,22 +719,225 @@ def receipt_image(upload_id: int, record_id: int):
     return resp
 
 
+# Critical CR fields captured as labeled data -> (crop attr, confidence attr).
+_CR_LABEL_FIELDS = {
+    "registration_no": ("reg_crop", "registration_no_confidence"),
+    "chassis_no": ("chassis_crop", "chassis_no_confidence"),
+    "engine_no": ("engine_crop", "engine_no_confidence"),
+}
+
+
+def _cr_page_format_key(rec) -> str | None:
+    """Rule-set / format key of the CR page a record came from, for grouping
+    accuracy by format.  None when the page row is gone."""
+    if not rec.page_no:
+        return None
+    page = (CRUploadPage.query
+            .filter_by(upload_id=rec.upload_id, page_no=rec.page_no).first())
+    return page.format.rule_set if page and page.format else None
+
+
+def _norm_field_value(field: str, value) -> str:
+    """Normalise a value the same way the OCR pipeline does, so cosmetic
+    differences do not count as an operator correction."""
+    if not value:
+        return ""
+    from app.utils import registration_ocr as ocr
+    if field == "registration_no":
+        return ocr._fix_reg_lk(ocr._norm_reg(value))
+    if field == "chassis_no":
+        return ocr._norm_chassis(value)
+    if field == "engine_no":
+        return ocr._norm_engine(value)
+    return value.strip().upper()
+
+
+def _capture_cr_label(rec, field: str, new_value, fmt_key) -> None:
+    """Upsert one labeled-data row for a CR record's critical field and copy its
+    value-region crop into the persistent label store.  Must be called BEFORE the
+    record's field is overwritten, so ``ocr_value`` (captured once) is the model's
+    output rather than the operator's value."""
+    if not new_value:
+        return
+    crop_attr, conf_attr = _CR_LABEL_FIELDS[field]
+    label = OcrCorrection.query.filter_by(
+        doc_kind="cr", record_id=rec.id, field=field).first()
+    if label is None:
+        label = OcrCorrection(
+            doc_kind="cr", upload_id=rec.upload_id, record_id=rec.id,
+            page_no=rec.page_no, field=field, ocr_value=getattr(rec, field),
+            confidence=getattr(rec, conf_attr), rule_set=fmt_key)
+        db.session.add(label)
+    label.corrected_value = new_value
+    label.was_correct = (_norm_field_value(field, label.ocr_value)
+                         == _norm_field_value(field, new_value))
+    label.user_id = current_user.id
+    label.created_at = datetime.utcnow()
+    crop_fn = getattr(rec, crop_attr, None)
+    if crop_fn and not label.crop_file:
+        src = os.path.join(current_app.config["CR_BOOK_CROP_DIR"],
+                           str(rec.upload_id), crop_fn)
+        if os.path.exists(src):
+            import shutil
+            label_dir = current_app.config["OCR_LABEL_DIR"]
+            os.makedirs(label_dir, exist_ok=True)
+            dst_fn = f"cr_{rec.id}_{field}.png"
+            try:
+                shutil.copyfile(src, os.path.join(label_dir, dst_fn))
+                label.crop_file = dst_fn
+            except OSError:
+                pass
+
+
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>"
                "/record/<int:record_id>/edit", methods=["POST"])
 @login_required
 def cr_edit_record(upload_id: int, record_id: int):
-    """Save an operator's correction of a CR record's Chassis/Reg No."""
+    """Save an operator's correction of a CR record's Reg/Chassis/Engine No and
+    capture the verified values as durable labeled data (feedback loop)."""
     _require_module(REGISTRATION_UPDATER_KEY)
     rec = db.session.get(CRBookRecord, record_id) or abort(404)
     if rec.upload_id != upload_id:
         abort(404)
-    rec.registration_no = (request.form.get("registration_no") or "").strip()[:60] or None
-    rec.chassis_no = (request.form.get("chassis_no") or "").strip()[:60] or None
+    new_reg = (request.form.get("registration_no") or "").strip()[:60] or None
+    new_chassis = (request.form.get("chassis_no") or "").strip()[:60] or None
+    new_engine = (request.form.get("engine_no") or "").strip()[:60] or None
+    # Capture labels BEFORE overwriting so ocr_value is the model's output.
+    fmt_key = _cr_page_format_key(rec)
+    _capture_cr_label(rec, "registration_no", new_reg, fmt_key)
+    _capture_cr_label(rec, "chassis_no", new_chassis, fmt_key)
+    _capture_cr_label(rec, "engine_no", new_engine, fmt_key)
+    rec.registration_no = new_reg
+    rec.chassis_no = new_chassis
+    rec.engine_no = new_engine
     rec.needs_review = False  # an operator has verified/corrected this row
     record_audit("cr_record_edited", f"record_id={record_id}")
     db.session.commit()
     flash("Record updated.", "success")
     return redirect(url_for("main.upload_records", kind="cr", upload_id=upload_id))
+
+
+def _require_trainer() -> None:
+    """Gate the OCR training views to AI Trainers and Administrators."""
+    if not (current_user.is_ai_trainer or current_user.is_administrator):
+        abort(403)
+
+
+@main_bp.route("/operations/registration-updater/training")
+@login_required
+def ocr_training():
+    """OCR feedback dashboard: real accuracy from operator corrections plus
+    mined confusion rules / per-field priors (report-only)."""
+    _require_trainer()
+    from app.utils import ocr_feedback as fb
+    from datetime import timedelta
+
+    correct_sum = func.sum(case((OcrCorrection.was_correct == True, 1), else_=0))
+
+    # Per-field accuracy over all captured labels.
+    field_stats, overall_c, overall_t = [], 0, 0
+    for field, total, correct in (
+            db.session.query(OcrCorrection.field,
+                             func.count(OcrCorrection.id), correct_sum)
+            .group_by(OcrCorrection.field).all()):
+        total, correct = int(total or 0), int(correct or 0)
+        overall_c += correct
+        overall_t += total
+        field_stats.append({
+            "field": field, "total": total, "correct": correct,
+            "pct": round(100 * correct / total, 1) if total else None})
+    field_stats.sort(key=lambda s: s["field"])
+    overall = {"total": overall_t, "correct": overall_c,
+               "pct": round(100 * overall_c / overall_t, 1) if overall_t else None}
+
+    # Per-format accuracy.
+    fmt_stats = []
+    for rule_set, total, correct in (
+            db.session.query(OcrCorrection.rule_set,
+                             func.count(OcrCorrection.id), correct_sum)
+            .group_by(OcrCorrection.rule_set).all()):
+        total, correct = int(total or 0), int(correct or 0)
+        fmt_stats.append({
+            "rule_set": rule_set or "(unknown)", "total": total,
+            "correct": correct,
+            "pct": round(100 * correct / total, 1) if total else None})
+    fmt_stats.sort(key=lambda s: s["total"], reverse=True)
+
+    # 14-day daily trend, bucketed in Python (DB-agnostic).
+    since = datetime.utcnow() - timedelta(days=14)
+    buckets: dict[str, list[int]] = {}
+    for ts, ok in (db.session.query(OcrCorrection.created_at,
+                                    OcrCorrection.was_correct)
+                   .filter(OcrCorrection.created_at >= since).all()):
+        b = buckets.setdefault(ts.date().isoformat(), [0, 0])
+        b[1] += 1
+        b[0] += 1 if ok else 0
+    trend = [{"day": d, "correct": c, "total": t,
+              "pct": round(100 * c / t, 1) if t else None}
+             for d, (c, t) in sorted(buckets.items())]
+
+    # Mined confusion rules + per-field char priors (report-only).
+    changed = (db.session.query(OcrCorrection.field, OcrCorrection.ocr_value,
+                                OcrCorrection.corrected_value)
+               .filter(OcrCorrection.was_correct == False,
+                       OcrCorrection.ocr_value.isnot(None),
+                       OcrCorrection.corrected_value.isnot(None)).all())
+    confusions = fb.top_confusions(fb.char_confusions(changed), limit=20)
+    priors = fb.field_char_priors(
+        db.session.query(OcrCorrection.field, OcrCorrection.corrected_value)
+        .filter(OcrCorrection.corrected_value.isnot(None)).all())
+    crop_count = (db.session.query(func.count(OcrCorrection.id))
+                  .filter(OcrCorrection.crop_file.isnot(None)).scalar())
+
+    return render_template(
+        "main/ocr_training.html", overall=overall, field_stats=field_stats,
+        fmt_stats=fmt_stats, trend=trend, confusions=confusions,
+        priors=priors, crop_count=int(crop_count or 0))
+
+
+@main_bp.route("/operations/registration-updater/training/export")
+@login_required
+def ocr_training_export():
+    """Download the captured labeled data (manifest.csv + crops) as a ZIP for
+    offline recognizer fine-tuning."""
+    _require_trainer()
+    import csv
+    import io
+    import zipfile
+
+    labels = OcrCorrection.query.order_by(OcrCorrection.id).all()
+    label_dir = current_app.config["OCR_LABEL_DIR"]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        sio = io.StringIO()
+        writer = csv.writer(sio)
+        writer.writerow([
+            "id", "created_at", "doc_kind", "field", "ocr_value",
+            "corrected_value", "was_correct", "confidence", "rule_set",
+            "crop_file", "page_no", "upload_id", "record_id"])
+        for lab in labels:
+            writer.writerow([
+                lab.id,
+                lab.created_at.isoformat() if lab.created_at else "",
+                lab.doc_kind, lab.field, lab.ocr_value or "",
+                lab.corrected_value or "", int(lab.was_correct),
+                lab.confidence if lab.confidence is not None else "",
+                lab.rule_set or "", lab.crop_file or "", lab.page_no or "",
+                lab.upload_id or "", lab.record_id or ""])
+        zf.writestr("manifest.csv", sio.getvalue())
+        seen = set()
+        for lab in labels:
+            if lab.crop_file and lab.crop_file not in seen:
+                path = os.path.join(label_dir, lab.crop_file)
+                if os.path.exists(path):
+                    zf.write(path, arcname=f"crops/{lab.crop_file}")
+                    seen.add(lab.crop_file)
+    record_audit("ocr_labels_exported", f"count={len(labels)}")
+    db.session.commit()
+    fname = f"ocr-labels-{datetime.utcnow():%Y%m%d-%H%M%S}.zip"
+    return Response(
+        buf.getvalue(), mimetype="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={fname}"})
 
 
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/review")
