@@ -228,6 +228,20 @@ select.input { appearance: auto; }
 .auto-card-link:hover { text-decoration: none; }
 .auto-open { margin-top: auto; font-size: 13px; font-weight: 650; color: var(--primary); }
 
+/* ---- Tabs --------------------------------------------------------------- */
+.tab-bar { display: flex; gap: 4px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--border); margin-bottom: 22px; }
+.tab-btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px;
+  background: transparent; border: 0; border-bottom: 2px solid transparent;
+  margin-bottom: -1px; color: var(--text-muted); font-size: 14px; font-weight: 600;
+  cursor: pointer; }
+.tab-btn:hover { color: var(--text); }
+.tab-btn.is-active { color: var(--primary); border-bottom-color: var(--primary); }
+.tab-btn svg { width: 16px; height: 16px; }
+.tab-panel { display: none; }
+.tab-panel.is-active { display: block; }
+.tab-panel .upload-tile { max-width: 560px; }
+
 /* ---- Registration Updater workspace ------------------------------------- */
 .reg-intro { margin: -4px 0 18px; }
 .reg-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
