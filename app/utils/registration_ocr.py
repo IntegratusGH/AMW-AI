@@ -220,9 +220,13 @@ def _mean_score(lines: list[dict]) -> float | None:
 # English label fragments (already normalised) used to locate each field's
 # value, which on this form sits just below (or to the right of) the label.
 _CR_LABELS = {
-    "registration_no": ["registrationno"],
-    "chassis_no": ["chassisno"],
-    "engine_no": ["engineno"],
+    # Tolerate OCR misreads of the trailing "No." (e.g. "Chassis Na.",
+    # "Registration N0.") by keying on the field word rather than "...no".
+    # Keep "registrationn" (matches "Registration No./Na.") narrow enough to
+    # avoid the "CERTIFICATE OF REGISTRATION" page title.
+    "registration_no": ["registrationn"],
+    "chassis_no": ["chassis"],
+    "engine_no": ["engine"],
     "current_owner": ["currentow", "currentowher", "currentowner"],
     "absolute_owner": ["absoluteow", "absoluteowner"],
     "cylinder_capacity": ["cylindercap"],
