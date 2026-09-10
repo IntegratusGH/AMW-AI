@@ -145,11 +145,15 @@
 
   <section class="tab-panel {{ 'is-active' if active_tab == 'map' }}" id="tab-map" role="tabpanel">
     <div class="toolbar">
-      <form method="post" class="inline"
+      <form method="post"
             action="{{ url_for('main.process_mapping') }}"
             onsubmit="return confirm('Match receipts to CR books by vehicle number and move each matched pair to Matched Records (removed from CR books and receipts)?');">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <button class="btn btn-primary" type="submit">Process Mapping &raquo;</button>
+        <div><button class="btn btn-primary" type="submit">Process Mapping &raquo;</button></div>
+        <label class="checkbox" style="margin-top:8px;">
+          <input type="checkbox" name="omit_province" value="on">
+          <span>Omit Province Code</span>
+        </label>
       </form>
       <p class="muted">{{ matched_records|length }} matched record(s)</p>
     </div>

@@ -632,16 +632,36 @@ def registration_updater():
         matched_records=matched_records, active_tab=active_tab)
 
 
-def _reg_match_key(value) -> str | None:
+# Two-letter province prefixes used on some Sri Lankan registration numbers,
+# written as "<CODE> " (code + a single space), e.g. "WP KA-1234".
+_PROVINCE_CODES = frozenset(
+    {"WP", "CP", "SP", "NP", "EP", "NW", "NC", "SG", "UV"})
+
+
+def _strip_province_code(value: str) -> str:
+    """Drop a leading province prefix (2 letters + a single space) when the two
+    letters are a known province code, e.g. 'WP KA-1234' -> 'KA-1234'.  Values
+    without such a prefix are returned unchanged (upper-cased, trimmed)."""
+    v = (value or "").strip().upper()
+    if len(v) >= 3 and v[2] == " " and v[:2] in _PROVINCE_CODES:
+        return v[3:]
+    return v
+
+
+def _reg_match_key(value, omit_province: bool = False) -> str | None:
     """Normalise a registration / vehicle number to a comparison key: uppercase,
     stripped of every non-alphanumeric character (spaces, dashes, dots), so e.g.
-    'CP BK-0999', 'CP-BK-0999' and 'cpbk0999' all map to 'CPBK0999'."""
+    'CP BK-0999', 'CP-BK-0999' and 'cpbk0999' all map to 'CPBK0999'.  When
+    ``omit_province`` is set, a leading province prefix (see
+    ``_strip_province_code``) is removed first so 'WP KA-1234' matches
+    'KA-1234'."""
     if not value:
         return None
-    return re.sub(r"[^A-Z0-9]", "", value.upper()) or None
+    v = _strip_province_code(value) if omit_province else value.upper()
+    return re.sub(r"[^A-Z0-9]", "", v) or None
 
 
-def _perform_mapping(user_id) -> int:
+def _perform_mapping(user_id, omit_province: bool = False) -> int:
     """Core of the mapping action (no request/auth deps, so it is unit-testable):
     greedy one-to-one match of CR books to receipts on the normalised key, snapshot
     each pair into ``matched_records`` and delete the originals.  Adds rows to the
@@ -655,14 +675,14 @@ def _perform_mapping(user_id) -> int:
 
     rc_by_key: dict[str, list] = {}
     for rc in rcs:
-        key = _reg_match_key(rc.vehicle_no)
+        key = _reg_match_key(rc.vehicle_no, omit_province)
         if key:
             rc_by_key.setdefault(key, []).append(rc)
 
     matched = 0
     used_rc: set[int] = set()
     for cr in crs:
-        key = _reg_match_key(cr.registration_no)
+        key = _reg_match_key(cr.registration_no, omit_province)
         if not key:
             continue
         rc = next((c for c in rc_by_key.get(key, ())
@@ -700,8 +720,10 @@ def process_mapping():
     each CR record is paired with the first still-unused receipt of the same key;
     unmatched records stay in their tables."""
     _require_module(REGISTRATION_UPDATER_KEY)
-    matched = _perform_mapping(current_user.id)
-    record_audit("registration_mapping", f"matched={matched}")
+    omit_province = bool(request.form.get("omit_province"))
+    matched = _perform_mapping(current_user.id, omit_province)
+    record_audit("registration_mapping",
+                 f"matched={matched} omit_province={omit_province}")
     db.session.commit()
     if matched:
         flash(f"Mapped {matched} record(s): moved to Matched Records and removed "
