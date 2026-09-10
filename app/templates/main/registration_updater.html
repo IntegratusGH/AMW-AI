@@ -165,6 +165,13 @@
       <p class="muted">{{ matched_records|length }} matched record(s)</p>
     </div>
 
+    <div class="map-search">
+      <input type="text" id="map-search-input" placeholder="Search Reg No…"
+             autocomplete="off" aria-label="Search registration number">
+      <button type="button" id="map-search-clear" class="map-search-clear"
+              title="Clear search" aria-label="Clear search">&times;</button>
+    </div>
+
     <div class="card table-card reg-uploads">
       <table class="table">
         <thead>
@@ -176,7 +183,7 @@
         </thead>
         <tbody>
           {% for m in matched_records %}
-          <tr>
+          <tr data-reg="{{ m.registration_no or '' }}">
             <td class="ta-center"><input type="checkbox" class="map-row-check"
                   name="ids" value="{{ m.id }}" aria-label="Select record"></td>
             <td class="mono">{{ m.matched_at.strftime('%Y-%m-%d %H:%M') }}</td>
@@ -277,6 +284,25 @@
     if (!n) { alert('Select at least one matched record to revoke.'); return false; }
     return confirm('Revoke ' + n + ' selected mapping(s)? Each will be returned to CR books and receipts and removed from Matched Records.');
   };
+
+  var sInput = document.getElementById('map-search-input');
+  var sClear = document.getElementById('map-search-clear');
+  function regRows() { return Array.prototype.slice.call(document.querySelectorAll('#tab-map tr[data-reg]')); }
+  function norm(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+  function applySearch() {
+    if (!sInput) return;
+    var q = norm(sInput.value);
+    sClear.style.display = sInput.value ? 'block' : 'none';
+    regRows().forEach(function (row) {
+      var reg = norm(row.getAttribute('data-reg'));
+      row.classList.toggle('map-hit', q !== '' && reg.indexOf(q) !== -1);
+    });
+  }
+  if (sInput) {
+    sInput.addEventListener('input', applySearch);
+    sInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
+    sClear.addEventListener('click', function () { sInput.value = ''; applySearch(); sInput.focus(); });
+  }
 })();
 </script>
 {% endblock %}

@@ -130,6 +130,19 @@ h1, h2, h3 { margin: 0 0 .4em; font-weight: 650; }
 .btn-revoke { background: #fdecea; border-color: #f3c3bd; color: #b3261e; }
 .btn-revoke:hover { background: #fadbd7; border-color: #eaa9a1; }
 .map-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.map-search { position: relative; display: inline-block; margin: 0 0 12px; }
+.map-search input {
+  padding: 8px 30px 8px 12px; min-width: 260px; font-size: 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface); color: var(--text);
+}
+.map-search-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  display: none; padding: 0 4px; border: none; background: transparent;
+  color: var(--text-muted); font-size: 18px; line-height: 1; cursor: pointer;
+}
+.map-search-clear:hover { color: var(--text); }
+.reg-uploads tbody tr.map-hit td { background: #dcfce7; color: #14532d; }
 .btn-ghost { background: transparent; }
 .icon-btn {
   width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border);
