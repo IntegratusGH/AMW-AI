@@ -15,12 +15,12 @@
   {% else %}<span class="badge badge-muted">Pending</span>{% endif %}
 {% endmacro %}
 
-{% macro uploads_table(kind, uploads, is_trainer=false) %}
+{% macro uploads_table(kind, uploads, is_trainer=false, counts={}) %}
 <div class="card table-card reg-uploads">
   <table class="table">
     <thead>
       <tr><th>ID</th><th>File</th><th>Uploaded</th><th>Status</th>
-        <th>Captured</th><th>Dupes</th><th class="ta-right">Actions</th></tr>
+        <th>Captured</th><th>Records count</th><th>Dupes</th><th class="ta-right">Actions</th></tr>
     </thead>
     <tbody>
       {% for u in uploads %}
@@ -36,6 +36,7 @@
           {% else %}{{ status_cell(u) }}{% endif %}
         </td>
         <td class="cap-cell">{{ u.captured_records }}</td>
+        <td class="rec-count-cell">{{ counts.get(u.id, 0) }}</td>
         <td class="dup-cell">{{ u.duplicate_records }}</td>
         <td class="ta-right actions">
           {% if kind == 'rc' %}
@@ -83,7 +84,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="7" class="muted ta-center">No uploads yet.</td></tr>
+      <tr><td colspan="8" class="muted ta-center">No uploads yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -123,7 +124,7 @@
     </div>
 
     <h4 class="reg-subtitle">CR Book uploads</h4>
-    {{ uploads_table('cr', cr_uploads, current_user.is_ai_trainer) }}
+    {{ uploads_table('cr', cr_uploads, current_user.is_ai_trainer, cr_counts) }}
   </section>
 
   <section class="tab-panel {{ 'is-active' if active_tab == 'rc' }}" id="tab-rc" role="tabpanel">
@@ -140,7 +141,7 @@
     </div>
 
     <h4 class="reg-subtitle">Receipt uploads</h4>
-    {{ uploads_table('rc', rc_uploads, current_user.is_ai_trainer) }}
+    {{ uploads_table('rc', rc_uploads, current_user.is_ai_trainer, rc_counts) }}
   </section>
 
   <section class="tab-panel {{ 'is-active' if active_tab == 'map' }}" id="tab-map" role="tabpanel">

@@ -618,6 +618,14 @@ def registration_updater():
 
     cr_uploads = CRBookUpload.query.order_by(CRBookUpload.uploaded_at.desc()).all()
     rc_uploads = ReceiptUpload.query.order_by(ReceiptUpload.uploaded_at.desc()).all()
+    # Actual live row counts per upload (may be below captured_records once rows
+    # have moved into matched_records or otherwise been removed).
+    cr_counts = dict(
+        db.session.query(CRBookRecord.upload_id, func.count(CRBookRecord.id))
+        .group_by(CRBookRecord.upload_id).all())
+    rc_counts = dict(
+        db.session.query(ReceiptRecord.upload_id, func.count(ReceiptRecord.id))
+        .group_by(ReceiptRecord.upload_id).all())
     matched_records = (MatchedRecord.query
                        .order_by(MatchedRecord.matched_at.desc()).all())
     # Keep the user on the tab they acted from: an explicit ?tab= wins, else fall
@@ -629,6 +637,7 @@ def registration_updater():
         "main/registration_updater.html", module=module,
         cr_form=cr_form, rc_form=rc_form,
         cr_uploads=cr_uploads, rc_uploads=rc_uploads,
+        cr_counts=cr_counts, rc_counts=rc_counts,
         matched_records=matched_records, active_tab=active_tab)
 
 
