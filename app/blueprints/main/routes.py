@@ -51,6 +51,7 @@ from app.models import (
     CRBookUpload,
     CRFormat,
     CRUploadPage,
+    MatchedRecord,
     Module,
     OcrCorrection,
     ReceiptRecord,
@@ -610,15 +611,98 @@ def registration_updater():
 
     cr_uploads = CRBookUpload.query.order_by(CRBookUpload.uploaded_at.desc()).all()
     rc_uploads = ReceiptUpload.query.order_by(ReceiptUpload.uploaded_at.desc()).all()
+    matched_records = (MatchedRecord.query
+                       .order_by(MatchedRecord.matched_at.desc()).all())
     # Keep the user on the tab they acted from: an explicit ?tab= wins, else fall
     # back to whichever form reported validation errors (default CR).
     active_tab = request.args.get("tab")
-    if active_tab not in ("cr", "rc"):
+    if active_tab not in ("cr", "rc", "map"):
         active_tab = "rc" if (rc_form.errors and not cr_form.errors) else "cr"
     return render_template(
         "main/registration_updater.html", module=module,
         cr_form=cr_form, rc_form=rc_form,
-        cr_uploads=cr_uploads, rc_uploads=rc_uploads, active_tab=active_tab)
+        cr_uploads=cr_uploads, rc_uploads=rc_uploads,
+        matched_records=matched_records, active_tab=active_tab)
+
+
+def _reg_match_key(value) -> str | None:
+    """Normalise a registration / vehicle number to a comparison key: uppercase,
+    stripped of every non-alphanumeric character (spaces, dashes, dots), so e.g.
+    'CP BK-0999', 'CP-BK-0999' and 'cpbk0999' all map to 'CPBK0999'."""
+    if not value:
+        return None
+    return re.sub(r"[^A-Z0-9]", "", value.upper()) or None
+
+
+def _perform_mapping(user_id) -> int:
+    """Core of the mapping action (no request/auth deps, so it is unit-testable):
+    greedy one-to-one match of CR books to receipts on the normalised key, snapshot
+    each pair into ``matched_records`` and delete the originals.  Adds rows to the
+    session and returns the match count; the caller commits."""
+    crs = (CRBookRecord.query
+           .filter(CRBookRecord.registration_no.isnot(None))
+           .order_by(CRBookRecord.id).all())
+    rcs = (ReceiptRecord.query
+           .filter(ReceiptRecord.vehicle_no.isnot(None))
+           .order_by(ReceiptRecord.id).all())
+
+    rc_by_key: dict[str, list] = {}
+    for rc in rcs:
+        key = _reg_match_key(rc.vehicle_no)
+        if key:
+            rc_by_key.setdefault(key, []).append(rc)
+
+    matched = 0
+    used_rc: set[int] = set()
+    for cr in crs:
+        key = _reg_match_key(cr.registration_no)
+        if not key:
+            continue
+        rc = next((c for c in rc_by_key.get(key, ())
+                   if c.id not in used_rc), None)
+        if rc is None:
+            continue
+        used_rc.add(rc.id)
+        db.session.add(MatchedRecord(
+            matched_by=user_id, match_key=key,
+            cr_source_upload_id=cr.upload_id, cr_source_record_id=cr.id,
+            registration_no=cr.registration_no, cr_number=cr.cr_number,
+            chassis_no=cr.chassis_no, engine_no=cr.engine_no,
+            current_owner=cr.current_owner, make=cr.make, model=cr.model,
+            class_of_vehicle=cr.class_of_vehicle, colour=cr.colour,
+            year_of_manufacture=cr.year_of_manufacture,
+            rc_source_upload_id=rc.upload_id, rc_source_record_id=rc.id,
+            vehicle_no=rc.vehicle_no, slip_no=rc.slip_no,
+            receipt_no=rc.receipt_no, receipt_date=rc.receipt_date,
+            applicant_name=rc.applicant_name, total_amount=rc.total_amount,
+            bank_charges=rc.bank_charges, bank_total=rc.bank_total))
+        db.session.delete(cr)
+        db.session.delete(rc)
+        matched += 1
+    return matched
+
+
+@main_bp.route("/operations/registration-updater/mapping/process",
+               methods=["POST"])
+@login_required
+def process_mapping():
+    """Match receipts to CR books by vehicle number, move each matched pair into
+    ``matched_records`` and delete the originals from their source tables.
+
+    Matching is greedy one-to-one on the normalised key (see ``_reg_match_key``):
+    each CR record is paired with the first still-unused receipt of the same key;
+    unmatched records stay in their tables."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    matched = _perform_mapping(current_user.id)
+    record_audit("registration_mapping", f"matched={matched}")
+    db.session.commit()
+    if matched:
+        flash(f"Mapped {matched} record(s): moved to Matched Records and removed "
+              f"from CR books / receipts.", "success")
+    else:
+        flash("No matching records found (no receipt vehicle number matched a CR "
+              "book registration number).", "info")
+    return redirect(url_for("main.registration_updater", tab="map"))
 
 
 @main_bp.route("/operations/registration-updater/<kind>/<int:upload_id>/process",

@@ -275,3 +275,50 @@ class OcrCorrection(db.Model):
     def __repr__(self) -> str:  # pragma: no cover
         return (f"<OcrCorrection {self.field} r{self.record_id} "
                 f"ok={self.was_correct}>")
+
+
+class MatchedRecord(db.Model):
+    """A CR-book record matched to a registration receipt by vehicle number.
+
+    Produced by the "Process Mapping" action, which pairs
+    ``receipt_records.vehicle_no`` with ``cr_book_records.registration_no`` (on a
+    normalised match key), snapshots both rows here and removes the originals from
+    their source tables.  The snapshot is self-contained (no FKs to the source
+    records) precisely because those rows are deleted once matched."""
+
+    __tablename__ = "matched_records"
+
+    id = db.Column(db.Integer, primary_key=True)
+    matched_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False,
+                           index=True)
+    matched_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    match_key = db.Column(db.String(60), nullable=True, index=True)
+
+    # --- CR-book side (snapshot) ---
+    cr_source_upload_id = db.Column(db.Integer, nullable=True)
+    cr_source_record_id = db.Column(db.Integer, nullable=True)
+    registration_no = db.Column(db.String(60), nullable=True, index=True)
+    cr_number = db.Column(db.String(60), nullable=True)
+    chassis_no = db.Column(db.String(60), nullable=True)
+    engine_no = db.Column(db.String(60), nullable=True)
+    current_owner = db.Column(db.String(200), nullable=True)
+    make = db.Column(db.String(80), nullable=True)
+    model = db.Column(db.String(80), nullable=True)
+    class_of_vehicle = db.Column(db.String(80), nullable=True)
+    colour = db.Column(db.String(60), nullable=True)
+    year_of_manufacture = db.Column(db.String(10), nullable=True)
+
+    # --- Receipt side (snapshot) ---
+    rc_source_upload_id = db.Column(db.Integer, nullable=True)
+    rc_source_record_id = db.Column(db.Integer, nullable=True)
+    vehicle_no = db.Column(db.String(40), nullable=True, index=True)
+    slip_no = db.Column(db.String(40), nullable=True)
+    receipt_no = db.Column(db.String(40), nullable=True)
+    receipt_date = db.Column(db.String(20), nullable=True)
+    applicant_name = db.Column(db.String(200), nullable=True)
+    total_amount = db.Column(db.Numeric(12, 2), nullable=True)
+    bank_charges = db.Column(db.Numeric(12, 2), nullable=True)
+    bank_total = db.Column(db.Numeric(12, 2), nullable=True)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<MatchedRecord {self.id} reg={self.registration_no}>"

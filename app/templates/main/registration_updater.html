@@ -95,6 +95,9 @@
     <button class="tab-btn {{ 'is-active' if active_tab == 'rc' }}" type="button" role="tab" data-tab-target="tab-rc" data-tab-key="rc">
       {{ icon('credit-card', 16) }} Registration Receipts upload
     </button>
+    <button class="tab-btn {{ 'is-active' if active_tab == 'map' }}" type="button" role="tab" data-tab-target="tab-map" data-tab-key="map">
+      {{ icon('list', 16) }} Mapped records
+    </button>
   </div>
 
   <section class="tab-panel {{ 'is-active' if active_tab == 'cr' }}" id="tab-cr" role="tabpanel">
@@ -129,6 +132,46 @@
 
     <h4 class="reg-subtitle">Receipt uploads</h4>
     {{ uploads_table('rc', rc_uploads) }}
+  </section>
+
+  <section class="tab-panel {{ 'is-active' if active_tab == 'map' }}" id="tab-map" role="tabpanel">
+    <div class="toolbar">
+      <form method="post" class="inline"
+            action="{{ url_for('main.process_mapping') }}"
+            onsubmit="return confirm('Match receipts to CR books by vehicle number and move each matched pair to Matched Records (removed from CR books and receipts)?');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn btn-primary" type="submit">Process Mapping &raquo;</button>
+      </form>
+      <p class="muted">{{ matched_records|length }} matched record(s)</p>
+    </div>
+
+    <div class="card table-card reg-uploads">
+      <table class="table">
+        <thead>
+          <tr><th>Matched</th><th>Reg No</th><th>Vehicle No</th><th>Chassis No</th>
+            <th>Engine No</th><th>Owner</th><th>Make</th><th>Receipt No</th>
+            <th>Date</th><th class="ta-right">Bank Total</th></tr>
+        </thead>
+        <tbody>
+          {% for m in matched_records %}
+          <tr>
+            <td class="mono">{{ m.matched_at.strftime('%Y-%m-%d %H:%M') }}</td>
+            <td class="mono">{{ m.registration_no or '—' }}</td>
+            <td class="mono">{{ m.vehicle_no or '—' }}</td>
+            <td class="mono">{{ m.chassis_no or '—' }}</td>
+            <td class="mono">{{ m.engine_no or '—' }}</td>
+            <td>{{ m.current_owner or '—' }}</td>
+            <td>{{ m.make or '—' }}</td>
+            <td>{{ m.receipt_no or '—' }}</td>
+            <td>{{ m.receipt_date or '—' }}</td>
+            <td class="ta-right">{{ '%.2f'|format(m.bank_total) if m.bank_total is not none else '—' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="10" class="muted ta-center">No matched records yet. Click “Process Mapping »” to match receipts to CR books by vehicle number.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </section>
 </div>
 
