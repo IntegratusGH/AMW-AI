@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from flask_wtf import FlaskForm
 from flask_wtf.file import FileAllowed, FileField, FileRequired, FileSize
-from wtforms import SubmitField
+from wtforms import BooleanField, SubmitField
 
 # Accepted document types and the per-file size cap (matches the app's global
 # MAX_CONTENT_LENGTH ceiling; see Config.MAX_DOC_UPLOAD_MB).
@@ -18,6 +18,9 @@ _VALIDATORS = [
 
 class CRBookUploadForm(FlaskForm):
     file = FileField("CR Book file", validators=_VALIDATORS)
+    # When ticked, the upload runs the format detection/review pass first;
+    # otherwise processing (OCR) starts immediately.
+    check_format = BooleanField("Check Format")
     submit_cr = SubmitField("Upload CR Book")
 
 

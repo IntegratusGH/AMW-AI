@@ -585,16 +585,23 @@ def registration_updater():
     if cr_form.submit_cr.data and cr_form.validate_on_submit():
         name, path = _save_doc(
             cr_form.file.data, current_app.config["CR_BOOK_UPLOAD_DIR"])
+        check_format = bool(cr_form.check_format.data)
         up = CRBookUpload(
-            filename=name, stored_path=path,
-            uploaded_by=current_user.id, status=STATUS_PENDING,
-            review_status=REVIEW_DETECTING)
+            filename=name, stored_path=path, uploaded_by=current_user.id,
+            status=STATUS_PENDING if check_format else STATUS_PROCESSING,
+            review_status=REVIEW_DETECTING if check_format else REVIEW_READY)
         db.session.add(up)
-        record_audit("cr_book_uploaded", f"file={name}")
+        record_audit("cr_book_uploaded",
+                     f"file={name} check_format={check_format}")
         db.session.commit()
-        _start_cr_detection(up.id)
-        flash("CR Book uploaded \u2014 checking format against known CR books\u2026",
-              "success")
+        if check_format:
+            _start_cr_detection(up.id)
+            flash("CR Book uploaded \u2014 checking format against known CR "
+                  "books\u2026", "success")
+        else:
+            _start_processing("cr", up.id)
+            flash("CR Book uploaded \u2014 processing started (OCR runs in the "
+                  "background). Refresh to see results.", "success")
         return redirect(url_for("main.registration_updater", tab="cr"))
 
     if rc_form.submit_rc.data and rc_form.validate_on_submit():

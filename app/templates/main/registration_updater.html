@@ -15,7 +15,7 @@
   {% else %}<span class="badge badge-muted">Pending</span>{% endif %}
 {% endmacro %}
 
-{% macro uploads_table(kind, uploads) %}
+{% macro uploads_table(kind, uploads, is_trainer=false) %}
 <div class="card table-card reg-uploads">
   <table class="table">
     <thead>
@@ -38,18 +38,9 @@
         <td class="cap-cell">{{ u.captured_records }}</td>
         <td class="dup-cell">{{ u.duplicate_records }}</td>
         <td class="ta-right actions">
-          {% if kind == 'cr' and u.review_status != 'ready' %}
-            {% if u.review_status in ['pending', 'detecting'] %}
-            <button class="act-btn" type="button" disabled
-                    title="Checking format…" aria-label="Checking format">{{ icon('play', 16) }}</button>
-            {% else %}
-            <a class="act-btn" title="Review format ({{ u.review_pending_count }})"
-               aria-label="Review format"
-               href="{{ url_for('main.cr_review', upload_id=u.id) }}">{{ icon('scan', 16) }}</a>
-            {% endif %}
-          {% else %}
+          {% if kind == 'rc' %}
           <form method="post" class="inline"
-                action="{{ url_for('main.process_upload', kind=kind, upload_id=u.id) }}">
+                action="{{ url_for('main.process_upload', kind='rc', upload_id=u.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button class="act-btn" type="submit"
                     title="{{ 'Re-process' if u.processed else 'Process' }}"
@@ -58,8 +49,24 @@
               {{ icon('refresh', 16) if u.processed else icon('play', 16) }}
             </button>
           </form>
-          {% if kind == 'cr' %}
-          <a class="act-btn" title="Format review" aria-label="Format review"
+          {% else %}
+          {# CR: processing auto-starts on upload (or via the format review
+             page), so there is no play/start icon here.  A processed upload can
+             still be re-processed. #}
+          {% if u.processed %}
+          <form method="post" class="inline"
+                action="{{ url_for('main.process_upload', kind='cr', upload_id=u.id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="act-btn" type="submit" title="Re-process"
+                    aria-label="Re-process"
+                    {{ 'disabled' if u.status == 'processing' else '' }}>
+              {{ icon('refresh', 16) }}
+            </button>
+          </form>
+          {% endif %}
+          {% if is_trainer %}
+          <a class="act-btn" aria-label="Format review"
+             title="Format review{% if u.review_status == 'needs_review' %} ({{ u.review_pending_count }}){% endif %}"
              href="{{ url_for('main.cr_review', upload_id=u.id) }}">{{ icon('scan', 16) }}</a>
           {% endif %}
           {% endif %}
@@ -110,11 +117,13 @@
         {{ cr_form.file(class="file-input", accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff") }}
         {% for e in cr_form.file.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
         {{ cr_form.submit_cr(class="btn btn-primary") }}
+        <label class="checkbox upload-check">{{ cr_form.check_format() }}
+          <span>Check Format</span></label>
       </form>
     </div>
 
     <h4 class="reg-subtitle">CR Book uploads</h4>
-    {{ uploads_table('cr', cr_uploads) }}
+    {{ uploads_table('cr', cr_uploads, current_user.is_ai_trainer) }}
   </section>
 
   <section class="tab-panel {{ 'is-active' if active_tab == 'rc' }}" id="tab-rc" role="tabpanel">
@@ -131,7 +140,7 @@
     </div>
 
     <h4 class="reg-subtitle">Receipt uploads</h4>
-    {{ uploads_table('rc', rc_uploads) }}
+    {{ uploads_table('rc', rc_uploads, current_user.is_ai_trainer) }}
   </section>
 
   <section class="tab-panel {{ 'is-active' if active_tab == 'map' }}" id="tab-map" role="tabpanel">
