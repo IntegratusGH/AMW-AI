@@ -295,7 +295,7 @@
     sClear.style.display = sInput.value ? 'block' : 'none';
     regRows().forEach(function (row) {
       var reg = norm(row.getAttribute('data-reg'));
-      row.classList.toggle('map-hit', q !== '' && reg.indexOf(q) !== -1);
+      row.classList.toggle('search-hit', q !== '' && reg.indexOf(q) !== -1);
     });
   }
   if (sInput) {

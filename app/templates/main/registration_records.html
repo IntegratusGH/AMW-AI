@@ -10,6 +10,15 @@
   <p class="muted">{{ records|length }} record(s) &middot; captured {{ upload.captured_records }},
     duplicates {{ upload.duplicate_records }}{% if kind in ['cr', 'rc'] %} &middot;
     <strong>{{ review_count }} need review</strong>{% endif %}</p>
+  {% if kind in ['cr', 'rc'] %}
+  <div class="map-search">
+    <input type="text" id="rec-search-input" autocomplete="off"
+           placeholder="Search {{ 'Reg No' if kind == 'cr' else 'Vehicle No' }}…"
+           aria-label="Search {{ 'registration number' if kind == 'cr' else 'vehicle number' }}">
+    <button type="button" id="rec-search-clear" class="map-search-clear"
+            title="Clear search" aria-label="Clear search">&times;</button>
+  </div>
+  {% endif %}
   <a class="btn" href="{{ url_for('main.registration_updater', tab=kind) }}">&larr; Back</a>
 </div>
 
@@ -23,7 +32,7 @@
     </thead>
     <tbody>
       {% for r in records %}
-      <tr class="{{ 'row-review' if r.needs_review else '' }}">
+      <tr class="{{ 'row-review' if r.needs_review else '' }}" data-search="{{ r.registration_no or '' }}">
         <td>{{ r.page_no or '' }}</td>
         <td>{% if r.needs_review %}<span class="badge badge-warning">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
         <td title="confidence {{ '%.2f'|format(r.registration_no_confidence) if r.registration_no_confidence is not none else 'n/a' }}">
@@ -76,7 +85,7 @@
     </thead>
     <tbody>
       {% for r in records %}
-      <tr class="{{ 'row-review' if r.needs_review else '' }}">
+      <tr class="{{ 'row-review' if r.needs_review else '' }}" data-search="{{ r.vehicle_no or '' }}">
         <td>{% if r.needs_review %}<span class="badge badge-warning">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
         <td class="mono">{{ r.slip_no or '—' }}</td>
         <td>{{ r.receipt_no or '—' }}</td>
@@ -107,4 +116,25 @@
 </div>
 
 {% if kind in ['cr', 'rc'] %}{% include "main/_image_viewer.html" %}{% endif %}
+
+<script>
+(function () {
+  var input = document.getElementById('rec-search-input');
+  var clear = document.getElementById('rec-search-clear');
+  if (!input) return;
+  function norm(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+  var rows = Array.prototype.slice.call(document.querySelectorAll('tbody tr[data-search]'));
+  function apply() {
+    var q = norm(input.value);
+    clear.style.display = input.value ? 'block' : 'none';
+    rows.forEach(function (row) {
+      var v = norm(row.getAttribute('data-search'));
+      row.classList.toggle('search-hit', q !== '' && v.indexOf(q) !== -1);
+    });
+  }
+  input.addEventListener('input', apply);
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
+  clear.addEventListener('click', function () { input.value = ''; apply(); input.focus(); });
+})();
+</script>
 {% endblock %}
