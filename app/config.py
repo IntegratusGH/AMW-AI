@@ -102,6 +102,8 @@ class Config:
     # of each verified value-region crop (kept even after the source upload is
     # deleted) plus the exported training corpus.
     OCR_LABEL_DIR = str(Path(UPLOAD_DIR) / "ocr_labels")
+    # Generated SAP batch-input export files (RMV UPLOAD), one per export action.
+    EXPORT_DIR = str(Path(UPLOAD_DIR) / "exports")
     ALLOWED_DOC_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "tif", "tiff"}
     MAX_DOC_UPLOAD_MB = int(os.getenv("MAX_DOC_UPLOAD_MB", "30"))
 

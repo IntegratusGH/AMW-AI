@@ -293,6 +293,14 @@ class MatchedRecord(db.Model):
                            index=True)
     matched_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     match_key = db.Column(db.String(60), nullable=True, index=True)
+    # Once a matched pair is written into an export file it is linked here and
+    # hidden from the Mapped-records tab; revoking the export clears this so the
+    # pair returns to Mapped records.
+    export_document_id = db.Column(
+        db.Integer,
+        db.ForeignKey("export_documents.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
 
     # --- CR-book side (snapshot) ---
     cr_source_upload_id = db.Column(db.Integer, nullable=True)
@@ -330,3 +338,26 @@ class MatchedRecord(db.Model):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<MatchedRecord {self.id} reg={self.registration_no}>"
+
+
+class ExportDocument(db.Model):
+    """One generated SAP batch-input export file (RMV UPLOAD), produced from a
+    selection of matched records.  The included ``matched_records`` are linked
+    via ``export_document_id`` (not deleted), so revoking the export returns them
+    to the Mapped-records tab and removes this row and its file."""
+
+    __tablename__ = "export_documents"
+
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False,
+                           index=True)
+    created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    filename = db.Column(db.String(255), nullable=False)
+    stored_path = db.Column(db.String(500), nullable=False)
+    file_size = db.Column(db.Integer, default=0, nullable=False)
+    records_count = db.Column(db.Integer, default=0, nullable=False)
+
+    records = db.relationship("MatchedRecord", backref="export_document")
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<ExportDocument {self.id} n={self.records_count}>"

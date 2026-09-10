@@ -16,6 +16,7 @@ from flask import (
     redirect,
     render_template,
     request,
+    send_file,
     send_from_directory,
     url_for,
 )
@@ -51,6 +52,7 @@ from app.models import (
     CRBookUpload,
     CRFormat,
     CRUploadPage,
+    ExportDocument,
     MatchedRecord,
     Module,
     OcrCorrection,
@@ -627,18 +629,22 @@ def registration_updater():
         db.session.query(ReceiptRecord.upload_id, func.count(ReceiptRecord.id))
         .group_by(ReceiptRecord.upload_id).all())
     matched_records = (MatchedRecord.query
+                       .filter(MatchedRecord.export_document_id == None)
                        .order_by(MatchedRecord.matched_at.desc()).all())
+    export_documents = (ExportDocument.query
+                        .order_by(ExportDocument.created_at.desc()).all())
     # Keep the user on the tab they acted from: an explicit ?tab= wins, else fall
     # back to whichever form reported validation errors (default CR).
     active_tab = request.args.get("tab")
-    if active_tab not in ("cr", "rc", "map"):
+    if active_tab not in ("cr", "rc", "map", "export"):
         active_tab = "rc" if (rc_form.errors and not cr_form.errors) else "cr"
     return render_template(
         "main/registration_updater.html", module=module,
         cr_form=cr_form, rc_form=rc_form,
         cr_uploads=cr_uploads, rc_uploads=rc_uploads,
         cr_counts=cr_counts, rc_counts=rc_counts,
-        matched_records=matched_records, active_tab=active_tab)
+        matched_records=matched_records, export_documents=export_documents,
+        active_tab=active_tab)
 
 
 # Two-letter province prefixes used on some Sri Lankan registration numbers,
@@ -819,6 +825,143 @@ def revoke_mapping():
     else:
         flash("No matched records selected to revoke.", "info")
     return redirect(url_for("main.registration_updater", tab="map"))
+
+
+# --- Export (SAP batch-input "RMV UPLOAD") --------------------------------
+# Fixed columns and the four standard line items per record, taken verbatim from
+# SampleOutput/RMV UPLOAD.xls (a tab-separated file).  Amounts are fixed standard
+# fees; the credit "Slip Value" is their sum.
+_EXPORT_HDR1 = ["TRNID", "TCODE", "BLDAT", "BLART", "BUKRS", "BUDAT", "WAERS",
+                "XBLNR", "BKTXT", "NEWBS", "WRBTR", "ZUONR", "SGTXT", "NEWKO",
+                "PRCTR"]
+_EXPORT_HDR2 = ["TRNID", "Transaction Code", "Date (batch input)",
+                "Document Type", "Company Code", "Date (batch input)",
+                "Currency Key", "Reference Document Number",
+                "Document Header Text", "Posting Key for the Next Line Item",
+                "Amount in Document Currency (Batch Input Field)",
+                "Assignment Number", "Item Text",
+                "Account or Matchcode for the Next Line Item", "Profit Center"]
+# (NEWBS, WRBTR, SGTXT, NEWKO) for the four line items of every document.
+_EXPORT_LINES = [
+    ("40", "11010", "Vehicle Registration", "177205"),
+    ("40", "25000", "Special No Fees", "177205"),
+    ("40", "4500", "Number Plate Fees", "177205"),
+    ("50", "40510", "Slip Value", "119682"),
+]
+_EXPORT_CONST = {"TCODE": "FB01", "BLART": "SA", "BUKRS": "2501",
+                 "WAERS": "LKR", "PRCTR": "W111D1"}
+
+
+def _to_ddmmyyyy(value) -> str:
+    """Convert a captured date string to DDMMYYYY (receipt dates are DD/MM/YYYY).
+    Falls back to the digits present, or empty when none."""
+    if not value:
+        return ""
+    parts = re.split(r"[/\-.]", str(value).strip())
+    if len(parts) == 3:
+        d, m, y = parts
+        if len(y) == 2:
+            y = "20" + y
+        try:
+            return f"{int(d):02d}{int(m):02d}{int(y):04d}"
+        except ValueError:
+            pass
+    return re.sub(r"\D", "", str(value))
+
+
+def _write_rmv_export(path: str, records) -> None:
+    """Write the matched ``records`` as a tab-separated RMV UPLOAD file: two
+    header rows then, per record, four line items (TRNID increments per record)."""
+    rows = [_EXPORT_HDR1, _EXPORT_HDR2]
+    for i, m in enumerate(records, start=1):
+        date = _to_ddmmyyyy(m.receipt_date)
+        for newbs, wrbtr, sgtxt, newko in _EXPORT_LINES:
+            rows.append([
+                str(i), _EXPORT_CONST["TCODE"], date, _EXPORT_CONST["BLART"],
+                _EXPORT_CONST["BUKRS"], date, _EXPORT_CONST["WAERS"],
+                m.slip_no or "", m.receipt_no or "", newbs, wrbtr,
+                m.chassis_no or "", sgtxt, newko, _EXPORT_CONST["PRCTR"]])
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write("".join("\t".join(r) + "\r\n" for r in rows))
+
+
+@main_bp.route("/operations/registration-updater/export/generate",
+               methods=["POST"])
+@login_required
+def generate_export():
+    """Write the selected matched records to a new RMV UPLOAD export file, link
+    them to it (removing them from the Mapped-records tab) and record it."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    ids = [int(x) for x in request.form.getlist("ids") if x.isdigit()]
+    records = []
+    if ids:
+        records = (MatchedRecord.query
+                   .filter(MatchedRecord.id.in_(ids),
+                           MatchedRecord.export_document_id == None)
+                   .order_by(MatchedRecord.id).all())
+    if not records:
+        flash("No matched records selected to export.", "info")
+        return redirect(url_for("main.registration_updater", tab="map"))
+
+    export_dir = current_app.config["EXPORT_DIR"]
+    os.makedirs(export_dir, exist_ok=True)
+    doc = ExportDocument(
+        created_by=current_user.id, filename="pending", stored_path="pending",
+        records_count=len(records))
+    db.session.add(doc)
+    db.session.flush()  # assign id for the filename
+    filename = f"RMV-UPLOAD-{doc.id:05d}.xls"
+    path = os.path.join(export_dir, filename)
+    _write_rmv_export(path, records)
+    doc.filename = filename
+    doc.stored_path = path
+    doc.file_size = os.path.getsize(path)
+    for m in records:
+        m.export_document_id = doc.id
+    record_audit("registration_export_generate",
+                 f"export={doc.id} records={len(records)}")
+    db.session.commit()
+    flash(f"Export #{doc.id} created with {len(records)} record(s).", "success")
+    return redirect(url_for("main.registration_updater", tab="export"))
+
+
+@main_bp.route("/operations/registration-updater/export/<int:export_id>/revoke",
+               methods=["POST"])
+@login_required
+def revoke_export(export_id: int):
+    """Delete an export: return its records to the Mapped-records tab and remove
+    the export row and its file."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    doc = db.session.get(ExportDocument, export_id) or abort(404)
+    n = 0
+    for m in list(doc.records):
+        m.export_document_id = None
+        n += 1
+    try:
+        if doc.stored_path and os.path.exists(doc.stored_path):
+            os.remove(doc.stored_path)
+    except OSError:
+        pass
+    db.session.delete(doc)
+    record_audit("registration_export_revoke",
+                 f"export={export_id} records={n}")
+    db.session.commit()
+    flash(f"Export #{export_id} revoked: {n} record(s) returned to Mapped "
+          f"records.", "success")
+    return redirect(url_for("main.registration_updater", tab="export"))
+
+
+@main_bp.route("/operations/registration-updater/export/<int:export_id>/download")
+@login_required
+def download_export(export_id: int):
+    """Download a generated RMV UPLOAD export file."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    doc = db.session.get(ExportDocument, export_id) or abort(404)
+    if not doc.stored_path or not os.path.exists(doc.stored_path):
+        abort(404)
+    return send_file(doc.stored_path, as_attachment=True,
+                     download_name=doc.filename,
+                     mimetype="application/vnd.ms-excel")
 
 
 @main_bp.route("/operations/registration-updater/<kind>/<int:upload_id>/process",

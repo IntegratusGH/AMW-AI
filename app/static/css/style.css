@@ -129,6 +129,8 @@ h1, h2, h3 { margin: 0 0 .4em; font-weight: 650; }
 .btn-warning { background: var(--warning); border-color: var(--warning); color: #fff; }
 .btn-revoke { background: #fdecea; border-color: #f3c3bd; color: #b3261e; }
 .btn-revoke:hover { background: #fadbd7; border-color: #eaa9a1; }
+.btn-export { background: #e6f7ec; border-color: #b7e4c7; color: #1b7a43; }
+.btn-export:hover { background: #d3f0de; border-color: #9ad3b1; }
 .map-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .map-search { position: relative; display: inline-block; margin: 0 0 12px; }
 .map-search input {

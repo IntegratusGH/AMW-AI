@@ -106,6 +106,9 @@
     <button class="tab-btn {{ 'is-active' if active_tab == 'map' }}" type="button" role="tab" data-tab-target="tab-map" data-tab-key="map">
       {{ icon('list', 16) }} Mapped records
     </button>
+    <button class="tab-btn {{ 'is-active' if active_tab == 'export' }}" type="button" role="tab" data-tab-target="tab-export" data-tab-key="export">
+      {{ icon('spreadsheet', 16) }} Export Document
+    </button>
   </div>
 
   <section class="tab-panel {{ 'is-active' if active_tab == 'cr' }}" id="tab-cr" role="tabpanel">
@@ -157,6 +160,9 @@
           <button class="btn btn-revoke" type="submit"
                   formaction="{{ url_for('main.revoke_mapping') }}"
                   onclick="return mapRevokeConfirm();">&laquo; Revoke Mapping</button>
+          <button class="btn btn-export" type="submit"
+                  formaction="{{ url_for('main.generate_export') }}"
+                  onclick="return mapExportConfirm();">{{ icon('spreadsheet', 16) }} Generate Export</button>
         </div>
         <label class="checkbox" style="margin-top:8px;">
           <input type="checkbox" name="omit_province" value="on">
@@ -205,6 +211,45 @@
       </table>
     </div>
     </form>
+  </section>
+
+  <section class="tab-panel {{ 'is-active' if active_tab == 'export' }}" id="tab-export" role="tabpanel">
+    <div class="toolbar">
+      <p class="muted">{{ export_documents|length }} export file(s)</p>
+    </div>
+    <div class="card table-card reg-uploads">
+      <table class="table">
+        <thead>
+          <tr><th>Export ID</th><th>Records count</th><th>Size</th>
+            <th>Created</th><th class="ta-center">Revoke</th>
+            <th class="ta-center">Download</th></tr>
+        </thead>
+        <tbody>
+          {% for d in export_documents %}
+          <tr>
+            <td class="mono">{{ d.id }}</td>
+            <td>{{ d.records_count }}</td>
+            <td>{{ d.file_size|filesizeformat }}</td>
+            <td class="mono">{{ d.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+            <td class="ta-center">
+              <form method="post" class="inline"
+                    action="{{ url_for('main.revoke_export', export_id=d.id) }}"
+                    onsubmit="return confirm('Revoke export #{{ d.id }}? Its {{ d.records_count }} record(s) return to Mapped records and the file is deleted.');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="act-btn act-danger" type="submit" title="Revoke export" aria-label="Revoke export">{{ icon('rotate', 16) }}</button>
+              </form>
+            </td>
+            <td class="ta-center">
+              <a class="act-btn" title="Download XLS" aria-label="Download XLS"
+                 href="{{ url_for('main.download_export', export_id=d.id) }}">{{ icon('spreadsheet', 16) }}</a>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="muted ta-center">No exports yet. Select matched records on the Mapped records tab and click “Generate Export”.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </section>
 </div>
 
@@ -284,6 +329,11 @@
     var n = rows().filter(function (c) { return c.checked; }).length;
     if (!n) { alert('Select at least one matched record to revoke.'); return false; }
     return confirm('Revoke ' + n + ' selected mapping(s)? Each will be returned to CR books and receipts and removed from Matched Records.');
+  };
+  window.mapExportConfirm = function () {
+    var n = rows().filter(function (c) { return c.checked; }).length;
+    if (!n) { alert('Select at least one matched record to export.'); return false; }
+    return confirm('Generate an export file for ' + n + ' selected record(s)? They will move to the Export Document tab and leave Mapped records.');
   };
 
   var sInput = document.getElementById('map-search-input');
