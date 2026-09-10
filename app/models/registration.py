@@ -307,6 +307,12 @@ class MatchedRecord(db.Model):
     class_of_vehicle = db.Column(db.String(80), nullable=True)
     colour = db.Column(db.String(60), nullable=True)
     year_of_manufacture = db.Column(db.String(10), nullable=True)
+    # Snapshot of the CR page / value-region crop filenames so a revoke can
+    # restore the record's images (files persist under the source upload id).
+    cr_page_no = db.Column(db.Integer, nullable=True)
+    chassis_crop = db.Column(db.String(255), nullable=True)
+    reg_crop = db.Column(db.String(255), nullable=True)
+    engine_crop = db.Column(db.String(255), nullable=True)
 
     # --- Receipt side (snapshot) ---
     rc_source_upload_id = db.Column(db.Integer, nullable=True)
@@ -319,6 +325,8 @@ class MatchedRecord(db.Model):
     total_amount = db.Column(db.Numeric(12, 2), nullable=True)
     bank_charges = db.Column(db.Numeric(12, 2), nullable=True)
     bank_total = db.Column(db.Numeric(12, 2), nullable=True)
+    rc_segment_no = db.Column(db.Integer, nullable=True)
+    image_crop = db.Column(db.String(255), nullable=True)
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<MatchedRecord {self.id} reg={self.registration_no}>"

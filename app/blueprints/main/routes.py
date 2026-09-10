@@ -698,15 +698,49 @@ def _perform_mapping(user_id, omit_province: bool = False) -> int:
             current_owner=cr.current_owner, make=cr.make, model=cr.model,
             class_of_vehicle=cr.class_of_vehicle, colour=cr.colour,
             year_of_manufacture=cr.year_of_manufacture,
+            cr_page_no=cr.page_no, chassis_crop=cr.chassis_crop,
+            reg_crop=cr.reg_crop, engine_crop=cr.engine_crop,
             rc_source_upload_id=rc.upload_id, rc_source_record_id=rc.id,
             vehicle_no=rc.vehicle_no, slip_no=rc.slip_no,
             receipt_no=rc.receipt_no, receipt_date=rc.receipt_date,
             applicant_name=rc.applicant_name, total_amount=rc.total_amount,
-            bank_charges=rc.bank_charges, bank_total=rc.bank_total))
+            bank_charges=rc.bank_charges, bank_total=rc.bank_total,
+            rc_segment_no=rc.segment_no, image_crop=rc.image_crop))
         db.session.delete(cr)
         db.session.delete(rc)
         matched += 1
     return matched
+
+
+def _revoke_mapping(ids) -> int:
+    """Reverse of ``_perform_mapping`` for the selected ``matched_records`` ids:
+    recreate each snapshot's CR-book and receipt row in its source table (images
+    included) and delete the matched row.  Adds to the session and returns the
+    count; the caller commits."""
+    if not ids:
+        return 0
+    rows = MatchedRecord.query.filter(MatchedRecord.id.in_(ids)).all()
+    count = 0
+    for m in rows:
+        db.session.add(CRBookRecord(
+            upload_id=m.cr_source_upload_id, page_no=m.cr_page_no,
+            registration_no=m.registration_no, cr_number=m.cr_number,
+            chassis_no=m.chassis_no, engine_no=m.engine_no,
+            current_owner=m.current_owner, make=m.make, model=m.model,
+            class_of_vehicle=m.class_of_vehicle, colour=m.colour,
+            year_of_manufacture=m.year_of_manufacture,
+            chassis_crop=m.chassis_crop, reg_crop=m.reg_crop,
+            engine_crop=m.engine_crop))
+        db.session.add(ReceiptRecord(
+            upload_id=m.rc_source_upload_id, segment_no=m.rc_segment_no,
+            vehicle_no=m.vehicle_no, slip_no=m.slip_no,
+            receipt_no=m.receipt_no, receipt_date=m.receipt_date,
+            applicant_name=m.applicant_name, total_amount=m.total_amount,
+            bank_charges=m.bank_charges, bank_total=m.bank_total,
+            image_crop=m.image_crop))
+        db.session.delete(m)
+        count += 1
+    return count
 
 
 @main_bp.route("/operations/registration-updater/mapping/process",
@@ -731,6 +765,25 @@ def process_mapping():
     else:
         flash("No matching records found (no receipt vehicle number matched a CR "
               "book registration number).", "info")
+    return redirect(url_for("main.registration_updater", tab="map"))
+
+
+@main_bp.route("/operations/registration-updater/mapping/revoke",
+               methods=["POST"])
+@login_required
+def revoke_mapping():
+    """Return the selected matched records to their source tables: recreate each
+    CR-book and receipt row (images included) and remove the matched row."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    ids = [int(x) for x in request.form.getlist("ids") if x.isdigit()]
+    revoked = _revoke_mapping(ids)
+    record_audit("registration_mapping_revoke", f"revoked={revoked}")
+    db.session.commit()
+    if revoked:
+        flash(f"Revoked {revoked} mapping(s): records returned to CR books / "
+              f"receipts.", "success")
+    else:
+        flash("No matched records selected to revoke.", "info")
     return redirect(url_for("main.registration_updater", tab="map"))
 
 

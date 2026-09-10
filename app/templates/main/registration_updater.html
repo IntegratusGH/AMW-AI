@@ -144,30 +144,41 @@
   </section>
 
   <section class="tab-panel {{ 'is-active' if active_tab == 'map' }}" id="tab-map" role="tabpanel">
+    <form method="post" id="map-form"
+          action="{{ url_for('main.process_mapping') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="toolbar">
-      <form method="post"
-            action="{{ url_for('main.process_mapping') }}"
-            onsubmit="return confirm('Match receipts to CR books by vehicle number and move each matched pair to Matched Records (removed from CR books and receipts)?');">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <div><button class="btn btn-primary" type="submit">Process Mapping &raquo;</button></div>
+      <div>
+        <div class="map-actions">
+          <button class="btn btn-primary" type="submit"
+                  formaction="{{ url_for('main.process_mapping') }}"
+                  onclick="return confirm('Match receipts to CR books by vehicle number and move each matched pair to Matched Records (removed from CR books and receipts)?');">Process Mapping &raquo;</button>
+          <button class="btn btn-revoke" type="submit"
+                  formaction="{{ url_for('main.revoke_mapping') }}"
+                  onclick="return mapRevokeConfirm();">&laquo; Revoke Mapping</button>
+        </div>
         <label class="checkbox" style="margin-top:8px;">
           <input type="checkbox" name="omit_province" value="on">
           <span>Omit Province Code</span>
         </label>
-      </form>
+      </div>
       <p class="muted">{{ matched_records|length }} matched record(s)</p>
     </div>
 
     <div class="card table-card reg-uploads">
       <table class="table">
         <thead>
-          <tr><th>Matched</th><th>Reg No</th><th>Vehicle No</th><th>Chassis No</th>
+          <tr><th class="ta-center"><input type="checkbox" id="map-check-all"
+                title="Select all" aria-label="Select all"></th>
+            <th>Matched</th><th>Reg No</th><th>Vehicle No</th><th>Chassis No</th>
             <th>Engine No</th><th>Owner</th><th>Make</th><th>Receipt No</th>
             <th>Date</th><th class="ta-right">Bank Total</th></tr>
         </thead>
         <tbody>
           {% for m in matched_records %}
           <tr>
+            <td class="ta-center"><input type="checkbox" class="map-row-check"
+                  name="ids" value="{{ m.id }}" aria-label="Select record"></td>
             <td class="mono">{{ m.matched_at.strftime('%Y-%m-%d %H:%M') }}</td>
             <td class="mono">{{ m.registration_no or '—' }}</td>
             <td class="mono">{{ m.vehicle_no or '—' }}</td>
@@ -180,11 +191,12 @@
             <td class="ta-right">{{ '%.2f'|format(m.bank_total) if m.bank_total is not none else '—' }}</td>
           </tr>
           {% else %}
-          <tr><td colspan="10" class="muted ta-center">No matched records yet. Click “Process Mapping »” to match receipts to CR books by vehicle number.</td></tr>
+          <tr><td colspan="11" class="muted ta-center">No matched records yet. Click “Process Mapping »” to match receipts to CR books by vehicle number.</td></tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
+    </form>
   </section>
 </div>
 
@@ -238,6 +250,33 @@
       .catch(function () { setTimeout(poll, 5000); });
   }
   if (anyActive()) setTimeout(poll, 2000);
+})();
+</script>
+
+<script>
+(function () {
+  var all = document.getElementById('map-check-all');
+  function rows() { return Array.prototype.slice.call(document.querySelectorAll('.map-row-check')); }
+  function syncHeader() {
+    if (!all) return;
+    var rs = rows(), n = rs.filter(function (c) { return c.checked; }).length;
+    all.checked = n > 0 && n === rs.length;
+    all.indeterminate = n > 0 && n < rs.length;
+  }
+  if (all) {
+    all.addEventListener('change', function () {
+      rows().forEach(function (c) { c.checked = all.checked; });
+    });
+    document.addEventListener('change', function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains('map-row-check')) syncHeader();
+    });
+    syncHeader();
+  }
+  window.mapRevokeConfirm = function () {
+    var n = rows().filter(function (c) { return c.checked; }).length;
+    if (!n) { alert('Select at least one matched record to revoke.'); return false; }
+    return confirm('Revoke ' + n + ' selected mapping(s)? Each will be returned to CR books and receipts and removed from Matched Records.');
+  };
 })();
 </script>
 {% endblock %}
