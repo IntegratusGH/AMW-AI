@@ -62,8 +62,7 @@
         this page, so it does not look like a Certificate of Registration.
         Remove it from the batch before processing.</p>
       <form method="post"
-            action="{{ url_for('main.cr_remove_page', upload_id=upload.id, page_no=p.page_no) }}"
-            onsubmit="return confirm('Remove page {{ p.page_no }} from the PDF? This cannot be undone.');">
+            action="{{ url_for('main.cr_remove_page', upload_id=upload.id, page_no=p.page_no) }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button class="btn btn-danger" type="submit">{{ icon('trash', 16) }} Remove this page</button>
       </form>

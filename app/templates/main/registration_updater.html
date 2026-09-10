@@ -76,8 +76,7 @@
              href="{{ url_for('main.upload_records', kind=kind, upload_id=u.id) }}">{{ icon('list', 16) }}</a>
           {% endif %}
           <form method="post" class="inline"
-                action="{{ url_for('main.delete_upload', kind=kind, upload_id=u.id) }}"
-                onsubmit="return confirm('Delete {{ u.filename }} and its records?');">
+                action="{{ url_for('main.delete_upload', kind=kind, upload_id=u.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button class="act-btn act-danger" type="submit" title="Delete" aria-label="Delete">{{ icon('trash', 16) }}</button>
           </form>
@@ -155,14 +154,11 @@
       <div>
         <div class="map-actions">
           <button class="btn btn-primary" type="submit"
-                  formaction="{{ url_for('main.process_mapping') }}"
-                  onclick="return confirm('Match receipts to CR books by vehicle number and move each matched pair to Matched Records (removed from CR books and receipts)?');">Process Mapping &raquo;</button>
+                  formaction="{{ url_for('main.process_mapping') }}">Process Mapping &raquo;</button>
           <button class="btn btn-revoke" type="submit"
-                  formaction="{{ url_for('main.revoke_mapping') }}"
-                  onclick="return mapRevokeConfirm();">&laquo; Revoke Mapping</button>
+                  formaction="{{ url_for('main.revoke_mapping') }}">&laquo; Revoke Mapping</button>
           <button class="btn btn-export" type="submit"
-                  formaction="{{ url_for('main.generate_export') }}"
-                  onclick="return mapExportConfirm();">{{ icon('spreadsheet', 16) }} Generate Export</button>
+                  formaction="{{ url_for('main.generate_export') }}">{{ icon('spreadsheet', 16) }} Generate Export</button>
         </div>
         <label class="checkbox" style="margin-top:8px;">
           <input type="checkbox" name="omit_province" value="on">
@@ -233,8 +229,7 @@
             <td class="mono">{{ d.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
             <td class="ta-center">
               <form method="post" class="inline"
-                    action="{{ url_for('main.revoke_export', export_id=d.id) }}"
-                    onsubmit="return confirm('Revoke export #{{ d.id }}? Its {{ d.records_count }} record(s) return to Mapped records and the file is deleted.');">
+                    action="{{ url_for('main.revoke_export', export_id=d.id) }}">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button class="act-btn act-danger" type="submit" title="Revoke export" aria-label="Revoke export">{{ icon('rotate', 16) }}</button>
               </form>
@@ -325,17 +320,6 @@
     });
     syncHeader();
   }
-  window.mapRevokeConfirm = function () {
-    var n = rows().filter(function (c) { return c.checked; }).length;
-    if (!n) { alert('Select at least one matched record to revoke.'); return false; }
-    return confirm('Revoke ' + n + ' selected mapping(s)? Each will be returned to CR books and receipts and removed from Matched Records.');
-  };
-  window.mapExportConfirm = function () {
-    var n = rows().filter(function (c) { return c.checked; }).length;
-    if (!n) { alert('Select at least one matched record to export.'); return false; }
-    return confirm('Generate an export file for ' + n + ' selected record(s)? They will move to the Export Document tab and leave Mapped records.');
-  };
-
   var sInput = document.getElementById('map-search-input');
   var sClear = document.getElementById('map-search-clear');
   function regRows() { return Array.prototype.slice.call(document.querySelectorAll('#tab-map tr[data-reg]')); }

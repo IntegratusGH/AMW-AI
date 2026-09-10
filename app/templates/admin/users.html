@@ -46,7 +46,7 @@
             <button class="act-btn" title="{{ 'Deactivate' if u.is_active else 'Activate' }}" aria-label="{{ 'Deactivate' if u.is_active else 'Activate' }} user">{{ icon('power', 16) }}</button>
           </form>
           <form method="post" action="{{ url_for('admin.delete_user', user_id=u.id) }}"
-                class="inline" onsubmit="return confirm('Delete user {{ u.username }}?');">
+                class="inline">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button class="act-btn act-danger" title="Delete" aria-label="Delete user">{{ icon('trash', 16) }}</button>
           </form>
