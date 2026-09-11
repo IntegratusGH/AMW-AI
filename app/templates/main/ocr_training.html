@@ -164,7 +164,8 @@
          data-csrf="{{ csrf_token() }}"
          data-img-tpl="{{ url_for('main.tr_cr_page_image', upload_id=0, page_no=0) }}"
          data-apply-url="{{ url_for('main.tr_template_apply') }}"
-         data-save-url="{{ url_for('main.tr_template_save') }}">
+         data-save-url="{{ url_for('main.tr_template_save') }}"
+         data-update-url="{{ url_for('main.tr_template_update') }}">
       <div class="tmpl-toolbar">
         <label class="tmpl-ctl">Batch
           <select data-batch>
@@ -223,6 +224,7 @@
 
           <hr class="tmpl-sep">
           {% if current_user.is_ai_trainer or current_user.is_administrator %}
+          <button type="button" class="btn btn-primary" data-update hidden>{{ icon('check', 15) }} Update template</button>
           <label class="tmpl-ctl block">New template name
             <input type="text" data-name placeholder="e.g. OldCRBook v2">
           </label>

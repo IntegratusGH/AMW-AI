@@ -1414,6 +1414,38 @@ def tr_template_save():
                     "rects": rects, "validation": sig.get("validation")})
 
 
+@main_bp.route("/operations/registration-updater/training/template/update",
+               methods=["POST"])
+@login_required
+def tr_template_update():
+    """Overwrite an existing template's value rectangles + validation box in
+    place (keeps its name/key/layout signature).  Trainer/Admin only."""
+    _require_trainer()
+    data = request.get_json(silent=True) or {}
+    fmt = db.session.get(CRFormat, int(data.get("template_id") or 0)) or abort(404)
+    rects = {k: [float(n) for n in v]
+             for k, v in (data.get("rects") or {}).items()
+             if isinstance(v, (list, tuple)) and len(v) == 4}
+    if not rects:
+        return jsonify({"error": "Draw at least one field rectangle."}), 400
+    validation = data.get("validation") or None
+    sig = _load_sig(fmt.signature)
+    sig["rects"] = rects
+    if validation and isinstance(validation.get("rect"), (list, tuple)) \
+            and len(validation["rect"]) == 4 and (validation.get("value") or "").strip():
+        sig["validation"] = {
+            "name": (validation.get("name") or "").strip(),
+            "value": validation["value"].strip(),
+            "rect": [float(n) for n in validation["rect"]]}
+    else:
+        sig.pop("validation", None)
+    fmt.signature = json.dumps(sig)
+    record_audit("cr_template_updated", f"key={fmt.key} fields={len(rects)}")
+    db.session.commit()
+    return jsonify({"id": fmt.id, "name": fmt.name,
+                    "rects": rects, "validation": sig.get("validation")})
+
+
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/review")
 @login_required
 def cr_review(upload_id: int):

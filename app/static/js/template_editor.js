@@ -18,6 +18,7 @@
   var IMG_TPL = root.getAttribute("data-img-tpl") || "";
   var APPLY_URL = root.getAttribute("data-apply-url");
   var SAVE_URL = root.getAttribute("data-save-url");
+  var UPDATE_URL = root.getAttribute("data-update-url");
 
   var FIELD_LABEL = {};
   FIELDS.forEach(function (f) { FIELD_LABEL[f.key] = f.label; });
@@ -42,6 +43,7 @@
     results: root.querySelector("[data-results]"),
     name: root.querySelector("[data-name]"),
     save: root.querySelector("[data-save]"),
+    update: root.querySelector("[data-update]"),
     status: root.querySelector("[data-status]")
   };
 
@@ -235,10 +237,15 @@
     if (state.validation) state.validation.name = (el.valName.value || "").trim();
   });
 
+  function refreshUpdateBtn() {
+    if (!el.update) return;
+    el.update.hidden = !el.template.value;
+  }
+
   el.template.addEventListener("change", function () {
     var id = parseInt(el.template.value, 10);
     var t = TEMPLATES.filter(function (x) { return x.id === id; })[0];
-    if (!t) { return; }
+    if (!t) { refreshUpdateBtn(); return; }
     state.rects = Object.keys(t.rects).map(function (k) {
       var b = t.rects[k];
       return { name: k, x0: b[0], y0: b[1], x1: b[2], y1: b[3] };
@@ -256,6 +263,7 @@
     }
     state.sel = null;
     render();
+    refreshUpdateBtn();
   });
 
   // --- server calls --------------------------------------------------------
@@ -350,13 +358,34 @@
       opt.value = r.data.id; opt.textContent = r.data.name;
       el.template.appendChild(opt);
       el.template.value = r.data.id;
+      refreshUpdateBtn();
       setStatus("Saved template \u201c" + r.data.name + "\u201d.", "ok");
     }).catch(function () {
       el.save.disabled = false; setStatus("Network error.", "bad");
     });
   });
 
+  el.update && el.update.addEventListener("click", function () {
+    var id = parseInt(el.template.value, 10);
+    if (!id) { setStatus("Select a template to update.", "bad"); return; }
+    if (!state.rects.length) { setStatus("Draw at least one field box.", "bad"); return; }
+    setStatus("Updating\u2026", "");
+    el.update.disabled = true;
+    postJSON(UPDATE_URL, {
+      template_id: id, rects: rectsPayload(), validation: validationPayload()
+    }).then(function (r) {
+      el.update.disabled = false;
+      if (!r.ok) { setStatus((r.data && r.data.error) || "Update failed.", "bad"); return; }
+      var t = TEMPLATES.filter(function (x) { return x.id === r.data.id; })[0];
+      if (t) { t.rects = r.data.rects; t.validation = r.data.validation || null; }
+      setStatus("Updated template \u201c" + r.data.name + "\u201d.", "ok");
+    }).catch(function () {
+      el.update.disabled = false; setStatus("Network error.", "bad");
+    });
+  });
+
   // --- init ----------------------------------------------------------------
   loadPage();
   render();
+  refreshUpdateBtn();
 })();
