@@ -208,12 +208,8 @@
           <p class="muted small">A value that is identical on every CR of this
             layout (e.g. an authority name). Used to confirm the right template
             is applied before cropping.</p>
-          <label class="tmpl-ctl block">Field / name
-            <select data-val-field>
-              {% for f in cr_fields %}
-              <option value="{{ f.key }}">{{ f.label }}</option>
-              {% endfor %}
-            </select>
+          <label class="tmpl-ctl block">Name
+            <input type="text" data-val-name placeholder="e.g. Authority">
           </label>
           <label class="tmpl-ctl block">Expected value
             <input type="text" data-val-value placeholder="e.g. DEPARTMENT OF MOTOR…">

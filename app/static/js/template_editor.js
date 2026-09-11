@@ -34,7 +34,7 @@
     stage: root.querySelector("[data-stage]"),
     img: root.querySelector("[data-img]"),
     boxes: root.querySelector("[data-boxes]"),
-    valField: root.querySelector("[data-val-field]"),
+    valName: root.querySelector("[data-val-name]"),
     valValue: root.querySelector("[data-val-value]"),
     valAdd: root.querySelector("[data-val-add]"),
     valResult: root.querySelector("[data-val-result]"),
@@ -222,7 +222,7 @@
 
   el.valAdd.addEventListener("click", function () {
     state.validation = {
-      name: el.valField.value,
+      name: (el.valName.value || "").trim(),
       value: (el.valValue.value || "").trim(),
       x0: 0.30, y0: 0.03, x1: 0.70, y1: 0.075
     };
@@ -230,6 +230,9 @@
   });
   el.valValue.addEventListener("input", function () {
     if (state.validation) state.validation.value = (el.valValue.value || "").trim();
+  });
+  el.valName.addEventListener("input", function () {
+    if (state.validation) state.validation.name = (el.valName.value || "").trim();
   });
 
   el.template.addEventListener("change", function () {
@@ -247,7 +250,7 @@
         x0: vr[0], y0: vr[1], x1: vr[2], y1: vr[3]
       };
       el.valValue.value = state.validation.value;
-      if (state.validation.name) el.valField.value = state.validation.name;
+      el.valName.value = state.validation.name || "";
     } else {
       state.validation = null;
     }
