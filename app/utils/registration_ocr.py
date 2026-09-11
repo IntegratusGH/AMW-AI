@@ -1040,6 +1040,95 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     return rec
 
 
+# ---------------------------------------------------------------------------
+# Template (positional) extraction: crop trainer-defined rectangles + OCR
+# ---------------------------------------------------------------------------
+# Human-readable labels for the CR field keys, surfaced in the Trainer editor.
+CR_FIELD_LABELS = {
+    "registration_no": "Reg No",
+    "chassis_no": "Chassis No",
+    "engine_no": "Engine No",
+    "current_owner": "Current Owner",
+    "absolute_owner": "Absolute Owner",
+    "cylinder_capacity": "Cylinder Capacity",
+    "class_of_vehicle": "Class of Vehicle",
+    "fuel_type": "Fuel Type",
+    "year_of_manufacture": "Year of Manufacture",
+    "colour": "Colour",
+    "make": "Make",
+    "model": "Model",
+    "country_of_origin": "Country of Origin",
+    "provincial_council": "Provincial Council",
+    "date_first_registration": "Date of First Registration",
+}
+
+# Per-field normalizer/validator used when reading a template crop.  Fields not
+# listed are treated as free text (best single read, no structure validation).
+_FIELD_NORMALIZERS = {
+    "chassis_no": _norm_chassis,
+    "registration_no": _norm_reg,
+    "engine_no": _norm_engine,
+}
+_FIELD_VALIDATORS = {
+    "chassis_no": _chassis_valid,
+    "registration_no": _reg_valid,
+    "engine_no": _engine_valid,
+}
+
+
+def cr_field_options() -> list[dict]:
+    """Field keys + labels for the template editor's data-name picker."""
+    return [{"key": k, "label": CR_FIELD_LABELS.get(k, k)}
+            for k in _CR_LABELS]
+
+
+def read_rect(page, box) -> tuple[str | None, float]:
+    """OCR one normalized rectangle ``[x0,y0,x1,y1]`` (fractions of page size)
+    with the extensive multi-zoom/variant pass.  Returns ``(text, confidence)``
+    of the best free-text read (no field structure assumed)."""
+    import pymupdf
+    x0, y0, x1, y1 = box
+    W, H = page.rect.width, page.rect.height
+    rect = pymupdf.Rect(x0 * W, y0 * H, x1 * W, y1 * H)
+    cands = [(_clean(t), s) for t, s in _rec_candidates(page, rect) if _clean(t)]
+    if not cands:
+        return None, 0.0
+    text, conf = max(cands, key=lambda c: c[1])
+    return text, round(float(conf), 3)
+
+
+def extract_by_rects(page, rects: dict) -> dict:
+    """Extract each field by cropping its trainer-defined normalized rectangle
+    and running the extensive OCR pass on the crop.  ``rects`` maps a field key
+    to ``[x0,y0,x1,y1]`` (fractions of page size).  Returns a dict mapping each
+    field key to ``{value, confidence, valid}`` (``valid`` is None for free-text
+    fields that have no structure validator)."""
+    import pymupdf
+    W, H = page.rect.width, page.rect.height
+    out: dict[str, dict] = {}
+    for name, box in rects.items():
+        try:
+            x0, y0, x1, y1 = box
+        except (TypeError, ValueError):
+            continue
+        rect = pymupdf.Rect(x0 * W, y0 * H, x1 * W, y1 * H)
+        cands = _rec_candidates(page, rect)
+        norm = _FIELD_NORMALIZERS.get(name)
+        valid = _FIELD_VALIDATORS.get(name)
+        if norm:
+            cn = [(norm(t), s) for t, s in cands if norm(t)]
+            value, conf = _vote(cn, validator=valid) if cn else (None, 0.0)
+        else:
+            cn = [(_clean(t), s) for t, s in cands if _clean(t)]
+            value, conf = (max(cn, key=lambda c: c[1]) if cn else (None, 0.0))
+        out[name] = {
+            "value": value,
+            "confidence": round(float(conf), 3),
+            "valid": (bool(valid(value)) if (valid and value) else None),
+        }
+    return out
+
+
 def open_document(path: str):
     """Open a PDF/image with PyMuPDF; caller is responsible for closing it."""
     import pymupdf

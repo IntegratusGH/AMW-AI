@@ -13,6 +13,7 @@ from flask import (
     abort,
     current_app,
     flash,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -1232,10 +1233,21 @@ def ocr_training():
     crop_count = (db.session.query(func.count(OcrCorrection.id))
                   .filter(OcrCorrection.crop_file.isnot(None)).scalar())
 
+    # Trainer tab: CR batches to view, saved positional templates, field list.
+    from app.utils import registration_ocr as ocr
+    cr_batches = [
+        {"id": up.id, "filename": up.filename, "page_count": up.page_count or 0}
+        for up in (CRBookUpload.query
+                   .filter(CRBookUpload.page_count > 0)
+                   .order_by(CRBookUpload.uploaded_at.desc()).all())]
+    cr_templates = _serialize_cr_templates()
+    cr_fields = ocr.cr_field_options()
+
     return render_template(
         "main/ocr_training.html", overall=overall, field_stats=field_stats,
         fmt_stats=fmt_stats, trend=trend, confusions=confusions,
-        priors=priors, crop_count=int(crop_count or 0))
+        priors=priors, crop_count=int(crop_count or 0),
+        cr_batches=cr_batches, cr_templates=cr_templates, cr_fields=cr_fields)
 
 
 @main_bp.route("/operations/registration-updater/training/export")
@@ -1281,6 +1293,125 @@ def ocr_training_export():
     return Response(
         buf.getvalue(), mimetype="application/zip",
         headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+
+def _serialize_cr_templates() -> list[dict]:
+    """Saved positional templates (CR formats that carry trainer-drawn value
+    rectangles) for the Trainer editor's 'apply existing template' picker."""
+    out = []
+    for fmt in (CRFormat.query.filter_by(is_active=True)
+                .order_by(CRFormat.name).all()):
+        sig = _load_sig(fmt.signature)
+        rects = sig.get("rects") or {}
+        if not rects:
+            continue
+        out.append({"id": fmt.id, "name": fmt.name, "rects": rects,
+                    "validation": sig.get("validation") or None})
+    return out
+
+
+@main_bp.route("/operations/registration-updater/training/cr/<int:upload_id>"
+               "/page/<int:page_no>.png")
+@login_required
+def tr_cr_page_image(upload_id: int, page_no: int):
+    """Render a CR-book page for the Trainer template editor (trainer-gated)."""
+    _require_trainer()
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    from app.utils import registration_ocr as ocr
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        if page_no < 1 or page_no > total:
+            abort(404)
+        png = ocr._render_page_png(doc[page_no - 1], 2.0)
+    finally:
+        doc.close()
+    resp = Response(png, mimetype="image/png")
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+def _norm_match(s: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+@main_bp.route("/operations/registration-updater/training/template/apply",
+               methods=["POST"])
+@login_required
+def tr_template_apply():
+    """Crop the given rectangles on one page and OCR them, returning the read
+    value/confidence per field plus the validation-box check.  Used by the
+    editor's 'Apply / Check' action to verify a template against a page."""
+    _require_trainer()
+    data = request.get_json(silent=True) or {}
+    up = db.session.get(CRBookUpload, int(data.get("upload_id") or 0)) or abort(404)
+    page_no = int(data.get("page_no") or 1)
+    rects = {k: v for k, v in (data.get("rects") or {}).items()
+             if isinstance(v, (list, tuple)) and len(v) == 4}
+    validation = data.get("validation") or None
+    from app.utils import registration_ocr as ocr
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        if page_no < 1 or page_no > total:
+            abort(404)
+        page = doc[page_no - 1]
+        results = ocr.extract_by_rects(page, rects)
+        vout = None
+        if validation and isinstance(validation.get("rect"), (list, tuple)) \
+                and len(validation["rect"]) == 4:
+            text, conf = ocr.read_rect(page, validation["rect"])
+            expected = validation.get("value") or ""
+            ok = bool(expected) and _norm_match(expected) in _norm_match(text) \
+                if text else False
+            vout = {"value": text, "confidence": conf,
+                    "expected": expected, "ok": ok}
+    finally:
+        doc.close()
+    return jsonify({"results": results, "validation": vout})
+
+
+@main_bp.route("/operations/registration-updater/training/template/save",
+               methods=["POST"])
+@login_required
+def tr_template_save():
+    """Save the current rectangles + validation box as a new CR format (template).
+    Restricted to AI Trainers and Administrators (same as the Trainer tab)."""
+    _require_trainer()
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "Enter a template name."}), 400
+    rects = {k: [float(n) for n in v]
+             for k, v in (data.get("rects") or {}).items()
+             if isinstance(v, (list, tuple)) and len(v) == 4}
+    if not rects:
+        return jsonify({"error": "Draw at least one field rectangle."}), 400
+    up = db.session.get(CRBookUpload, int(data.get("upload_id") or 0)) or abort(404)
+    page_no = int(data.get("page_no") or 1)
+    validation = data.get("validation") or None
+    from app.utils import registration_ocr as ocr
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        page = doc[max(0, min(page_no, total) - 1)]
+        det = ocr.detect_cr_page(page)
+        sig = det["signature"]
+    finally:
+        doc.close()
+    sig["rects"] = rects
+    if validation and isinstance(validation.get("rect"), (list, tuple)) \
+            and len(validation["rect"]) == 4 and (validation.get("value") or "").strip():
+        sig["validation"] = {
+            "name": (validation.get("name") or "").strip(),
+            "value": validation["value"].strip(),
+            "rect": [float(n) for n in validation["rect"]]}
+    key = _unique_format_key(name)
+    fmt = CRFormat(key=key, name=name[:120], signature=json.dumps(sig),
+                   rule_set=key, is_builtin=False, is_active=True,
+                   created_by=current_user.id)
+    db.session.add(fmt)
+    record_audit("cr_template_saved", f"key={key} fields={len(rects)}")
+    db.session.commit()
+    return jsonify({"id": fmt.id, "name": fmt.name,
+                    "rects": rects, "validation": sig.get("validation")})
 
 
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/review")

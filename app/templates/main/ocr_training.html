@@ -151,7 +151,99 @@
   </section>
 
   <section class="tab-panel" id="tab-trainer" role="tabpanel">
-    <p class="muted">Trainer tools will be defined here.</p>
+  {% if not cr_batches %}
+    <p class="muted">No CR-book batches uploaded yet. Upload a CR book on the
+      Registration Updater page, then define a template here.</p>
+  {% else %}
+    <div class="tmpl"
+         data-tmpl
+         data-batches='{{ cr_batches|tojson }}'
+         data-templates='{{ cr_templates|tojson }}'
+         data-fields='{{ cr_fields|tojson }}'
+         data-can-save="{{ 'yes' if (current_user.is_ai_trainer or current_user.is_administrator) else '' }}"
+         data-csrf="{{ csrf_token() }}"
+         data-img-tpl="{{ url_for('main.tr_cr_page_image', upload_id=0, page_no=0) }}"
+         data-apply-url="{{ url_for('main.tr_template_apply') }}"
+         data-save-url="{{ url_for('main.tr_template_save') }}">
+      <div class="tmpl-toolbar">
+        <label class="tmpl-ctl">Batch
+          <select data-batch>
+            {% for b in cr_batches %}
+            <option value="{{ b.id }}">{{ b.filename }} ({{ b.page_count }}p)</option>
+            {% endfor %}
+          </select>
+        </label>
+        <span class="tmpl-nav">
+          <button type="button" class="btn btn-icon" data-prev title="Previous page">&#8249;</button>
+          <span class="mono" data-pageinfo>Page 1 / 1</span>
+          <button type="button" class="btn btn-icon" data-next title="Next page">&#8250;</button>
+        </span>
+        <label class="tmpl-ctl">Apply template
+          <select data-template>
+            <option value="">— none —</option>
+            {% for t in cr_templates %}
+            <option value="{{ t.id }}">{{ t.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="tmpl-ctl">Field
+          <select data-field>
+            {% for f in cr_fields %}
+            <option value="{{ f.key }}">{{ f.label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="button" class="btn" data-add>+ Add box</button>
+        <button type="button" class="btn" data-del>{{ icon('trash', 14) }} Delete</button>
+      </div>
+
+      <div class="tmpl-main">
+        <div class="tmpl-stage" data-stage tabindex="0">
+          <img data-img alt="CR-book page" draggable="false">
+          <div class="tmpl-boxes" data-boxes></div>
+        </div>
+
+        <aside class="tmpl-side">
+          <h3 class="section-title">Validation</h3>
+          <p class="muted small">A value that is identical on every CR of this
+            layout (e.g. an authority name). Used to confirm the right template
+            is applied before cropping.</p>
+          <label class="tmpl-ctl block">Field / name
+            <select data-val-field>
+              {% for f in cr_fields %}
+              <option value="{{ f.key }}">{{ f.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="tmpl-ctl block">Expected value
+            <input type="text" data-val-value placeholder="e.g. DEPARTMENT OF MOTOR…">
+          </label>
+          <button type="button" class="btn" data-val-add>Set validation box</button>
+          <div class="tmpl-valresult" data-val-result></div>
+
+          <hr class="tmpl-sep">
+          <button type="button" class="btn btn-primary" data-apply>{{ icon('scan', 15) }} Apply / Check</button>
+          <div class="tmpl-results" data-results></div>
+
+          <hr class="tmpl-sep">
+          {% if current_user.is_ai_trainer or current_user.is_administrator %}
+          <label class="tmpl-ctl block">New template name
+            <input type="text" data-name placeholder="e.g. OldCRBook v2">
+          </label>
+          <button type="button" class="btn" data-save>{{ icon('check', 15) }} Save as new template</button>
+          {% else %}
+          <p class="muted small">Only AI Trainers can save templates.</p>
+          {% endif %}
+          <div class="tmpl-status" data-status role="status"></div>
+        </aside>
+      </div>
+
+      <p class="muted small tmpl-hint">Click a box to select · drag to move ·
+        drag a corner to resize · arrow keys nudge (Shift = larger step) ·
+        each box shows its data name on top.</p>
+    </div>
+  {% endif %}
   </section>
 </div>
+<script src="{{ url_for('static', filename='js/template_editor.js') }}" defer></script>
 {% endblock %}
