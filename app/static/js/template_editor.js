@@ -92,6 +92,7 @@
     el.pageinfo.textContent = "Page " + state.page + " / " + state.pages;
     el.prev.disabled = state.page <= 1;
     el.next.disabled = state.page >= state.pages;
+    runApply(true);   // auto-run Apply / Check on the newly shown CR page
   }
 
   // --- rendering -----------------------------------------------------------
@@ -403,9 +404,10 @@
     });
   }
 
-  el.apply.addEventListener("click", function () {
+  function runApply(auto) {
     if (!state.rects.length && !state.validation) {
-      setStatus("Add at least one box first.", "bad"); return;
+      if (!auto) setStatus("Add at least one box first.", "bad");
+      return;
     }
     setStatus("Reading crops\u2026", "");
     el.apply.disabled = true;
@@ -421,7 +423,9 @@
     }).catch(function () {
       el.apply.disabled = false; setStatus("Network error.", "bad");
     });
-  });
+  }
+
+  el.apply.addEventListener("click", function () { runApply(false); });
 
   function showResults(data) {
     var res = data.results || {};

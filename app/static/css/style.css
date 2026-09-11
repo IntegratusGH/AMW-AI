@@ -118,6 +118,14 @@ h1, h2, h3 { margin: 0 0 .4em; font-weight: 650; }
 .content--wide .tab-bar { flex: 0 0 auto; }
 .content--wide .tab-panel.is-active { flex: 1 1 auto; min-height: 0;
   overflow-y: auto; }
+/* Trainer panel: keep the toolbar (page heading) fixed - no scroll bar on it -
+   and scroll only the stage/side area so the tall CR-book page is reachable. */
+.content--wide #tab-trainer.is-active { overflow: hidden;
+  display: flex; flex-direction: column; }
+#tab-trainer .tmpl { flex: 1 1 auto; min-height: 0; }
+#tab-trainer .tmpl-toolbar { flex: 0 0 auto; }
+#tab-trainer .tmpl-main { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+#tab-trainer .tmpl-hint { flex: 0 0 auto; }
 
 /* ---- Buttons ------------------------------------------------------------ */
 .btn {
@@ -496,7 +504,7 @@ select.input { appearance: auto; }
 .tmpl-side { background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px;
   display: flex; flex-direction: column; gap: 7px; position: sticky; top: 8px;
-  max-height: calc(100vh - var(--topbar-h) - 80px); overflow-y: auto; }
+  max-height: calc(100vh - var(--topbar-h) - 150px); overflow-y: auto; }
 .tmpl-side .section-title { margin: 0; }
 .tmpl-side p { margin: 0; }
 .tmpl-sep { border: 0; border-top: 1px solid var(--border); margin: 2px 0; width: 100%; }
