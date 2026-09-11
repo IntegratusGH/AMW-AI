@@ -276,7 +276,45 @@ def _preprocess_variants(bgr):
 # neutral value leaves the crop unchanged).
 _PP_KEYS = ("brightness", "contrast", "sharpness", "gamma", "scale",
             "grayscale", "invert", "denoise", "removebg", "clahe",
-            "autocontrast", "threshold")
+            "autocontrast", "morph", "colorkeep", "colorkeep_v", "fft",
+            "threshold")
+
+
+def _fft_descreen(gray):
+    """Suppress a periodic background (guilloche) with an FFT notch filter:
+    transform to the frequency domain, zero the strong off-centre peaks a
+    repeating pattern produces (protecting the low-frequency text structure at
+    the centre), then invert.  Returns a uint8 grayscale image."""
+    import cv2
+    import numpy as np
+    g = gray.astype(np.float32)
+    f = np.fft.fftshift(np.fft.fft2(g))
+    mag = np.abs(f)
+    h, w = g.shape
+    cy, cx = h // 2, w // 2
+    yy, xx = np.ogrid[:h, :w]
+    r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    r0 = max(8.0, 0.10 * min(h, w))          # protect DC + low freq (text)
+    annulus = r > r0
+    if not annulus.any():
+        return gray
+    # Isolated spikes (periodic guilloche) stand far above their local spectral
+    # neighbourhood; broad text energy does not.  Flag only points that both
+    # tower over a blurred local background AND are globally strong, so a clean
+    # (non-patterned) crop is left essentially unchanged.
+    bg = cv2.GaussianBlur(mag, (0, 0), 3.0)
+    ratio = mag / (bg + 1e-6)
+    strong = float(np.percentile(mag[annulus], 99.5))
+    peaks = annulus & (ratio > 4.0) & (mag > strong)
+    if not peaks.any():
+        return gray
+    # widen each peak so its immediate skirt is removed too, then re-protect
+    # the centre so text structure is never touched.
+    peaks = cv2.dilate(peaks.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    peaks &= annulus
+    f[peaks] = 0
+    rec = np.abs(np.fft.ifft2(np.fft.ifftshift(f)))
+    return cv2.normalize(rec, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
 
 def clean_pp(pp) -> dict:
@@ -296,8 +334,9 @@ def clean_pp(pp) -> dict:
 def _apply_pp(bgr, pp: dict):
     """Apply a box's trainer-defined adjustments to a BGR crop before OCR.
     Order: brightness/contrast -> gamma -> remove-background -> CLAHE ->
-    auto-contrast -> denoise -> sharpen -> grayscale/threshold -> invert.
-    Always returns a 3-channel BGR image."""
+    auto-contrast -> FFT de-screen -> colour-keep -> morphological open ->
+    denoise -> sharpen -> grayscale/threshold -> invert.  Always returns a
+    3-channel BGR image."""
     import cv2
     import numpy as np
     img = bgr
@@ -341,6 +380,30 @@ def _apply_pp(bgr, pp: dict):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         eq = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
         img = cv2.cvtColor(eq, cv2.COLOR_GRAY2BGR)
+    if _b("fft"):
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img = cv2.cvtColor(_fft_descreen(gray), cv2.COLOR_GRAY2BGR)
+    if _b("colorkeep"):
+        # Keep near-black, low-saturation pixels (the text) and drop lighter or
+        # coloured guilloche.  ``colorkeep_v`` is the max brightness (V) kept.
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        vmax = _f("colorkeep_v", 130.0)
+        if vmax <= 0:
+            vmax = 130.0
+        mask = (hsv[:, :, 2] <= vmax) & (hsv[:, :, 1] <= 90)
+        out = np.where(mask, 0, 255).astype(np.uint8)
+        img = cv2.cvtColor(out, cv2.COLOR_GRAY2BGR)
+    morph = int(_f("morph", 0.0))
+    if morph > 0:
+        # Opening on the dark=foreground text mask with a small kernel erases
+        # lines thinner than the kernel (guilloche) while keeping thicker text.
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        _, fg = cv2.threshold(gray, 0, 255,
+                              cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        k = max(1, min(morph, 7))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        opened = cv2.morphologyEx(fg, cv2.MORPH_OPEN, kernel)
+        img = cv2.cvtColor(255 - opened, cv2.COLOR_GRAY2BGR)
     if _b("denoise"):
         img = cv2.medianBlur(img, 3)
     sharp = _f("sharpness", 0.0)                          # 0..3

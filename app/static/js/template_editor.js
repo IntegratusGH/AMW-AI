@@ -493,7 +493,9 @@
   }
 
   function neutralFor(key) {
-    return (key === "gamma" || key === "scale") ? 1 : 0;
+    if (key === "gamma" || key === "scale") return 1;
+    if (key === "colorkeep_v") return 130;
+    return 0;
   }
 
   function loadModalControls(pp) {
@@ -530,6 +532,7 @@
         if (!isNaN(num) && num !== neutralFor(key)) pp[key] = num;
       }
     });
+    if (!pp.colorkeep) delete pp.colorkeep_v;   // level only applies with it
     return pp;
   }
 
@@ -556,6 +559,7 @@
     if (pp.brightness) f.push("brightness(" + (1 + pp.brightness / 100) + ")");
     if (pp.contrast) f.push("contrast(" + (1 + pp.contrast / 100) + ")");
     if (pp.grayscale || pp.removebg || pp.clahe || pp.autocontrast ||
+        pp.morph || pp.colorkeep || pp.fft ||
         pp.threshold !== undefined) f.push("grayscale(1)");
     if (pp.removebg) f.push("brightness(1.08) contrast(1.15)");
     if (pp.invert) f.push("invert(1)");

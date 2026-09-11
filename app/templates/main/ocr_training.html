@@ -278,10 +278,16 @@
                 <input type="range" data-pp="gamma" min="0.2" max="3" step="0.05" value="1"></label>
               <label class="tmpl-slider">Scale <span data-out="scale">1.0×</span>
                 <input type="range" data-pp="scale" min="1" max="3" step="0.25" value="1"></label>
+              <label class="tmpl-slider">Remove pattern (morph) <span data-out="morph">0</span>
+                <input type="range" data-pp="morph" min="0" max="7" step="1" value="0"></label>
+              <label class="tmpl-slider">Black-text level (colour) <span data-out="colorkeep_v">130</span>
+                <input type="range" data-pp="colorkeep_v" min="0" max="255" step="5" value="130"></label>
               <div class="tmpl-checks">
                 <label class="tmpl-check"><input type="checkbox" data-pp="removebg"> Remove background</label>
                 <label class="tmpl-check"><input type="checkbox" data-pp="clahe"> Local contrast (CLAHE)</label>
                 <label class="tmpl-check"><input type="checkbox" data-pp="autocontrast"> Auto-contrast</label>
+                <label class="tmpl-check"><input type="checkbox" data-pp="colorkeep"> Keep black text (colour)</label>
+                <label class="tmpl-check"><input type="checkbox" data-pp="fft"> Remove guilloche (FFT)</label>
                 <label class="tmpl-check"><input type="checkbox" data-pp="grayscale"> Grayscale</label>
                 <label class="tmpl-check"><input type="checkbox" data-pp="denoise"> Denoise</label>
                 <label class="tmpl-check"><input type="checkbox" data-pp="invert"> Invert</label>
