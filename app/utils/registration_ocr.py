@@ -11,6 +11,7 @@ so nothing is lost, and ``confidence`` records the mean OCR score.
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 from decimal import Decimal, InvalidOperation
@@ -30,12 +31,80 @@ def _get_engine():
 
 
 # ---------------------------------------------------------------------------
+# Scan-enhancement toggle (rollback-safe)
+# ---------------------------------------------------------------------------
+# Accuracy enhancements for poor-quality (grey, low-contrast, trilingual) scans
+# are all gated behind this single switch.  Set OCR_ENHANCE=0 in the .env and
+# restart the service to revert to the exact prior behaviour with no rebuild.
+def _enh_on() -> bool:
+    return os.getenv("OCR_ENHANCE", "1").strip().lower() not in (
+        "0", "no", "false", "off")
+
+
+# A page whose estimated paper background (85th-percentile brightness) is at or
+# above this stays untouched by flat-fielding; only measurably grey scans are
+# normalised.  Clean scans (~245) sit well above the default and are never
+# altered.
+_OCR_BG_WHITE_MIN = float(os.getenv("OCR_BG_WHITE_MIN", "215"))
+
+
+def _normalize_page_bgr(bgr):
+    """Flatten uneven illumination and lift a grey background so the text
+    detector sees near-white paper.  Returns the input unchanged when
+    enhancement is off or the page is already clean (near-identity), so good
+    scans are never degraded."""
+    import cv2
+    import numpy as np
+    if not _enh_on():
+        return bgr
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    if float(np.percentile(gray, 85)) >= _OCR_BG_WHITE_MIN:
+        return bgr
+    bg = cv2.medianBlur(gray, 31)
+    flat = cv2.divide(gray, bg, scale=255)
+    return cv2.cvtColor(flat, cv2.COLOR_GRAY2BGR)
+
+
+def _latin_ratio(text: str) -> float:
+    """Fraction of alphabetic characters that are ASCII (Latin).  Trilingual CR
+    labels rendered as Sinhala/Tamil noise score low; English values score 1.0.
+    Returns 1.0 when there are no letters (a digits-only value is all-Latin)."""
+    letters = [c for c in (text or "") if c.isalpha()]
+    if not letters:
+        return 1.0
+    return sum(c.isascii() for c in letters) / len(letters)
+
+
+def _is_script_noise(text: str) -> bool:
+    """A line dominated by non-Latin (Sinhala/Tamil) script with no usable Latin
+    alphanumeric run - never a field value on these English-keyed forms."""
+    if _latin_ratio(text) >= 0.5:
+        return False
+    return not re.search(r"[A-Za-z0-9]{4,}", text or "")
+
+
+# ---------------------------------------------------------------------------
 # Rendering + OCR primitives
 # ---------------------------------------------------------------------------
 def _render_page_png(page, zoom: float) -> bytes:
     import pymupdf
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
-    return pix.tobytes("png")
+    if not _enh_on():
+        return pix.tobytes("png")
+    import cv2
+    import numpy as np
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+        pix.height, pix.width, pix.n)
+    if pix.n == 4:
+        bgr = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+    elif pix.n == 1:
+        bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    else:
+        bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    norm = _normalize_page_bgr(bgr)
+    if norm is bgr:
+        return pix.tobytes("png")
+    return cv2.imencode(".png", norm)[1].tobytes()
 
 
 def _ocr(png_bytes: bytes) -> list[dict]:
@@ -183,13 +252,22 @@ def _preprocess_variants(bgr):
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10)
     sharp = cv2.filter2D(bgr, -1, np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]]))
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-    return [
+    variants = [
         bgr,
         cv2.cvtColor(otsu, cv2.COLOR_GRAY2BGR),
         cv2.cvtColor(adaptive, cv2.COLOR_GRAY2BGR),
         sharp,
         cv2.cvtColor(clahe, cv2.COLOR_GRAY2BGR),
     ]
+    if _enh_on() and float(np.percentile(gray, 85)) < _OCR_BG_WHITE_MIN:
+        # Flat-field variant: divide out the (grey) background so faint values
+        # on poor scans vote alongside the others.  Only added for measurably
+        # grey crops, so clean scans keep their exact prior candidate set (and
+        # confidence) unchanged.
+        bg = cv2.medianBlur(gray, 31)
+        flat = cv2.divide(gray, bg, scale=255)
+        variants.append(cv2.cvtColor(flat, cv2.COLOR_GRAY2BGR))
+    return variants
 
 
 def _rec_candidates(page, rect, zooms=(4, 6, 9)) -> list[tuple[str, float]]:
@@ -261,7 +339,10 @@ _ALL_LABEL_FRAGMENTS = [f for frags in _CR_LABELS.values() for f in frags] + [
 
 def _looks_like_label(line: dict) -> bool:
     n = _norm(line["text"])
-    return any(frag in n for frag in _ALL_LABEL_FRAGMENTS)
+    if any(frag in n for frag in _ALL_LABEL_FRAGMENTS):
+        return True
+    # Non-Latin (Sinhala/Tamil) label noise is never a value on these forms.
+    return bool(_enh_on() and _is_script_noise(line["text"]))
 
 
 # --- CR-book format detection --------------------------------------------
@@ -372,6 +453,25 @@ def _line_below(lines: list[dict], label: dict, max_dy: float = 90.0) -> dict | 
 def _value_below(lines: list[dict], label: dict, max_dy: float = 90.0) -> str | None:
     best = _line_below(lines, label, max_dy)
     return best["text"].strip() if best else None
+
+
+def _line_same_row(lines: list[dict], label: dict) -> dict | None:
+    """Nearest non-label value box on the same row as the label - used as a
+    fallback when nothing is detected directly below it, as on trilingual forms
+    where the value sits beside (or fused with) the label row."""
+    band = max(0.6 * (label["y1"] - label["y0"]), 12.0)
+    best, best_dx = None, None
+    for ln in lines:
+        if ln is label or not ln["text"]:
+            continue
+        if abs(ln["cy"] - label["cy"]) > band:
+            continue
+        if _looks_like_label(ln):
+            continue
+        dx = abs(ln["cx"] - label["cx"])
+        if best_dx is None or dx < best_dx:
+            best, best_dx = ln, dx
+    return best
 
 
 def _find_label(lines: list[dict], fragments: list[str],
@@ -853,7 +953,11 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
         lbl = _find_label(lines, frags, _CR_LABEL_EXCLUDE.get(field))
         if not lbl:
             continue
-        rec[field] = _clean(_value_below(lines, lbl))
+        val = _value_below(lines, lbl)
+        if val is None and _enh_on():
+            sr = _line_same_row(lines, lbl)
+            val = sr["text"].strip() if sr else None
+        rec[field] = _clean(val)
 
     full = "\n".join(ln["text"] for ln in lines)
 
@@ -893,6 +997,8 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     # full-page pass makes.
     ch_lbl = _find_label(lines, _CR_LABELS["chassis_no"])
     ch_line = _line_below(lines, ch_lbl) if ch_lbl else None
+    if ch_line is None and ch_lbl and _enh_on():
+        ch_line = _line_same_row(lines, ch_lbl)
     ch_val, ch_conf, ch_cands = _refine_field(page, ch_line, full_zoom, "chassis",
                                               rec.get("chassis_no"))
     if ch_val:
@@ -904,6 +1010,8 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     rg_lbl = _find_label(lines, _CR_LABELS["registration_no"],
                          _CR_LABEL_EXCLUDE["registration_no"])
     rg_line = _line_below(lines, rg_lbl) if rg_lbl else None
+    if rg_line is None and rg_lbl and _enh_on():
+        rg_line = _line_same_row(lines, rg_lbl)
     rg_val, rg_conf, _ = _refine_field(page, rg_line, full_zoom, "reg",
                                        rec.get("registration_no"))
     if rg_val:
@@ -913,6 +1021,8 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
 
     en_lbl = _find_label(lines, _CR_LABELS["engine_no"])
     en_line = _line_below(lines, en_lbl) if en_lbl else None
+    if en_line is None and en_lbl and _enh_on():
+        en_line = _line_same_row(lines, en_lbl)
     en_val, en_conf, en_cands = _refine_field(page, en_line, full_zoom, "engine",
                                               rec.get("engine_no"))
     if en_val:
