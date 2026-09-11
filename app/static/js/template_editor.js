@@ -19,6 +19,7 @@
   var APPLY_URL = root.getAttribute("data-apply-url");
   var SAVE_URL = root.getAttribute("data-save-url");
   var UPDATE_URL = root.getAttribute("data-update-url");
+  var PREVIEW_URL = root.getAttribute("data-preview-url");
 
   var FIELD_LABEL = {};
   FIELDS.forEach(function (f) { FIELD_LABEL[f.key] = f.label; });
@@ -35,9 +36,11 @@
     stage: root.querySelector("[data-stage]"),
     img: root.querySelector("[data-img]"),
     boxes: root.querySelector("[data-boxes]"),
+    fieldlist: root.querySelector("[data-fieldlist]"),
     valName: root.querySelector("[data-val-name]"),
     valValue: root.querySelector("[data-val-value]"),
     valAdd: root.querySelector("[data-val-add]"),
+    valSettings: root.querySelector("[data-val-settings]"),
     valResult: root.querySelector("[data-val-result]"),
     apply: root.querySelector("[data-apply]"),
     results: root.querySelector("[data-results]"),
@@ -47,12 +50,27 @@
     status: root.querySelector("[data-status]")
   };
 
+  var md = {
+    modal: root.querySelector("[data-modal]"),
+    title: root.querySelector("[data-modal-title]"),
+    img: root.querySelector("[data-modal-img]"),
+    ocr: root.querySelector("[data-modal-ocr]"),
+    reset: root.querySelector("[data-modal-reset]"),
+    test: root.querySelector("[data-modal-test]"),
+    apply: root.querySelector("[data-modal-apply]"),
+    thvalWrap: root.querySelector("[data-thval-wrap]"),
+    thval: root.querySelector("[data-thval]"),
+    controls: Array.prototype.slice.call(root.querySelectorAll("[data-pp]")),
+    closers: Array.prototype.slice.call(root.querySelectorAll("[data-modal-close]"))
+  };
+
   var state = {
     uid: BATCHES.length ? BATCHES[0].id : null,
     page: 1,
     pages: BATCHES.length ? BATCHES[0].page_count : 1,
     rects: [],          // [{name, x0, y0, x1, y1}]
-    validation: null,   // {name, value, x0, y0, x1, y1}
+    validation: null,   // {name, value, x0, y0, x1, y1, pp}
+    pp: {},             // {fieldName: {contrast, brightness, ...}}
     sel: null           // index into rects, or "val", or null
   };
 
@@ -86,6 +104,53 @@
     if (state.validation) {
       el.boxes.appendChild(makeBox(state.validation, "val", true));
     }
+    renderFieldList();
+  }
+
+  function hasPp(name) {
+    var p = state.pp[name];
+    return !!(p && Object.keys(p).length);
+  }
+
+  function renderFieldList() {
+    if (!el.fieldlist) return;
+    el.fieldlist.innerHTML = "";
+    if (!state.rects.length) {
+      el.fieldlist.innerHTML =
+        "<p class='muted small'>No boxes yet. Pick a field above and click \u201c+ Add box\u201d.</p>";
+      return;
+    }
+    state.rects.forEach(function (r, i) {
+      var row = document.createElement("div");
+      row.className = "tmpl-frow" + (state.sel === i ? " is-sel" : "");
+      var nm = document.createElement("span");
+      nm.className = "tmpl-frow__name";
+      nm.textContent = FIELD_LABEL[r.name] || r.name;
+      nm.title = "Select box";
+      nm.addEventListener("click", function () { select(i); });
+      row.appendChild(nm);
+      if (hasPp(r.name)) {
+        var dot = document.createElement("span");
+        dot.className = "tmpl-frow__dot";
+        dot.title = "Has image settings";
+        row.appendChild(dot);
+      }
+      var gear = document.createElement("button");
+      gear.type = "button";
+      gear.className = "btn btn-icon tmpl-frow__btn";
+      gear.title = "Image settings";
+      gear.textContent = "\u2699";
+      gear.addEventListener("click", function () { openModal(i); });
+      row.appendChild(gear);
+      var del = document.createElement("button");
+      del.type = "button";
+      del.className = "btn btn-icon tmpl-frow__btn";
+      del.title = "Delete box";
+      del.textContent = "\u2715";
+      del.addEventListener("click", function () { state.sel = i; deleteSelected(); });
+      row.appendChild(del);
+      el.fieldlist.appendChild(row);
+    });
   }
 
   function makeBox(r, idx, isVal) {
@@ -215,12 +280,17 @@
   function deleteSelected() {
     if (state.sel === "val") { state.validation = null; state.sel = null; render(); return; }
     if (typeof state.sel === "number") {
+      var r = state.rects[state.sel];
+      if (r) delete state.pp[r.name];
       state.rects.splice(state.sel, 1);
       state.sel = null;
       render();
     }
   }
   el.del.addEventListener("click", deleteSelected);
+  el.valSettings && el.valSettings.addEventListener("click", function () {
+    openModal("val");
+  });
 
   el.valAdd.addEventListener("click", function () {
     state.validation = {
@@ -250,11 +320,18 @@
       var b = t.rects[k];
       return { name: k, x0: b[0], y0: b[1], x1: b[2], y1: b[3] };
     });
+    state.pp = {};
+    if (t.field_pp) {
+      Object.keys(t.field_pp).forEach(function (k) {
+        state.pp[k] = JSON.parse(JSON.stringify(t.field_pp[k]));
+      });
+    }
     if (t.validation && t.validation.rect) {
       var vr = t.validation.rect;
       state.validation = {
         name: t.validation.name || "", value: t.validation.value || "",
-        x0: vr[0], y0: vr[1], x1: vr[2], y1: vr[3]
+        x0: vr[0], y0: vr[1], x1: vr[2], y1: vr[3],
+        pp: t.validation.pp ? JSON.parse(JSON.stringify(t.validation.pp)) : null
       };
       el.valValue.value = state.validation.value;
       el.valName.value = state.validation.name || "";
@@ -277,7 +354,17 @@
   function validationPayload() {
     if (!state.validation) return null;
     var v = state.validation;
-    return { name: v.name, value: v.value, rect: [v.x0, v.y0, v.x1, v.y1] };
+    var out = { name: v.name, value: v.value, rect: [v.x0, v.y0, v.x1, v.y1] };
+    if (v.pp && Object.keys(v.pp).length) out.pp = v.pp;
+    return out;
+  }
+  function fieldPpPayload() {
+    var out = {};
+    state.rects.forEach(function (r) {
+      var p = state.pp[r.name];
+      if (p && Object.keys(p).length) out[r.name] = p;
+    });
+    return out;
   }
 
   function postJSON(url, body) {
@@ -300,7 +387,8 @@
     el.apply.disabled = true;
     postJSON(APPLY_URL, {
       upload_id: state.uid, page_no: state.page,
-      rects: rectsPayload(), validation: validationPayload()
+      rects: rectsPayload(), field_pp: fieldPpPayload(),
+      validation: validationPayload()
     }).then(function (r) {
       el.apply.disabled = false;
       if (!r.ok) { setStatus((r.data && r.data.error) || "Apply failed.", "bad"); return; }
@@ -348,12 +436,13 @@
     el.save.disabled = true;
     postJSON(SAVE_URL, {
       name: name, upload_id: state.uid, page_no: state.page,
-      rects: rectsPayload(), validation: validationPayload()
+      rects: rectsPayload(), field_pp: fieldPpPayload(),
+      validation: validationPayload()
     }).then(function (r) {
       el.save.disabled = false;
       if (!r.ok) { setStatus((r.data && r.data.error) || "Save failed.", "bad"); return; }
       TEMPLATES.push({ id: r.data.id, name: r.data.name, rects: r.data.rects,
-        validation: r.data.validation || null });
+        validation: r.data.validation || null, field_pp: r.data.field_pp || {} });
       var opt = document.createElement("option");
       opt.value = r.data.id; opt.textContent = r.data.name;
       el.template.appendChild(opt);
@@ -372,16 +461,175 @@
     setStatus("Updating\u2026", "");
     el.update.disabled = true;
     postJSON(UPDATE_URL, {
-      template_id: id, rects: rectsPayload(), validation: validationPayload()
+      template_id: id, rects: rectsPayload(), field_pp: fieldPpPayload(),
+      validation: validationPayload()
     }).then(function (r) {
       el.update.disabled = false;
       if (!r.ok) { setStatus((r.data && r.data.error) || "Update failed.", "bad"); return; }
       var t = TEMPLATES.filter(function (x) { return x.id === r.data.id; })[0];
-      if (t) { t.rects = r.data.rects; t.validation = r.data.validation || null; }
+      if (t) { t.rects = r.data.rects; t.validation = r.data.validation || null;
+        t.field_pp = r.data.field_pp || {}; }
       setStatus("Updated template \u201c" + r.data.name + "\u201d.", "ok");
     }).catch(function () {
       el.update.disabled = false; setStatus("Network error.", "bad");
     });
+  });
+
+  // --- image-settings popup ------------------------------------------------
+  var modalTarget = null;   // rects index, or "val"
+  var refreshTimer = null;
+
+  function modalRect(target) {
+    var r = (target === "val") ? state.validation : state.rects[target];
+    return [r.x0, r.y0, r.x1, r.y1];
+  }
+  function modalName(target) {
+    return (target === "val") ? "validation" : state.rects[target].name;
+  }
+  function currentPp(target) {
+    if (target === "val") return (state.validation && state.validation.pp) || {};
+    var r = state.rects[target];
+    return (r && state.pp[r.name]) || {};
+  }
+
+  function neutralFor(key) {
+    return (key === "gamma" || key === "scale") ? 1 : 0;
+  }
+
+  function loadModalControls(pp) {
+    md.controls.forEach(function (c) {
+      var key = c.getAttribute("data-pp");
+      if (c.type === "checkbox") {
+        c.checked = !!pp[key];
+      } else if (key === "threshold") {
+        var v = pp.threshold;
+        c.value = (v === undefined || v === null || v === "" || v === "off")
+          ? "off" : (v === "auto" ? "auto" : "fixed");
+      } else {
+        c.value = (pp[key] !== undefined && pp[key] !== null)
+          ? pp[key] : neutralFor(key);
+      }
+    });
+    var thv = 128;
+    if (typeof pp.threshold === "number") thv = pp.threshold;
+    md.thval.value = thv;
+    syncThresholdUI(); syncOutputs(); applyCssFilter();
+  }
+
+  function collectPp() {
+    var pp = {};
+    md.controls.forEach(function (c) {
+      var key = c.getAttribute("data-pp");
+      if (c.type === "checkbox") {
+        if (c.checked) pp[key] = true;
+      } else if (key === "threshold") {
+        if (c.value === "auto") pp.threshold = "auto";
+        else if (c.value === "fixed") pp.threshold = parseInt(md.thval.value, 10);
+      } else {
+        var num = parseFloat(c.value);
+        if (!isNaN(num) && num !== neutralFor(key)) pp[key] = num;
+      }
+    });
+    return pp;
+  }
+
+  function syncOutputs() {
+    root.querySelectorAll("[data-out]").forEach(function (s) {
+      var key = s.getAttribute("data-out");
+      if (key === "thval") { s.textContent = md.thval.value; return; }
+      var c = root.querySelector('[data-pp="' + key + '"]');
+      if (!c) return;
+      if (key === "scale") s.textContent = parseFloat(c.value).toFixed(2) + "\u00d7";
+      else if (key === "gamma") s.textContent = parseFloat(c.value).toFixed(2);
+      else s.textContent = c.value;
+    });
+  }
+
+  function syncThresholdUI() {
+    var sel = root.querySelector('[data-pp="threshold"]');
+    if (md.thvalWrap) md.thvalWrap.hidden = !(sel && sel.value === "fixed");
+  }
+
+  function applyCssFilter() {
+    var pp = collectPp();
+    var f = [];
+    if (pp.brightness) f.push("brightness(" + (1 + pp.brightness / 100) + ")");
+    if (pp.contrast) f.push("contrast(" + (1 + pp.contrast / 100) + ")");
+    if (pp.grayscale || pp.threshold !== undefined) f.push("grayscale(1)");
+    if (pp.invert) f.push("invert(1)");
+    md.img.style.filter = f.join(" ");
+  }
+
+  function fetchPreview(runOcr) {
+    if (modalTarget === null) return;
+    md.img.style.filter = "";   // server returns the already-processed crop
+    postJSON(PREVIEW_URL, {
+      upload_id: state.uid, page_no: state.page,
+      name: modalName(modalTarget), rect: modalRect(modalTarget),
+      pp: collectPp(), ocr: !!runOcr
+    }).then(function (r) {
+      if (!r.ok || !r.data) return;
+      if (r.data.crop) md.img.src = r.data.crop;
+      if (runOcr && r.data.ocr) {
+        var o = r.data.ocr;
+        md.ocr.innerHTML = "Read: <span class='mono'>" + (o.value || "\u2014") +
+          "</span> \u00b7 conf " +
+          (o.confidence != null ? (o.confidence * 100).toFixed(0) + "%" : "\u2014") +
+          (o.valid === true ? " <span class='badge badge-success'>valid</span>" :
+            (o.valid === false ? " <span class='badge badge-warning'>check</span>" : ""));
+      }
+    });
+  }
+
+  function scheduleRefresh() {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(function () { fetchPreview(false); }, 450);
+  }
+
+  function openModal(target) {
+    if (target === "val" && !state.validation) {
+      setStatus("Set the validation box first.", "bad"); return;
+    }
+    modalTarget = target;
+    md.title.textContent = "Image settings \u2014 " +
+      (target === "val" ? "Validation"
+        : (FIELD_LABEL[state.rects[target].name] || state.rects[target].name));
+    md.ocr.innerHTML = "";
+    loadModalControls(currentPp(target));
+    md.modal.hidden = false;
+    fetchPreview(false);
+  }
+  function closeModal() { md.modal.hidden = true; modalTarget = null; }
+
+  md.controls.forEach(function (c) {
+    var evt = (c.type === "range") ? "input" : "change";
+    c.addEventListener(evt, function () {
+      syncThresholdUI(); syncOutputs(); applyCssFilter(); scheduleRefresh();
+    });
+  });
+  md.thval && md.thval.addEventListener("input", function () {
+    syncOutputs(); scheduleRefresh();
+  });
+  md.closers.forEach(function (c) { c.addEventListener("click", closeModal); });
+  md.test && md.test.addEventListener("click", function () { fetchPreview(true); });
+  md.reset && md.reset.addEventListener("click", function () {
+    loadModalControls({});
+    md.ocr.innerHTML = "";
+    fetchPreview(false);
+  });
+  md.apply && md.apply.addEventListener("click", function () {
+    if (modalTarget === null) return;
+    var pp = collectPp();
+    if (modalTarget === "val") {
+      if (state.validation) state.validation.pp = pp;
+    } else {
+      state.pp[state.rects[modalTarget].name] = pp;
+    }
+    closeModal();
+    render();
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && md.modal && !md.modal.hidden) closeModal();
   });
 
   // --- init ----------------------------------------------------------------

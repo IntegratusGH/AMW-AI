@@ -270,13 +270,102 @@ def _preprocess_variants(bgr):
     return variants
 
 
-def _rec_candidates(page, rect, zooms=(4, 6, 9)) -> list[tuple[str, float]]:
+# --- per-box image adjustments (trainer template settings) ----------------
+# Optional pre-OCR tuning a trainer can attach to a template box to lift the
+# recognizer's confidence on that specific field/scan (all keys optional; a
+# neutral value leaves the crop unchanged).
+_PP_KEYS = ("brightness", "contrast", "sharpness", "gamma", "scale",
+            "grayscale", "invert", "denoise", "threshold")
+
+
+def clean_pp(pp) -> dict:
+    """Keep only known, non-neutral adjustment keys so templates persist just
+    the settings the trainer actually changed."""
+    if not isinstance(pp, dict):
+        return {}
+    out = {}
+    for k in _PP_KEYS:
+        v = pp.get(k)
+        if v in (None, "", "off", "Off", False):
+            continue
+        out[k] = v
+    return out
+
+
+def _apply_pp(bgr, pp: dict):
+    """Apply a box's trainer-defined adjustments to a BGR crop before OCR.
+    Order: brightness/contrast -> gamma -> denoise -> sharpen -> grayscale/
+    threshold -> invert.  Always returns a 3-channel BGR image."""
+    import cv2
+    import numpy as np
+    img = bgr
+
+    def _f(key, dflt):
+        try:
+            return float(pp.get(key, dflt))
+        except (TypeError, ValueError):
+            return dflt
+
+    def _b(key):
+        v = pp.get(key)
+        return v is True or str(v).strip().lower() in ("1", "true", "yes", "on")
+
+    alpha = max(0.0, 1.0 + _f("contrast", 0.0) / 100.0)   # -100..100
+    beta = _f("brightness", 0.0) * 1.27                   # -100..100
+    if alpha != 1.0 or beta != 0.0:
+        img = cv2.convertScaleAbs(img, alpha=alpha, beta=beta)
+    gamma = _f("gamma", 1.0)
+    if gamma > 0 and abs(gamma - 1.0) > 1e-3:
+        table = np.array([((i / 255.0) ** (1.0 / gamma)) * 255
+                          for i in range(256)], dtype=np.uint8)
+        img = cv2.LUT(img, table)
+    if _b("denoise"):
+        img = cv2.medianBlur(img, 3)
+    sharp = _f("sharpness", 0.0)                          # 0..3
+    if sharp > 0:
+        blur = cv2.GaussianBlur(img, (0, 0), 1.0)
+        img = cv2.addWeighted(img, 1.0 + sharp, blur, -sharp, 0)
+    th = pp.get("threshold")
+    ths = "" if th is None else str(th).strip().lower()
+    if ths and ths != "off":
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        if ths == "auto":
+            _, bw = cv2.threshold(gray, 0, 255,
+                                  cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        else:
+            try:
+                tval = int(float(th))
+            except (TypeError, ValueError):
+                tval = 128
+            _, bw = cv2.threshold(gray, max(0, min(255, tval)), 255,
+                                  cv2.THRESH_BINARY)
+        img = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
+    elif _b("grayscale"):
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    if _b("invert"):
+        img = 255 - img
+    return img
+
+
+def _rec_candidates(page, rect, zooms=(4, 6, 9), pp=None) -> list[tuple[str, float]]:
     """Recognize a cropped region at several zooms x preprocessing variants.
     Each crop is deskewed and height-normalised so the recognizer sees text at
-    a consistent, well-conditioned scale."""
+    a consistent, well-conditioned scale.  ``pp`` applies a box's trainer-
+    defined adjustments (and its ``scale`` multiplies the render zooms)."""
+    zs = zooms
+    if pp and pp.get("scale"):
+        try:
+            sc = float(pp["scale"])
+            if sc and sc != 1.0:
+                zs = tuple(max(1.0, z * sc) for z in zooms)
+        except (TypeError, ValueError):
+            pass
     out: list[tuple[str, float]] = []
-    for z in zooms:
+    for z in zs:
         base = _deskew(_crop_bgr(page, rect, z))
+        if pp:
+            base = _apply_pp(base, pp)
         for im in _preprocess_variants(base):
             out.extend(_rec_only(_fit_height(im)))
     return out
@@ -1082,7 +1171,21 @@ def cr_field_options() -> list[dict]:
             for k in _CR_LABELS]
 
 
-def read_rect(page, box) -> tuple[str | None, float]:
+def render_crop_png(page, box, pp=None, zoom: float = 6.0) -> bytes:
+    """Render one normalized rectangle as a PNG for the settings preview
+    (optionally with the box's trainer adjustments applied)."""
+    import cv2
+    import pymupdf
+    x0, y0, x1, y1 = box
+    W, H = page.rect.width, page.rect.height
+    rect = pymupdf.Rect(x0 * W, y0 * H, x1 * W, y1 * H)
+    bgr = _crop_bgr(page, rect, zoom)
+    if pp:
+        bgr = _apply_pp(bgr, pp)
+    return cv2.imencode(".png", bgr)[1].tobytes()
+
+
+def read_rect(page, box, pp=None) -> tuple[str | None, float]:
     """OCR one normalized rectangle ``[x0,y0,x1,y1]`` (fractions of page size)
     with the extensive multi-zoom/variant pass.  Returns ``(text, confidence)``
     of the best free-text read (no field structure assumed)."""
@@ -1090,17 +1193,19 @@ def read_rect(page, box) -> tuple[str | None, float]:
     x0, y0, x1, y1 = box
     W, H = page.rect.width, page.rect.height
     rect = pymupdf.Rect(x0 * W, y0 * H, x1 * W, y1 * H)
-    cands = [(_clean(t), s) for t, s in _rec_candidates(page, rect) if _clean(t)]
+    cands = [(_clean(t), s) for t, s in _rec_candidates(page, rect, pp=pp)
+             if _clean(t)]
     if not cands:
         return None, 0.0
     text, conf = max(cands, key=lambda c: c[1])
     return text, round(float(conf), 3)
 
 
-def extract_by_rects(page, rects: dict) -> dict:
+def extract_by_rects(page, rects: dict, pp_map: dict | None = None) -> dict:
     """Extract each field by cropping its trainer-defined normalized rectangle
     and running the extensive OCR pass on the crop.  ``rects`` maps a field key
-    to ``[x0,y0,x1,y1]`` (fractions of page size).  Returns a dict mapping each
+    to ``[x0,y0,x1,y1]`` (fractions of page size); ``pp_map`` optionally maps a
+    field key to its per-box image adjustments.  Returns a dict mapping each
     field key to ``{value, confidence, valid}`` (``valid`` is None for free-text
     fields that have no structure validator)."""
     import pymupdf
@@ -1112,7 +1217,7 @@ def extract_by_rects(page, rects: dict) -> dict:
         except (TypeError, ValueError):
             continue
         rect = pymupdf.Rect(x0 * W, y0 * H, x1 * W, y1 * H)
-        cands = _rec_candidates(page, rect)
+        cands = _rec_candidates(page, rect, pp=(pp_map or {}).get(name))
         norm = _FIELD_NORMALIZERS.get(name)
         valid = _FIELD_VALIDATORS.get(name)
         if norm:

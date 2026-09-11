@@ -1,6 +1,7 @@
 """Main application routes: dashboard, operations, profile, settings."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -1306,7 +1307,8 @@ def _serialize_cr_templates() -> list[dict]:
         if not rects:
             continue
         out.append({"id": fmt.id, "name": fmt.name, "rects": rects,
-                    "validation": sig.get("validation") or None})
+                    "validation": sig.get("validation") or None,
+                    "field_pp": sig.get("field_pp") or {}})
     return out
 
 
@@ -1343,22 +1345,25 @@ def tr_template_apply():
     editor's 'Apply / Check' action to verify a template against a page."""
     _require_trainer()
     data = request.get_json(silent=True) or {}
+    from app.utils import registration_ocr as ocr
     up = db.session.get(CRBookUpload, int(data.get("upload_id") or 0)) or abort(404)
     page_no = int(data.get("page_no") or 1)
     rects = {k: v for k, v in (data.get("rects") or {}).items()
              if isinstance(v, (list, tuple)) and len(v) == 4}
+    field_pp = {k: ocr.clean_pp(v)
+                for k, v in (data.get("field_pp") or {}).items()}
     validation = data.get("validation") or None
-    from app.utils import registration_ocr as ocr
     doc, total = ocr.open_document(up.stored_path)
     try:
         if page_no < 1 or page_no > total:
             abort(404)
         page = doc[page_no - 1]
-        results = ocr.extract_by_rects(page, rects)
+        results = ocr.extract_by_rects(page, rects, pp_map=field_pp)
         vout = None
         if validation and isinstance(validation.get("rect"), (list, tuple)) \
                 and len(validation["rect"]) == 4:
-            text, conf = ocr.read_rect(page, validation["rect"])
+            text, conf = ocr.read_rect(page, validation["rect"],
+                                       pp=ocr.clean_pp(validation.get("pp")))
             expected = validation.get("value") or ""
             ok = bool(expected) and _norm_match(expected) in _norm_match(text) \
                 if text else False
@@ -1367,6 +1372,72 @@ def tr_template_apply():
     finally:
         doc.close()
     return jsonify({"results": results, "validation": vout})
+
+
+@main_bp.route("/operations/registration-updater/training/field/preview",
+               methods=["POST"])
+@login_required
+def tr_field_preview():
+    """Render one box's crop with the given adjustments (and, if requested, OCR
+    it) so the settings popup can show the processed image + confidence."""
+    _require_trainer()
+    from app.utils import registration_ocr as ocr
+    data = request.get_json(silent=True) or {}
+    up = db.session.get(CRBookUpload, int(data.get("upload_id") or 0)) or abort(404)
+    page_no = int(data.get("page_no") or 1)
+    name = (data.get("name") or "field").strip() or "field"
+    rect = data.get("rect")
+    if not (isinstance(rect, (list, tuple)) and len(rect) == 4):
+        return jsonify({"error": "No box."}), 400
+    pp = ocr.clean_pp(data.get("pp"))
+    run_ocr = bool(data.get("ocr"))
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        if page_no < 1 or page_no > total:
+            abort(404)
+        page = doc[page_no - 1]
+        png = ocr.render_crop_png(page, rect, pp=pp)
+        result = None
+        if run_ocr:
+            result = ocr.extract_by_rects(
+                page, {name: rect}, pp_map={name: pp}).get(name)
+    finally:
+        doc.close()
+    return jsonify({
+        "crop": "data:image/png;base64," + base64.b64encode(png).decode(),
+        "ocr": result})
+
+
+def _apply_template_payload(sig: dict, data: dict) -> dict:
+    """Populate a template signature's rects / field_pp / validation (incl. its
+    per-box adjustments) from an editor payload.  Shared by save + update."""
+    from app.utils import registration_ocr as ocr
+    rects = {k: [float(n) for n in v]
+             for k, v in (data.get("rects") or {}).items()
+             if isinstance(v, (list, tuple)) and len(v) == 4}
+    sig["rects"] = rects
+    field_pp = {}
+    for k, v in (data.get("field_pp") or {}).items():
+        cleaned = ocr.clean_pp(v)
+        if k in rects and cleaned:
+            field_pp[k] = cleaned
+    if field_pp:
+        sig["field_pp"] = field_pp
+    else:
+        sig.pop("field_pp", None)
+    validation = data.get("validation") or None
+    if validation and isinstance(validation.get("rect"), (list, tuple)) \
+            and len(validation["rect"]) == 4 and (validation.get("value") or "").strip():
+        v = {"name": (validation.get("name") or "").strip(),
+             "value": validation["value"].strip(),
+             "rect": [float(n) for n in validation["rect"]]}
+        vpp = ocr.clean_pp(validation.get("pp"))
+        if vpp:
+            v["pp"] = vpp
+        sig["validation"] = v
+    else:
+        sig.pop("validation", None)
+    return rects
 
 
 @main_bp.route("/operations/registration-updater/training/template/save",
@@ -1380,14 +1451,10 @@ def tr_template_save():
     name = (data.get("name") or "").strip()
     if not name:
         return jsonify({"error": "Enter a template name."}), 400
-    rects = {k: [float(n) for n in v]
-             for k, v in (data.get("rects") or {}).items()
-             if isinstance(v, (list, tuple)) and len(v) == 4}
-    if not rects:
+    if not (data.get("rects") or {}):
         return jsonify({"error": "Draw at least one field rectangle."}), 400
     up = db.session.get(CRBookUpload, int(data.get("upload_id") or 0)) or abort(404)
     page_no = int(data.get("page_no") or 1)
-    validation = data.get("validation") or None
     from app.utils import registration_ocr as ocr
     doc, total = ocr.open_document(up.stored_path)
     try:
@@ -1396,13 +1463,9 @@ def tr_template_save():
         sig = det["signature"]
     finally:
         doc.close()
-    sig["rects"] = rects
-    if validation and isinstance(validation.get("rect"), (list, tuple)) \
-            and len(validation["rect"]) == 4 and (validation.get("value") or "").strip():
-        sig["validation"] = {
-            "name": (validation.get("name") or "").strip(),
-            "value": validation["value"].strip(),
-            "rect": [float(n) for n in validation["rect"]]}
+    rects = _apply_template_payload(sig, data)
+    if not rects:
+        return jsonify({"error": "Draw at least one field rectangle."}), 400
     key = _unique_format_key(name)
     fmt = CRFormat(key=key, name=name[:120], signature=json.dumps(sig),
                    rule_set=key, is_builtin=False, is_active=True,
@@ -1410,8 +1473,9 @@ def tr_template_save():
     db.session.add(fmt)
     record_audit("cr_template_saved", f"key={key} fields={len(rects)}")
     db.session.commit()
-    return jsonify({"id": fmt.id, "name": fmt.name,
-                    "rects": rects, "validation": sig.get("validation")})
+    return jsonify({"id": fmt.id, "name": fmt.name, "rects": rects,
+                    "validation": sig.get("validation"),
+                    "field_pp": sig.get("field_pp") or {}})
 
 
 @main_bp.route("/operations/registration-updater/training/template/update",
@@ -1423,27 +1487,18 @@ def tr_template_update():
     _require_trainer()
     data = request.get_json(silent=True) or {}
     fmt = db.session.get(CRFormat, int(data.get("template_id") or 0)) or abort(404)
-    rects = {k: [float(n) for n in v]
-             for k, v in (data.get("rects") or {}).items()
-             if isinstance(v, (list, tuple)) and len(v) == 4}
+    if not (data.get("rects") or {}):
+        return jsonify({"error": "Draw at least one field rectangle."}), 400
+    sig = _load_sig(fmt.signature)
+    rects = _apply_template_payload(sig, data)
     if not rects:
         return jsonify({"error": "Draw at least one field rectangle."}), 400
-    validation = data.get("validation") or None
-    sig = _load_sig(fmt.signature)
-    sig["rects"] = rects
-    if validation and isinstance(validation.get("rect"), (list, tuple)) \
-            and len(validation["rect"]) == 4 and (validation.get("value") or "").strip():
-        sig["validation"] = {
-            "name": (validation.get("name") or "").strip(),
-            "value": validation["value"].strip(),
-            "rect": [float(n) for n in validation["rect"]]}
-    else:
-        sig.pop("validation", None)
     fmt.signature = json.dumps(sig)
     record_audit("cr_template_updated", f"key={fmt.key} fields={len(rects)}")
     db.session.commit()
-    return jsonify({"id": fmt.id, "name": fmt.name,
-                    "rects": rects, "validation": sig.get("validation")})
+    return jsonify({"id": fmt.id, "name": fmt.name, "rects": rects,
+                    "validation": sig.get("validation"),
+                    "field_pp": sig.get("field_pp") or {}})
 
 
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/review")

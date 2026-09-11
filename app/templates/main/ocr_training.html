@@ -165,7 +165,8 @@
          data-img-tpl="{{ url_for('main.tr_cr_page_image', upload_id=0, page_no=0) }}"
          data-apply-url="{{ url_for('main.tr_template_apply') }}"
          data-save-url="{{ url_for('main.tr_template_save') }}"
-         data-update-url="{{ url_for('main.tr_template_update') }}">
+         data-update-url="{{ url_for('main.tr_template_update') }}"
+         data-preview-url="{{ url_for('main.tr_field_preview') }}">
       <div class="tmpl-toolbar">
         <label class="tmpl-ctl">Batch
           <select data-batch>
@@ -205,6 +206,13 @@
         </div>
 
         <aside class="tmpl-side">
+          <h3 class="section-title">Fields</h3>
+          <p class="muted small">Click a row to select its box on the page; the
+            gear opens image settings (contrast, brightness, sharpness…) to lift
+            that field's OCR confidence.</p>
+          <div class="tmpl-fieldlist" data-fieldlist></div>
+
+          <hr class="tmpl-sep">
           <h3 class="section-title">Validation</h3>
           <p class="muted small">A value that is identical on every CR of this
             layout (e.g. an authority name). Used to confirm the right template
@@ -215,7 +223,11 @@
           <label class="tmpl-ctl block">Expected value
             <input type="text" data-val-value placeholder="e.g. DEPARTMENT OF MOTOR…">
           </label>
-          <button type="button" class="btn" data-val-add>Set validation box</button>
+          <div class="tmpl-row">
+            <button type="button" class="btn" data-val-add>Set validation box</button>
+            <button type="button" class="btn btn-icon" data-val-settings
+                    title="Image settings">{{ icon('cog', 15) }}</button>
+          </div>
           <div class="tmpl-valresult" data-val-result></div>
 
           <hr class="tmpl-sep">
@@ -239,6 +251,56 @@
       <p class="muted small tmpl-hint">Click a box to select · drag to move ·
         drag a corner to resize · arrow keys nudge (Shift = larger step) ·
         each box shows its data name on top.</p>
+
+      <!-- Per-box image settings popup -->
+      <div class="tmpl-modal" data-modal hidden>
+        <div class="tmpl-modal__backdrop" data-modal-close></div>
+        <div class="tmpl-modal__panel" role="dialog" aria-modal="true"
+             aria-label="Image settings">
+          <div class="tmpl-modal__head">
+            <h3 data-modal-title>Image settings</h3>
+            <button type="button" class="btn btn-icon" data-modal-close
+                    title="Close">{{ icon('x', 16) }}</button>
+          </div>
+          <div class="tmpl-modal__body">
+            <div class="tmpl-preview">
+              <img data-modal-img alt="crop preview">
+              <div class="tmpl-preview__ocr" data-modal-ocr></div>
+            </div>
+            <div class="tmpl-settings">
+              <label class="tmpl-slider">Brightness <span data-out="brightness">0</span>
+                <input type="range" data-pp="brightness" min="-100" max="100" step="1" value="0"></label>
+              <label class="tmpl-slider">Contrast <span data-out="contrast">0</span>
+                <input type="range" data-pp="contrast" min="-100" max="100" step="1" value="0"></label>
+              <label class="tmpl-slider">Sharpness <span data-out="sharpness">0</span>
+                <input type="range" data-pp="sharpness" min="0" max="3" step="0.1" value="0"></label>
+              <label class="tmpl-slider">Gamma <span data-out="gamma">1.0</span>
+                <input type="range" data-pp="gamma" min="0.2" max="3" step="0.05" value="1"></label>
+              <label class="tmpl-slider">Scale <span data-out="scale">1.0×</span>
+                <input type="range" data-pp="scale" min="1" max="3" step="0.25" value="1"></label>
+              <div class="tmpl-checks">
+                <label class="tmpl-check"><input type="checkbox" data-pp="grayscale"> Grayscale</label>
+                <label class="tmpl-check"><input type="checkbox" data-pp="invert"> Invert</label>
+                <label class="tmpl-check"><input type="checkbox" data-pp="denoise"> Denoise</label>
+              </div>
+              <label class="tmpl-slider">Threshold
+                <select data-pp="threshold">
+                  <option value="off">Off</option>
+                  <option value="auto">Auto (Otsu)</option>
+                  <option value="fixed">Fixed…</option>
+                </select></label>
+              <label class="tmpl-slider" data-thval-wrap hidden>Threshold value
+                <span data-out="thval">128</span>
+                <input type="range" data-thval min="0" max="255" step="1" value="128"></label>
+            </div>
+          </div>
+          <div class="tmpl-modal__foot">
+            <button type="button" class="btn" data-modal-reset>Reset</button>
+            <button type="button" class="btn" data-modal-test>{{ icon('scan', 15) }} Test OCR</button>
+            <button type="button" class="btn btn-primary" data-modal-apply>Apply</button>
+          </div>
+        </div>
+      </div>
     </div>
   {% endif %}
   </section>
