@@ -110,6 +110,14 @@ h1, h2, h3 { margin: 0 0 .4em; font-weight: 650; }
   position: sticky; top: 0; z-index: 5;
   box-shadow: inset 0 -1px 0 var(--border);
 }
+/* Tabbed content--wide pages (OCR Training): let the active panel own the
+   scroll so tall content (e.g. the Trainer CR-book page) is fully reachable
+   instead of being clipped by the fixed-height, overflow-hidden container. */
+.content--wide .tabs { flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; }
+.content--wide .tab-bar { flex: 0 0 auto; }
+.content--wide .tab-panel.is-active { flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; }
 
 /* ---- Buttons ------------------------------------------------------------ */
 .btn {
@@ -487,8 +495,8 @@ select.input { appearance: auto; }
 
 .tmpl-side { background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px;
-  display: flex; flex-direction: column; gap: 10px; position: sticky; top: 12px;
-  max-height: calc(100vh - 24px); overflow-y: auto; }
+  display: flex; flex-direction: column; gap: 10px; position: sticky; top: 8px;
+  max-height: calc(100vh - var(--topbar-h) - 80px); overflow-y: auto; }
 .tmpl-side .section-title { margin: 0; }
 .tmpl-sep { border: 0; border-top: 1px solid var(--border); margin: 6px 0; width: 100%; }
 .tmpl-results table { margin-top: 4px; }
