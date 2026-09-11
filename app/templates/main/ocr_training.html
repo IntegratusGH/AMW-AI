@@ -207,32 +207,24 @@
 
         <aside class="tmpl-side">
           <h3 class="section-title">Fields</h3>
-          <p class="muted small">Click a row to select its box on the page; the
-            gear opens image settings (contrast, brightness, sharpness…) to lift
-            that field's OCR confidence.</p>
+          <p class="muted small">Click a row to select its box; the gear opens
+            image settings. Read/Conf fill in after Apply / Check.</p>
           <div class="tmpl-fieldlist" data-fieldlist></div>
+          <button type="button" class="btn btn-primary" data-apply>{{ icon('scan', 15) }} Apply / Check</button>
 
           <hr class="tmpl-sep">
           <h3 class="section-title">Validation</h3>
-          <p class="muted small">A value that is identical on every CR of this
-            layout (e.g. an authority name). Used to confirm the right template
-            is applied before cropping.</p>
-          <label class="tmpl-ctl block">Name
-            <input type="text" data-val-name placeholder="e.g. Authority">
-          </label>
-          <label class="tmpl-ctl block">Expected value
-            <input type="text" data-val-value placeholder="e.g. DEPARTMENT OF MOTOR…">
-          </label>
-          <div class="tmpl-row">
-            <button type="button" class="btn" data-val-add>Set validation box</button>
+          <p class="muted small">A value identical on every CR of this layout
+            (e.g. an authority name), used to confirm the template.</p>
+          <div class="tmpl-valrow">
+            <input type="text" data-val-name placeholder="Name">
+            <input type="text" data-val-value placeholder="Expected value">
+            <button type="button" class="btn btn-icon" data-val-add
+                    title="Set validation box">{{ icon('target', 15) }}</button>
             <button type="button" class="btn btn-icon" data-val-settings
                     title="Image settings">{{ icon('cog', 15) }}</button>
           </div>
           <div class="tmpl-valresult" data-val-result></div>
-
-          <hr class="tmpl-sep">
-          <button type="button" class="btn btn-primary" data-apply>{{ icon('scan', 15) }} Apply / Check</button>
-          <div class="tmpl-results" data-results></div>
 
           <hr class="tmpl-sep">
           {% if current_user.is_ai_trainer or current_user.is_administrator %}

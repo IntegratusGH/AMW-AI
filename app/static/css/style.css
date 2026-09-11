@@ -494,11 +494,12 @@ select.input { appearance: auto; }
 .tmpl-rect__h--se { right: -6px; bottom: -6px; cursor: nwse-resize; }
 
 .tmpl-side { background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px;
-  display: flex; flex-direction: column; gap: 10px; position: sticky; top: 8px;
+  border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px;
+  display: flex; flex-direction: column; gap: 7px; position: sticky; top: 8px;
   max-height: calc(100vh - var(--topbar-h) - 80px); overflow-y: auto; }
 .tmpl-side .section-title { margin: 0; }
-.tmpl-sep { border: 0; border-top: 1px solid var(--border); margin: 6px 0; width: 100%; }
+.tmpl-side p { margin: 0; }
+.tmpl-sep { border: 0; border-top: 1px solid var(--border); margin: 2px 0; width: 100%; }
 .tmpl-results table { margin-top: 4px; }
 .tmpl-valresult { font-size: .85rem; min-height: 1.2em; }
 .tmpl-status { font-size: .85rem; min-height: 1.2em; color: var(--text-muted); }
@@ -525,6 +526,26 @@ select.input { appearance: auto; }
 .tmpl-frow__dot { width: 8px; height: 8px; border-radius: 50%;
   background: var(--primary); flex: none; }
 .tmpl-frow__btn { padding: 3px 8px; line-height: 1; font-size: .95rem; }
+
+/* merged Field / Read / Conf table (with per-row gear + delete icons) */
+.tmpl-ftable { width: 100%; margin: 0; }
+.tmpl-ftable th, .tmpl-ftable td { padding: 4px 8px; font-size: .84rem;
+  vertical-align: middle; }
+.tmpl-ftable th:last-child, .tmpl-ftable td:last-child { width: 1%; }
+.tmpl-ftable__name { cursor: pointer; white-space: nowrap; }
+.tmpl-ftable__name .tmpl-frow__dot { display: inline-block; margin-left: 6px;
+  vertical-align: middle; }
+.tmpl-ftable__conf { white-space: nowrap; }
+.tmpl-ftable tr.is-sel > td { background: rgba(217, 138, 31, .12); }
+.tmpl-ftable tr.is-ok .tmpl-ftable__conf { color: var(--success); font-weight: 600; }
+.tmpl-ftable tr.is-bad .tmpl-ftable__conf { color: var(--danger); font-weight: 600; }
+.tmpl-ftable__act { white-space: nowrap; text-align: right; }
+.tmpl-ftable__act .tmpl-frow__btn { padding: 2px 6px; }
+.tmpl-ftable__act .tmpl-frow__btn + .tmpl-frow__btn { margin-left: 4px; }
+
+/* validation: Name + Expected value + set-box icon + settings icon, one row */
+.tmpl-valrow { display: flex; gap: 6px; align-items: center; }
+.tmpl-side .tmpl-valrow input { min-width: 0; flex: 1 1 0; }
 
 /* image-settings popup */
 .tmpl-modal { position: fixed; inset: 0; z-index: 200; display: flex;

@@ -43,7 +43,6 @@
     valSettings: root.querySelector("[data-val-settings]"),
     valResult: root.querySelector("[data-val-result]"),
     apply: root.querySelector("[data-apply]"),
-    results: root.querySelector("[data-results]"),
     name: root.querySelector("[data-name]"),
     save: root.querySelector("[data-save]"),
     update: root.querySelector("[data-update]"),
@@ -120,37 +119,62 @@
         "<p class='muted small'>No boxes yet. Pick a field above and click \u201c+ Add box\u201d.</p>";
       return;
     }
+    var table = document.createElement("table");
+    table.className = "table tmpl-ftable";
+    table.innerHTML =
+      "<thead><tr><th>Field</th><th>Read</th><th>Conf</th><th></th></tr></thead>";
+    var tb = document.createElement("tbody");
     state.rects.forEach(function (r, i) {
-      var row = document.createElement("div");
-      row.className = "tmpl-frow" + (state.sel === i ? " is-sel" : "");
-      var nm = document.createElement("span");
-      nm.className = "tmpl-frow__name";
-      nm.textContent = FIELD_LABEL[r.name] || r.name;
+      var tr = document.createElement("tr");
+      tr.className = (state.sel === i ? "is-sel" : "") +
+        (r._valid === false ? " is-bad" : (r._valid === true ? " is-ok" : ""));
+
+      var nm = document.createElement("td");
+      nm.className = "tmpl-ftable__name";
       nm.title = "Select box";
-      nm.addEventListener("click", function () { select(i); });
-      row.appendChild(nm);
+      nm.textContent = FIELD_LABEL[r.name] || r.name;
       if (hasPp(r.name)) {
         var dot = document.createElement("span");
         dot.className = "tmpl-frow__dot";
         dot.title = "Has image settings";
-        row.appendChild(dot);
+        nm.appendChild(dot);
       }
+      nm.addEventListener("click", function () { select(i); });
+      tr.appendChild(nm);
+
+      var read = document.createElement("td");
+      read.className = "mono";
+      read.textContent = r._read || "\u2014";
+      tr.appendChild(read);
+
+      var conf = document.createElement("td");
+      conf.className = "tmpl-ftable__conf";
+      conf.textContent = (r._conf != null)
+        ? Math.round(r._conf * 100) + "%" : "\u2014";
+      tr.appendChild(conf);
+
+      var act = document.createElement("td");
+      act.className = "tmpl-ftable__act";
       var gear = document.createElement("button");
       gear.type = "button";
       gear.className = "btn btn-icon tmpl-frow__btn";
       gear.title = "Image settings";
       gear.textContent = "\u2699";
       gear.addEventListener("click", function () { openModal(i); });
-      row.appendChild(gear);
+      act.appendChild(gear);
       var del = document.createElement("button");
       del.type = "button";
       del.className = "btn btn-icon tmpl-frow__btn";
       del.title = "Delete box";
       del.textContent = "\u2715";
       del.addEventListener("click", function () { state.sel = i; deleteSelected(); });
-      row.appendChild(del);
-      el.fieldlist.appendChild(row);
+      act.appendChild(del);
+      tr.appendChild(act);
+
+      tb.appendChild(tr);
     });
+    table.appendChild(tb);
+    el.fieldlist.appendChild(table);
   }
 
   function makeBox(r, idx, isVal) {
@@ -401,22 +425,12 @@
 
   function showResults(data) {
     var res = data.results || {};
-    var rows = "";
     state.rects.forEach(function (r) {
       var d = res[r.name] || {};
       r._read = d.value || "\u2014";
+      r._conf = (d.confidence != null) ? d.confidence : null;
       r._valid = (d.valid === true) ? true : (d.valid === false ? false : null);
-      var cls = r._valid === true ? "badge-success" :
-        (r._valid === false ? "badge-warning" : "");
-      rows += "<tr><td>" + (FIELD_LABEL[r.name] || r.name) +
-        "</td><td class='mono'>" + (d.value || "\u2014") + "</td><td>" +
-        (d.confidence != null ? (d.confidence * 100).toFixed(0) + "%" : "\u2014") +
-        "</td><td>" + (cls ? "<span class='badge " + cls + "'>" +
-          (r._valid ? "valid" : "check") + "</span>" : "\u2014") + "</td></tr>";
     });
-    el.results.innerHTML = rows
-      ? "<table class='table'><thead><tr><th>Field</th><th>Read</th><th>Conf</th><th></th></tr></thead><tbody>" + rows + "</tbody></table>"
-      : "<p class='muted small'>No field boxes.</p>";
     var v = data.validation;
     if (v) {
       el.valResult.innerHTML = "<span class='badge " +
