@@ -275,7 +275,8 @@ def _preprocess_variants(bgr):
 # recognizer's confidence on that specific field/scan (all keys optional; a
 # neutral value leaves the crop unchanged).
 _PP_KEYS = ("brightness", "contrast", "sharpness", "gamma", "scale",
-            "grayscale", "invert", "denoise", "threshold")
+            "grayscale", "invert", "denoise", "removebg", "clahe",
+            "autocontrast", "threshold")
 
 
 def clean_pp(pp) -> dict:
@@ -294,8 +295,9 @@ def clean_pp(pp) -> dict:
 
 def _apply_pp(bgr, pp: dict):
     """Apply a box's trainer-defined adjustments to a BGR crop before OCR.
-    Order: brightness/contrast -> gamma -> denoise -> sharpen -> grayscale/
-    threshold -> invert.  Always returns a 3-channel BGR image."""
+    Order: brightness/contrast -> gamma -> remove-background -> CLAHE ->
+    auto-contrast -> denoise -> sharpen -> grayscale/threshold -> invert.
+    Always returns a 3-channel BGR image."""
     import cv2
     import numpy as np
     img = bgr
@@ -319,6 +321,26 @@ def _apply_pp(bgr, pp: dict):
         table = np.array([((i / 255.0) ** (1.0 / gamma)) * 255
                           for i in range(256)], dtype=np.uint8)
         img = cv2.LUT(img, table)
+    if _b("removebg"):
+        # Flatten uneven paper/shadow: estimate the background by morphological
+        # closing (fills dark strokes with surrounding paper) then divide it
+        # out, leaving text on clean white.  Kernel ~ crop height so strokes
+        # vanish but the illumination gradient survives the estimate.
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        ksz = int(max(9, min(gray.shape[0], gray.shape[1])))
+        ksz = min(ksz | 1, 51)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz))
+        bg = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
+        flat = cv2.divide(gray, bg, scale=255)
+        img = cv2.cvtColor(flat, cv2.COLOR_GRAY2BGR)
+    if _b("clahe"):
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        eq = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+        img = cv2.cvtColor(eq, cv2.COLOR_GRAY2BGR)
+    if _b("autocontrast"):
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        eq = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+        img = cv2.cvtColor(eq, cv2.COLOR_GRAY2BGR)
     if _b("denoise"):
         img = cv2.medianBlur(img, 3)
     sharp = _f("sharpness", 0.0)                          # 0..3
@@ -332,6 +354,10 @@ def _apply_pp(bgr, pp: dict):
         if ths == "auto":
             _, bw = cv2.threshold(gray, 0, 255,
                                   cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        elif ths == "adaptive":
+            bw = cv2.adaptiveThreshold(
+                gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 31, 10)
         else:
             try:
                 tval = int(float(th))

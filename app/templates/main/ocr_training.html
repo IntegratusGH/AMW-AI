@@ -279,14 +279,18 @@
               <label class="tmpl-slider">Scale <span data-out="scale">1.0×</span>
                 <input type="range" data-pp="scale" min="1" max="3" step="0.25" value="1"></label>
               <div class="tmpl-checks">
+                <label class="tmpl-check"><input type="checkbox" data-pp="removebg"> Remove background</label>
+                <label class="tmpl-check"><input type="checkbox" data-pp="clahe"> Local contrast (CLAHE)</label>
+                <label class="tmpl-check"><input type="checkbox" data-pp="autocontrast"> Auto-contrast</label>
                 <label class="tmpl-check"><input type="checkbox" data-pp="grayscale"> Grayscale</label>
-                <label class="tmpl-check"><input type="checkbox" data-pp="invert"> Invert</label>
                 <label class="tmpl-check"><input type="checkbox" data-pp="denoise"> Denoise</label>
+                <label class="tmpl-check"><input type="checkbox" data-pp="invert"> Invert</label>
               </div>
-              <label class="tmpl-slider">Threshold
+              <label class="tmpl-slider">Threshold (binarize)
                 <select data-pp="threshold">
                   <option value="off">Off</option>
                   <option value="auto">Auto (Otsu)</option>
+                  <option value="adaptive">Adaptive (uneven light)</option>
                   <option value="fixed">Fixed…</option>
                 </select></label>
               <label class="tmpl-slider" data-thval-wrap hidden>Threshold value

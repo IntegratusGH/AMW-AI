@@ -555,7 +555,9 @@
     var f = [];
     if (pp.brightness) f.push("brightness(" + (1 + pp.brightness / 100) + ")");
     if (pp.contrast) f.push("contrast(" + (1 + pp.contrast / 100) + ")");
-    if (pp.grayscale || pp.threshold !== undefined) f.push("grayscale(1)");
+    if (pp.grayscale || pp.removebg || pp.clahe || pp.autocontrast ||
+        pp.threshold !== undefined) f.push("grayscale(1)");
+    if (pp.removebg) f.push("brightness(1.08) contrast(1.15)");
     if (pp.invert) f.push("invert(1)");
     md.img.style.filter = f.join(" ");
   }
