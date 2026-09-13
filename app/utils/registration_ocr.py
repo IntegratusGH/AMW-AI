@@ -1096,9 +1096,16 @@ def _refine_field(page, line, full_zoom, kind, fallback):
     if page is None or line is None:
         return fallback, None, []
     import pymupdf
-    rect = pymupdf.Rect(
-        line["x0"] / full_zoom - 4, line["y0"] / full_zoom - 3,
-        line["x1"] / full_zoom + 16, line["y1"] / full_zoom + 3)
+    # A user-drawn box defines its own bounds: crop it tightly and symmetrically
+    # so extraction follows the rectangle instead of drifting into neighbours.
+    if line.get("rect"):
+        rect = pymupdf.Rect(
+            line["x0"] / full_zoom - 2, line["y0"] / full_zoom - 2,
+            line["x1"] / full_zoom + 2, line["y1"] / full_zoom + 2)
+    else:
+        rect = pymupdf.Rect(
+            line["x0"] / full_zoom - 4, line["y0"] / full_zoom - 3,
+            line["x1"] / full_zoom + 16, line["y1"] / full_zoom + 3)
     raw = _rec_candidates(page, rect)
     if kind == "chassis":
         cands = [(_norm_chassis(t), w) for t, w in raw if len(_norm_chassis(t)) >= 6]
@@ -1154,7 +1161,7 @@ def _line_from_norm(page, box, full_zoom: float) -> dict:
     px1, py1 = x1 * W * full_zoom, y1 * H * full_zoom
     return {"x0": px0, "y0": py0, "x1": px1, "y1": py1,
             "cx": (px0 + px1) / 2.0, "cy": (py0 + py1) / 2.0,
-            "text": "", "score": None}
+            "text": "", "score": None, "rect": True}
 
 
 def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0):
@@ -1165,9 +1172,14 @@ def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0):
     if page is None or line is None:
         return None
     import pymupdf
-    rect = pymupdf.Rect(
-        line["x0"] / full_zoom - 6, line["y0"] / full_zoom - 4,
-        line["x1"] / full_zoom + 18, line["y1"] / full_zoom + 4)
+    if line.get("rect"):
+        rect = pymupdf.Rect(
+            line["x0"] / full_zoom - 2, line["y0"] / full_zoom - 2,
+            line["x1"] / full_zoom + 2, line["y1"] / full_zoom + 2)
+    else:
+        rect = pymupdf.Rect(
+            line["x0"] / full_zoom - 6, line["y0"] / full_zoom - 4,
+            line["x1"] / full_zoom + 18, line["y1"] / full_zoom + 4)
     pix = page.get_pixmap(matrix=pymupdf.Matrix(disp_zoom, disp_zoom), clip=rect)
     return pix.tobytes("png")
 
@@ -1225,9 +1237,10 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
                    "cylinder_capacity", "year_of_manufacture", "colour"):
             _box = rects.get(_f)
             if _box:
+                # Strictly follow the box: its OCR read is the value (even if
+                # empty), never the label-anchored guess.
                 _v, _ = read_rect(page, _box)
-                if _v:
-                    rec[_f] = _v
+                rec[_f] = _v or None
 
     # ---- High-accuracy refinement of the two critical fields --------------
     # Chassis No and Registration No are re-read from a high-zoom crop with
@@ -1236,14 +1249,16 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     # full-page pass makes.
     if rects and rects.get("chassis_no") and page is not None:
         ch_line = _line_from_norm(page, rects["chassis_no"], full_zoom)
+        ch_fb, ch_rect = None, True   # box-only: no label fallback
     else:
         ch_lbl = _find_label(lines, _CR_LABELS["chassis_no"])
         ch_line = _line_below(lines, ch_lbl) if ch_lbl else None
         if ch_line is None and ch_lbl and _enh_on():
             ch_line = _line_same_row(lines, ch_lbl)
+        ch_fb, ch_rect = rec.get("chassis_no"), False
     ch_val, ch_conf, ch_cands = _refine_field(page, ch_line, full_zoom, "chassis",
-                                              rec.get("chassis_no"))
-    if ch_val:
+                                              ch_fb)
+    if ch_val or ch_rect:
         rec["chassis_no"] = ch_val
     rec["chassis_no_confidence"] = ch_conf
     rec["_chassis_cands"] = ch_cands
@@ -1251,29 +1266,33 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
 
     if rects and rects.get("registration_no") and page is not None:
         rg_line = _line_from_norm(page, rects["registration_no"], full_zoom)
+        rg_fb, rg_rect = None, True   # box-only
     else:
         rg_lbl = _find_label(lines, _CR_LABELS["registration_no"],
                              _CR_LABEL_EXCLUDE["registration_no"])
         rg_line = _line_below(lines, rg_lbl) if rg_lbl else None
         if rg_line is None and rg_lbl and _enh_on():
             rg_line = _line_same_row(lines, rg_lbl)
+        rg_fb, rg_rect = rec.get("registration_no"), False
     rg_val, rg_conf, _ = _refine_field(page, rg_line, full_zoom, "reg",
-                                       rec.get("registration_no"))
-    if rg_val:
+                                       rg_fb)
+    if rg_val or rg_rect:
         rec["registration_no"] = rg_val
     rec["registration_no_confidence"] = rg_conf
     rec["_reg_crop_png"] = crop_value_png(page, rg_line, full_zoom)
 
     if rects and rects.get("engine_no") and page is not None:
         en_line = _line_from_norm(page, rects["engine_no"], full_zoom)
+        en_fb, en_rect = None, True   # box-only
     else:
         en_lbl = _find_label(lines, _CR_LABELS["engine_no"])
         en_line = _line_below(lines, en_lbl) if en_lbl else None
         if en_line is None and en_lbl and _enh_on():
             en_line = _line_same_row(lines, en_lbl)
+        en_fb, en_rect = rec.get("engine_no"), False
     en_val, en_conf, en_cands = _refine_field(page, en_line, full_zoom, "engine",
-                                              rec.get("engine_no"))
-    if en_val:
+                                              en_fb)
+    if en_val or en_rect:
         rec["engine_no"] = en_val
     rec["engine_no_confidence"] = en_conf
     rec["_engine_cands"] = en_cands
