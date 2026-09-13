@@ -452,22 +452,6 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 captured = up.captured_records
                 db.session.commit()
 
-            # Batch reconciliation: receipt numbers are printed sequentially and
-            # a batch is printed on a single day, so enforce both across the
-            # captured records once the whole document has been OCR'd.
-            if kind == "rc" and rc_pending:
-                up.progress_message = "Reconciling receipt numbers/date\u2026"
-                db.session.commit()
-                seq = ocr.reconcile_receipt_numbers(
-                    [ro.receipt_no for ro, _ in rc_pending])
-                day = ocr.reconcile_receipt_dates(
-                    [ro.receipt_date for ro, _ in rc_pending])
-                for (ro, _), rn in zip(rc_pending, seq):
-                    ro.receipt_no = rn
-                    if day:
-                        ro.receipt_date = day
-                db.session.commit()
-
             # Persist each receipt's cropped page region for the image viewer,
             # plus the per-field value-region crops from the template's boxes.
             if kind == "rc" and rc_pending:

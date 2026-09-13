@@ -1728,102 +1728,6 @@ def _refine_amount(page, line, full_zoom, fallback):
     return _to_decimal(best), round(votes[best] / tot, 4)
 
 
-def _reconcile_amounts(total, charges, btotal, ct, cc, cb):
-    """Cross-check the slip's Bank Total = Total + Charges.  Derives a single
-    missing value, corrects the least-confident value on a mismatch, and flags
-    for review when the numbers still cannot balance (or are implausible).
-    Returns ``(total, charges, btotal, needs_review)``."""
-    cent = Decimal("0.01")
-
-    def eq(a, b):
-        return a is not None and b is not None and abs(a - b) <= cent
-
-    def ok(*vals):
-        return all(v is not None and v >= 0 for v in vals)
-
-    missing = [i for i, v in enumerate((total, charges, btotal)) if v is None]
-    if len(missing) == 1:
-        i = missing[0]
-        if i == 0 and ok(btotal, charges):
-            total = btotal - charges
-        elif i == 1 and ok(btotal, total):
-            charges = btotal - total
-        elif i == 2 and ok(total, charges):
-            btotal = total + charges
-        return total, charges, btotal, not ok(total, charges, btotal)
-    if missing:
-        return total, charges, btotal, True
-    if eq(total + charges, btotal):
-        return total, charges, btotal, False
-    # mismatch: recompute the least-confident field from the other two.
-    confs = [ct or 0.0, cc or 0.0, cb or 0.0]
-    weak = confs.index(min(confs))
-    if weak == 0:
-        total = btotal - charges
-    elif weak == 1:
-        charges = btotal - total
-    else:
-        btotal = total + charges
-    # a correction was applied, so surface the record for a human check.
-    return total, charges, btotal, True
-
-
-def reconcile_receipt_numbers(seq: list) -> list:
-    """Enforce the printed sequential receipt numbering across a batch.
-    Receipt numbers increment by one per receipt, so anchor on the reliably
-    read values (dropping lone-spike misreads) and fill every position from the
-    nearest anchor.  Genuine gaps/discontinuities in the printed numbering are
-    preserved.  ``seq`` is the OCR'd receipt_no per receipt in order."""
-    n = len(seq)
-    anchors: list[tuple[int, int]] = []
-    for i, v in enumerate(seq):
-        if v is None:
-            continue
-        try:
-            iv = int(str(v).strip())
-        except (TypeError, ValueError):
-            continue
-        if 1 <= iv <= 9999:
-            anchors.append((i, iv))
-    if not anchors:
-        return list(seq)
-    offs = [v - i for i, v in anchors]
-    keep = []
-    for k in range(len(anchors)):
-        prevo = offs[k - 1] if k > 0 else None
-        nexto = offs[k + 1] if k + 1 < len(offs) else None
-        if prevo is not None and nexto is not None \
-                and offs[k] != prevo and offs[k] != nexto:
-            continue  # lone-spike misread -> drop
-        keep.append(anchors[k])
-    if not keep:
-        keep = anchors
-    out = list(seq)
-    for i in range(n):
-        j, jv = min(keep, key=lambda a: (abs(a[0] - i), a[0]))
-        out[i] = str(jv + (i - j))
-    return out
-
-
-def reconcile_receipt_dates(dates: list) -> str | None:
-    """All receipts in a batch are printed the same day -> return the modal
-    valid DD/MM/YYYY date (or ``None`` when none are valid)."""
-    from collections import Counter
-    valid = []
-    for d in dates:
-        if not d:
-            continue
-        m = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", str(d).strip())
-        if not m:
-            continue
-        dd, mm, yy = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if 1 <= dd <= 31 and 1 <= mm <= 12 and 2000 <= yy <= 2100:
-            valid.append(f"{m.group(1)}/{m.group(2)}/{m.group(3)}")
-    if not valid:
-        return None
-    return Counter(valid).most_common(1)[0][0]
-
-
 def _parse_receipt_segment(seg: list[dict]) -> dict:
     text = "\n".join(ln["text"] for ln in seg)
     rec: dict = {"raw_text": text, "confidence": _mean_score(seg)}
@@ -1985,29 +1889,29 @@ def _real_segments(lines: list[dict]) -> list[list[dict]]:
 def _process_receipt_segment(page, seg: list[dict], zoom: float,
                              rects=None, pp=None) -> dict:
     """Parse + refine one receipt segment into a record (vehicle/amount
-    refinement, formula cross-check, and the per-slip display crop).  When
-    ``rects`` is given, each field's normalized box (relative to this slip) is
-    cropped and OCR'd, overriding the label-anchored value when it reads."""
+    refinement and the per-slip display crop).  When ``rects`` is given, each
+    field's normalized box (relative to this slip) is cropped and OCR'd,
+    overriding the label-anchored value when it reads.  No post-OCR rules
+    (sequential numbering, batch date, amount formula) are applied."""
     rec = _parse_receipt_segment(seg)
     # refine the vehicle number with multi-scale recognition OCR + voting.
     vline = rec.pop("_vehicle_line", None)
     v, _vconf = _refine_vehicle(page, vline, zoom, rec.get("vehicle_no"))
     if v:
         rec["vehicle_no"] = v
-    # refine the currency amounts the same way, then cross-check the slip's
-    # Bank Total = Total + Charges formula (correct/flag on mismatch).
+    # refine the currency amounts the same way (each read on its own merits;
+    # no Bank Total = Total + Charges cross-check is applied).
     al = rec.pop("_amt_lines", {}) or {}
-    tt, ct = _refine_amount(page, al.get("total_amount"), zoom,
-                            rec.get("total_amount"))
-    ch, cc = _refine_amount(page, al.get("bank_charges"), zoom,
-                            rec.get("bank_charges"))
-    bt, cb = _refine_amount(page, al.get("bank_total"), zoom,
-                            rec.get("bank_total"))
-    tt, ch, bt, review = _reconcile_amounts(tt, ch, bt, ct, cc, cb)
+    tt, _ = _refine_amount(page, al.get("total_amount"), zoom,
+                           rec.get("total_amount"))
+    ch, _ = _refine_amount(page, al.get("bank_charges"), zoom,
+                           rec.get("bank_charges"))
+    bt, _ = _refine_amount(page, al.get("bank_total"), zoom,
+                           rec.get("bank_total"))
     rec["total_amount"] = tt
     rec["bank_charges"] = ch
     rec["bank_total"] = bt
-    rec["needs_review"] = review
+    rec["needs_review"] = False
     # crop from the PEOPLE'S header (segment top) to the Cashier footer.
     y0_px, y1_px = _seg_ybounds(seg)
     if rects:
