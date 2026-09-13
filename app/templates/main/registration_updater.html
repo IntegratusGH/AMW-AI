@@ -54,6 +54,9 @@
           {# CR: processing auto-starts on upload (or via the format review
              page), so there is no play/start icon here.  A processed upload can
              still be re-processed. #}
+          <button type="button" class="act-btn" title="OCR settings"
+                  aria-label="OCR settings" data-ocr-open data-uid="{{ u.id }}"
+                  data-pp='{{ u.ocr_pp or "{}" }}'>{{ icon('cog', 16) }}</button>
           {% if u.processed %}
           <form method="post" class="inline"
                 action="{{ url_for('main.process_upload', kind='cr', upload_id=u.id) }}">
@@ -247,6 +250,187 @@
     </div>
   </section>
 </div>
+
+{# CR upload OCR-settings popup (image adjustments applied to the whole book) #}
+<div class="tmpl-modal" data-ocr-modal hidden
+     data-preview-tpl="{{ url_for('main.cr_ocr_preview', upload_id=0) }}"
+     data-save-tpl="{{ url_for('main.cr_ocr_settings', upload_id=0) }}"
+     data-csrf="{{ csrf_token() }}">
+  <div class="tmpl-modal__backdrop" data-ocr-close></div>
+  <div class="tmpl-modal__panel" role="dialog" aria-modal="true"
+       aria-label="OCR image settings">
+    <div class="tmpl-modal__head">
+      <h3>OCR settings &mdash; first record</h3>
+      <button type="button" class="btn btn-icon" data-ocr-close
+              title="Close">{{ icon('x', 16) }}</button>
+    </div>
+    <div class="tmpl-modal__body">
+      <div class="tmpl-preview">
+        <img data-ocr-img alt="first record preview">
+      </div>
+      <div class="tmpl-settings">
+        <label class="tmpl-slider">Brightness <span data-out="brightness">0</span>
+          <input type="range" data-pp="brightness" min="-100" max="100" step="1" value="0"></label>
+        <label class="tmpl-slider">Contrast <span data-out="contrast">0</span>
+          <input type="range" data-pp="contrast" min="-100" max="100" step="1" value="0"></label>
+        <label class="tmpl-slider">Sharpness <span data-out="sharpness">0</span>
+          <input type="range" data-pp="sharpness" min="0" max="3" step="0.1" value="0"></label>
+        <label class="tmpl-slider">Gamma <span data-out="gamma">1.0</span>
+          <input type="range" data-pp="gamma" min="0.2" max="3" step="0.05" value="1"></label>
+        <label class="tmpl-slider">Remove pattern (morph) <span data-out="morph">0</span>
+          <input type="range" data-pp="morph" min="0" max="7" step="1" value="0"></label>
+        <label class="tmpl-slider">Black-text level (colour) <span data-out="colorkeep_v">130</span>
+          <input type="range" data-pp="colorkeep_v" min="0" max="255" step="5" value="130"></label>
+        <div class="tmpl-checks">
+          <label class="tmpl-check"><input type="checkbox" data-pp="removebg"> Remove background</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="clahe"> Local contrast (CLAHE)</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="autocontrast"> Auto-contrast</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="colorkeep"> Keep black text (colour)</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="fft"> Remove guilloche (FFT)</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="grayscale"> Grayscale</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="denoise"> Denoise</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="invert"> Invert</label>
+        </div>
+        <label class="tmpl-slider">Threshold (binarize)
+          <select data-pp="threshold">
+            <option value="off">Off</option>
+            <option value="auto">Auto (Otsu)</option>
+            <option value="adaptive">Adaptive (uneven light)</option>
+            <option value="fixed">Fixed…</option>
+          </select></label>
+        <label class="tmpl-slider" data-thval-wrap hidden>Threshold value
+          <span data-out="thval">128</span>
+          <input type="range" data-thval min="0" max="255" step="1" value="128"></label>
+      </div>
+    </div>
+    <div class="tmpl-modal__foot">
+      <label class="checkbox" style="margin-right:auto;">
+        <input type="checkbox" data-ocr-reprocess checked><span>Re-process now</span></label>
+      <span class="tmpl-status" data-ocr-status></span>
+      <button type="button" class="btn" data-ocr-reset>Reset</button>
+      <button type="button" class="btn btn-primary" data-ocr-save>Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var modal = document.querySelector('[data-ocr-modal]');
+  if (!modal) return;
+  var img = modal.querySelector('[data-ocr-img]');
+  var controls = Array.prototype.slice.call(modal.querySelectorAll('[data-pp]'));
+  var thval = modal.querySelector('[data-thval]');
+  var thWrap = modal.querySelector('[data-thval-wrap]');
+  var reproc = modal.querySelector('[data-ocr-reprocess]');
+  var saveBtn = modal.querySelector('[data-ocr-save]');
+  var resetBtn = modal.querySelector('[data-ocr-reset]');
+  var statusEl = modal.querySelector('[data-ocr-status]');
+  var PREVIEW_TPL = modal.getAttribute('data-preview-tpl');
+  var SAVE_TPL = modal.getAttribute('data-save-tpl');
+  var CSRF = modal.getAttribute('data-csrf') || '';
+  var uid = null, timer = null;
+  function url(tpl) { return tpl.replace(/\/0\//, '/' + uid + '/'); }
+  function neutralFor(k) { if (k === 'gamma') return 1; if (k === 'colorkeep_v') return 130; return 0; }
+  function collectPp() {
+    var pp = {};
+    controls.forEach(function (c) {
+      var k = c.getAttribute('data-pp');
+      if (c.type === 'checkbox') { if (c.checked) pp[k] = true; }
+      else if (k === 'threshold') {
+        if (c.value === 'auto') pp.threshold = 'auto';
+        else if (c.value === 'adaptive') pp.threshold = 'adaptive';
+        else if (c.value === 'fixed') pp.threshold = parseInt(thval.value, 10);
+      } else {
+        var n = parseFloat(c.value);
+        if (!isNaN(n) && n !== neutralFor(k)) pp[k] = n;
+      }
+    });
+    if (!pp.colorkeep) delete pp.colorkeep_v;
+    return pp;
+  }
+  function setControls(pp) {
+    pp = pp || {};
+    controls.forEach(function (c) {
+      var k = c.getAttribute('data-pp');
+      if (c.type === 'checkbox') { c.checked = !!pp[k]; }
+      else if (k === 'threshold') {
+        var v = pp.threshold;
+        c.value = (v === undefined || v === null || v === '' || v === 'off') ? 'off'
+          : (v === 'auto' ? 'auto' : (v === 'adaptive' ? 'adaptive' : 'fixed'));
+      } else {
+        c.value = (pp[k] !== undefined && pp[k] !== null) ? pp[k] : neutralFor(k);
+      }
+    });
+    thval.value = (typeof pp.threshold === 'number') ? pp.threshold : 128;
+    syncThreshold(); syncOut();
+  }
+  function syncThreshold() {
+    var sel = modal.querySelector('[data-pp="threshold"]');
+    if (thWrap) thWrap.hidden = !(sel && sel.value === 'fixed');
+  }
+  function syncOut() {
+    modal.querySelectorAll('[data-out]').forEach(function (s) {
+      var k = s.getAttribute('data-out');
+      if (k === 'thval') { s.textContent = thval.value; return; }
+      var c = modal.querySelector('[data-pp="' + k + '"]');
+      if (!c) return;
+      s.textContent = (k === 'gamma') ? parseFloat(c.value).toFixed(2) : c.value;
+    });
+  }
+  function setStatus(t) { if (statusEl) statusEl.textContent = t || ''; }
+  function loadPreview() {
+    if (uid === null) return;
+    setStatus('Rendering\u2026');
+    fetch(url(PREVIEW_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ pp: collectPp() })
+    }).then(function (r) { return r.blob(); })
+      .then(function (b) { img.src = URL.createObjectURL(b); setStatus(''); })
+      .catch(function () { setStatus('Preview failed.'); });
+  }
+  function debounced() { clearTimeout(timer); timer = setTimeout(loadPreview, 250); }
+  controls.forEach(function (c) {
+    c.addEventListener('input', function () { syncThreshold(); syncOut(); debounced(); });
+    c.addEventListener('change', function () { syncThreshold(); syncOut(); debounced(); });
+  });
+  thval && thval.addEventListener('input', function () { syncOut(); debounced(); });
+  function openModal(u, ppJson) {
+    uid = u;
+    var pp = {};
+    try { pp = JSON.parse(ppJson || '{}') || {}; } catch (e) { pp = {}; }
+    setControls(pp);
+    modal.hidden = false;
+    loadPreview();
+  }
+  function closeModal() { modal.hidden = true; uid = null; }
+  document.addEventListener('click', function (e) {
+    var open = e.target.closest ? e.target.closest('[data-ocr-open]') : null;
+    if (open) {
+      e.preventDefault();
+      openModal(parseInt(open.getAttribute('data-uid'), 10), open.getAttribute('data-pp'));
+      return;
+    }
+    if (e.target.closest && e.target.closest('[data-ocr-close]')) closeModal();
+  });
+  resetBtn && resetBtn.addEventListener('click', function () { setControls({}); loadPreview(); });
+  saveBtn && saveBtn.addEventListener('click', function () {
+    if (uid === null) return;
+    saveBtn.disabled = true; setStatus('Saving\u2026');
+    fetch(url(SAVE_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ pp: collectPp(), reprocess: !!(reproc && reproc.checked) })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        saveBtn.disabled = false;
+        if (!d || !d.ok) { setStatus('Save failed.'); return; }
+        closeModal();
+        window.location.reload();
+      }).catch(function () { saveBtn.disabled = false; setStatus('Network error.'); });
+  });
+})();
+</script>
 
 <script>
 (function () {

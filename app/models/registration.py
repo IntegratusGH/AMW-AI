@@ -63,6 +63,10 @@ class CRBookUpload(_UploadMixin, db.Model):
     # Format/validity pre-check state (see REVIEW_* above).
     review_status = db.Column(db.String(20), default=REVIEW_PENDING, nullable=False)
 
+    # Upload-level OCR image adjustments (JSON of a cleaned pp dict) applied to
+    # every page of this CR book during (re-)processing.  NULL = no adjustments.
+    ocr_pp = db.Column(db.Text, nullable=True)
+
     records = db.relationship(
         "CRBookRecord", back_populates="upload",
         cascade="all, delete-orphan", passive_deletes=True,

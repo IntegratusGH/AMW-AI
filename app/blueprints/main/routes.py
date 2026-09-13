@@ -246,16 +246,23 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             rc_pending = []  # (rec_obj, data) kept for receipt image crops
             # Per-page OCR rule set chosen by the detection pass (per format).
             page_rules: dict[int, str] = {}
+            upload_pp = None
             if kind == "cr":
                 for p in CRUploadPage.query.filter_by(upload_id=upload_id).all():
                     page_rules[p.page_no] = (
                         p.format.rule_set if p.format else "_generic")
+                if getattr(up, "ocr_pp", None):
+                    try:
+                        upload_pp = ocr.clean_pp(json.loads(up.ocr_pp)) or None
+                    except (ValueError, TypeError):
+                        upload_pp = None
             try:
                 for i in range(total):
                     if kind == "cr":
                         rec = ocr.extract_cr_page(
                             doc[i],
-                            rule_set=page_rules.get(i + 1, "oldcrbook"))
+                            rule_set=page_rules.get(i + 1, "oldcrbook"),
+                            pp=upload_pp)
                         page_recs = [rec] if rec else []
                         for r in page_recs:
                             r["page_no"] = i + 1
@@ -1330,6 +1337,53 @@ def tr_cr_page_image(upload_id: int, page_no: int):
     resp = Response(png, mimetype="image/png")
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
+
+
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-preview",
+               methods=["POST"])
+@login_required
+def cr_ocr_preview(upload_id: int):
+    """Render the first page of a CR upload with the given image adjustments so
+    the upload's OCR-settings popup can show a live preview."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    data = request.get_json(silent=True) or {}
+    pp = ocr.clean_pp(data.get("pp"))
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        png = ocr.render_page_png(doc[0], pp=pp, zoom=1.6)
+    finally:
+        doc.close()
+    resp = Response(png, mimetype="image/png")
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-settings",
+               methods=["POST"])
+@login_required
+def cr_ocr_settings(upload_id: int):
+    """Persist the upload-level OCR image adjustments and, if requested, kick a
+    re-process so they take effect immediately."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    data = request.get_json(silent=True) or {}
+    pp = ocr.clean_pp(data.get("pp"))
+    up.ocr_pp = json.dumps(pp) if pp else None
+    db.session.commit()
+    record_audit("cr_ocr_settings",
+                 f"upload_id={upload_id} keys={sorted(pp)}")
+    started = False
+    if bool(data.get("reprocess")) and up.status != STATUS_PROCESSING \
+            and up.review_status == REVIEW_READY:
+        up.status = STATUS_PROCESSING
+        up.error = None
+        db.session.commit()
+        _start_processing("cr", upload_id)
+        started = True
+    return jsonify({"ok": True, "reprocessing": started})
 
 
 def _norm_match(s: str | None) -> str:

@@ -86,10 +86,41 @@ def _is_script_noise(text: str) -> bool:
 # ---------------------------------------------------------------------------
 # Rendering + OCR primitives
 # ---------------------------------------------------------------------------
+# Upload-level OCR adjustments active for the current processing thread.  Set
+# by extract_cr_page() so both the coarse page render and the refinement crops
+# preprocess consistently; isolated per worker thread (one thread per upload).
+_pp_ctx = threading.local()
+
+
+def _active_pp():
+    return getattr(_pp_ctx, "pp", None)
+
+
+def render_page_png(page, pp=None, zoom: float = 2.0) -> bytes:
+    """Render a full page as PNG with an explicit ``pp`` applied (used by the
+    CR upload OCR-settings preview).  ``pp`` is a cleaned adjustment dict."""
+    import cv2
+    import numpy as np
+    import pymupdf
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+        pix.height, pix.width, pix.n)
+    if pix.n == 4:
+        bgr = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+    elif pix.n == 1:
+        bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    else:
+        bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    if pp:
+        bgr = _apply_pp(bgr, pp)
+    return cv2.imencode(".png", bgr)[1].tobytes()
+
+
 def _render_page_png(page, zoom: float) -> bytes:
     import pymupdf
     pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
-    if not _enh_on():
+    pp = _active_pp()
+    if not _enh_on() and not pp:
         return pix.tobytes("png")
     import cv2
     import numpy as np
@@ -101,10 +132,12 @@ def _render_page_png(page, zoom: float) -> bytes:
         bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     else:
         bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    norm = _normalize_page_bgr(bgr)
-    if norm is bgr:
+    out = _normalize_page_bgr(bgr) if _enh_on() else bgr
+    if pp:
+        out = _apply_pp(out, pp)
+    if out is bgr:
         return pix.tobytes("png")
-    return cv2.imencode(".png", norm)[1].tobytes()
+    return cv2.imencode(".png", out)[1].tobytes()
 
 
 def _ocr(png_bytes: bytes) -> list[dict]:
@@ -442,6 +475,8 @@ def _rec_candidates(page, rect, zooms=(4, 6, 9), pp=None) -> list[tuple[str, flo
     Each crop is deskewed and height-normalised so the recognizer sees text at
     a consistent, well-conditioned scale.  ``pp`` applies a box's trainer-
     defined adjustments (and its ``scale`` multiplies the render zooms)."""
+    if pp is None:
+        pp = _active_pp()
     zs = zooms
     if pp and pp.get("scale"):
         try:
@@ -1331,13 +1366,20 @@ def open_document(path: str):
 
 
 def extract_cr_page(page, zoom: float = 3.0,
-                    rule_set: str = "oldcrbook") -> dict | None:
+                    rule_set: str = "oldcrbook", pp=None) -> dict | None:
     """OCR + parse a single CR-book page (one vehicle).  None if page is blank.
-    ``rule_set`` selects the per-format extractor (see CR_RULE_SETS)."""
-    lines = _ocr(_render_page_png(page, zoom))
-    if not lines:
-        return None
-    return _parse_cr_page(lines, page=page, full_zoom=zoom, rule_set=rule_set)
+    ``rule_set`` selects the per-format extractor (see CR_RULE_SETS).  ``pp``
+    is the upload-level image adjustment applied to the whole page and every
+    refinement crop for this page."""
+    _pp_ctx.pp = pp or None
+    try:
+        lines = _ocr(_render_page_png(page, zoom))
+        if not lines:
+            return None
+        return _parse_cr_page(lines, page=page, full_zoom=zoom,
+                              rule_set=rule_set)
+    finally:
+        _pp_ctx.pp = None
 
 
 def extract_cr_records(path: str, zoom: float = 3.0) -> tuple[int, list[dict]]:
