@@ -56,7 +56,8 @@
              still be re-processed. #}
           <button type="button" class="act-btn" title="OCR settings"
                   aria-label="OCR settings" data-ocr-open data-uid="{{ u.id }}"
-                  data-pp='{{ u.ocr_pp or "{}" }}'>{{ icon('cog', 16) }}</button>
+                  data-pp='{{ u.ocr_pp or "{}" }}'
+                  data-rects='{{ u.ocr_rects or "" }}'>{{ icon('cog', 16) }}</button>
           {% if u.processed %}
           <form method="post" class="inline"
                 action="{{ url_for('main.process_upload', kind='cr', upload_id=u.id) }}">
@@ -256,6 +257,7 @@
      data-preview-tpl="{{ url_for('main.cr_ocr_preview', upload_id=0) }}"
      data-save-tpl="{{ url_for('main.cr_ocr_settings', upload_id=0) }}"
      data-test-tpl="{{ url_for('main.cr_ocr_test', upload_id=0) }}"
+     data-boxes-tpl="{{ url_for('main.cr_ocr_boxes', upload_id=0) }}"
      data-csrf="{{ csrf_token() }}">
   <div class="tmpl-modal__backdrop" data-ocr-close></div>
   <div class="tmpl-modal__panel tmpl-modal__panel--wide" role="dialog"
@@ -267,7 +269,22 @@
     </div>
     <div class="tmpl-modal__body">
       <div class="tmpl-preview">
-        <img data-ocr-img alt="first record preview">
+        <div class="ocr-toolbar">
+          <button type="button" class="btn btn-sm" data-ocr-zoom="out" title="Zoom out">−</button>
+          <span class="ocr-zoomlabel" data-ocr-zoomlabel>100%</span>
+          <button type="button" class="btn btn-sm" data-ocr-zoom="in" title="Zoom in">+</button>
+          <button type="button" class="btn btn-sm" data-ocr-zoom="fit" title="Fit">Fit</button>
+          <button type="button" class="btn btn-sm" data-ocr-detect
+                  title="Auto-detect value positions">Detect positions</button>
+        </div>
+        <div class="ocr-viewport" data-ocr-viewport>
+          <div class="ocr-stage" data-ocr-stage>
+            <img data-ocr-img alt="first record preview">
+            <div class="ocr-overlay" data-ocr-overlay></div>
+          </div>
+        </div>
+        <p class="muted" style="font-size:.78rem;margin:2px 0 0;">Drag boxes to
+          move, drag a corner to resize. Boxes are cropped &amp; OCR'd per field.</p>
         <div class="ocr-results" data-ocr-results hidden></div>
       </div>
       <div class="tmpl-settings">
@@ -333,7 +350,18 @@
   var PREVIEW_TPL = modal.getAttribute('data-preview-tpl');
   var SAVE_TPL = modal.getAttribute('data-save-tpl');
   var TEST_TPL = modal.getAttribute('data-test-tpl');
+  var BOXES_TPL = modal.getAttribute('data-boxes-tpl');
   var CSRF = modal.getAttribute('data-csrf') || '';
+  var stage = modal.querySelector('[data-ocr-stage]');
+  var overlay = modal.querySelector('[data-ocr-overlay]');
+  var zoomLabel = modal.querySelector('[data-ocr-zoomlabel]');
+  var detectBtn = modal.querySelector('[data-ocr-detect]');
+  var FIELDS = [['registration_no', 'Reg No'], ['chassis_no', 'Chassis No'],
+    ['engine_no', 'Engine No'], ['absolute_owner', 'Absolute Owner'],
+    ['class_of_vehicle', 'Class'], ['fuel_type', 'Fuel'],
+    ['cylinder_capacity', 'CC'], ['year_of_manufacture', 'Year'],
+    ['colour', 'Colour']];
+  var rects = {}, zoom = 1;
   var uid = null, timer = null;
   function url(tpl) { return tpl.replace(/\/0\//, '/' + uid + '/'); }
   function neutralFor(k) { if (k === 'gamma') return 1; if (k === 'colorkeep_v') return 130; return 0; }
@@ -422,7 +450,7 @@
     fetch(url(TEST_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ pp: collectPp() })
+      body: JSON.stringify({ pp: collectPp(), rects: collectRects() })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         testBtn.disabled = false;
@@ -431,21 +459,127 @@
       }).catch(function () { testBtn.disabled = false; setStatus('Network error.'); });
   }
   testBtn && testBtn.addEventListener('click', runTest);
-  function openModal(u, ppJson) {
+  function round4(n) { return Math.round(n * 1e4) / 1e4; }
+  function collectRects() {
+    var out = {};
+    Object.keys(rects).forEach(function (k) {
+      var r = rects[k];
+      out[k] = [round4(r[0]), round4(r[1]), round4(r[2]), round4(r[3])];
+    });
+    return out;
+  }
+  function clampRect(r) {
+    var w = Math.max(0.01, Math.min(1, r[2] - r[0]));
+    var h = Math.max(0.01, Math.min(1, r[3] - r[1]));
+    var x0 = Math.max(0, Math.min(1 - w, r[0]));
+    var y0 = Math.max(0, Math.min(1 - h, r[1]));
+    return [x0, y0, x0 + w, y0 + h];
+  }
+  function setZoom(z) {
+    zoom = Math.max(1, Math.min(5, z));
+    stage.style.width = (zoom * 100) + '%';
+    if (zoomLabel) zoomLabel.textContent = Math.round(zoom * 100) + '%';
+  }
+  function positionBox(box, r) {
+    box.style.left = (r[0] * 100) + '%';
+    box.style.top = (r[1] * 100) + '%';
+    box.style.width = ((r[2] - r[0]) * 100) + '%';
+    box.style.height = ((r[3] - r[1]) * 100) + '%';
+  }
+  function wireBox(box, key) {
+    box.addEventListener('pointerdown', function (e) {
+      var handle = e.target.getAttribute && e.target.getAttribute('data-h');
+      e.preventDefault(); e.stopPropagation();
+      var r0 = rects[key].slice();
+      var sb = stage.getBoundingClientRect();
+      var sx = e.clientX, sy = e.clientY;
+      function move(ev) {
+        var dx = (ev.clientX - sx) / sb.width;
+        var dy = (ev.clientY - sy) / sb.height;
+        var r = r0.slice();
+        if (!handle) { r[0] += dx; r[1] += dy; r[2] += dx; r[3] += dy; }
+        else {
+          if (handle.indexOf('w') > -1) r[0] = r0[0] + dx;
+          if (handle.indexOf('n') > -1) r[1] = r0[1] + dy;
+          if (handle.indexOf('e') > -1) r[2] = r0[2] + dx;
+          if (handle.indexOf('s') > -1) r[3] = r0[3] + dy;
+          if (r[2] < r[0] + 0.01) r[2] = r[0] + 0.01;
+          if (r[3] < r[1] + 0.01) r[3] = r[1] + 0.01;
+        }
+        rects[key] = clampRect(r);
+        positionBox(box, rects[key]);
+      }
+      function up() {
+        document.removeEventListener('pointermove', move);
+        document.removeEventListener('pointerup', up);
+      }
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', up);
+    });
+  }
+  function renderRects() {
+    overlay.innerHTML = '';
+    FIELDS.forEach(function (f) {
+      var key = f[0], r = rects[key];
+      if (!r) return;
+      var box = document.createElement('div');
+      box.className = 'ocr-rect'; box.setAttribute('data-field', key);
+      positionBox(box, r);
+      var lab = document.createElement('span');
+      lab.className = 'ocr-rect__label'; lab.textContent = f[1];
+      box.appendChild(lab);
+      ['nw', 'ne', 'sw', 'se'].forEach(function (h) {
+        var hd = document.createElement('span');
+        hd.className = 'ocr-rect__h ocr-rect__h--' + h;
+        hd.setAttribute('data-h', h);
+        box.appendChild(hd);
+      });
+      overlay.appendChild(box);
+      wireBox(box, key);
+    });
+  }
+  function loadBoxes() {
+    if (uid === null) return;
+    setStatus('Detecting positions\u2026');
+    fetch(url(BOXES_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ pp: collectPp() })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.ok && d.boxes) rects = d.boxes;
+      renderRects(); setStatus('');
+    }).catch(function () { setStatus('Detect failed.'); });
+  }
+  modal.querySelectorAll('[data-ocr-zoom]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var m = b.getAttribute('data-ocr-zoom');
+      if (m === 'in') setZoom(zoom + 0.25);
+      else if (m === 'out') setZoom(zoom - 0.25);
+      else setZoom(1);
+    });
+  });
+  detectBtn && detectBtn.addEventListener('click', loadBoxes);
+  function openModal(u, ppJson, rectsJson) {
     uid = u;
     var pp = {};
     try { pp = JSON.parse(ppJson || '{}') || {}; } catch (e) { pp = {}; }
     setControls(pp);
     results.hidden = true; results.innerHTML = '';
+    setZoom(1);
     modal.hidden = false;
     loadPreview();
+    var saved = null;
+    try { saved = rectsJson ? JSON.parse(rectsJson) : null; } catch (e) { saved = null; }
+    if (saved && Object.keys(saved).length) { rects = saved; renderRects(); }
+    else { rects = {}; overlay.innerHTML = ''; loadBoxes(); }
   }
   function closeModal() { modal.hidden = true; uid = null; }
   document.addEventListener('click', function (e) {
     var open = e.target.closest ? e.target.closest('[data-ocr-open]') : null;
     if (open) {
       e.preventDefault();
-      openModal(parseInt(open.getAttribute('data-uid'), 10), open.getAttribute('data-pp'));
+      openModal(parseInt(open.getAttribute('data-uid'), 10),
+                open.getAttribute('data-pp'), open.getAttribute('data-rects'));
       return;
     }
     if (e.target.closest && e.target.closest('[data-ocr-close]')) closeModal();
@@ -457,7 +591,7 @@
     fetch(url(SAVE_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ pp: collectPp(), reprocess: !!(reproc && reproc.checked) })
+      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), reprocess: !!(reproc && reproc.checked) })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         saveBtn.disabled = false;

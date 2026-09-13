@@ -66,6 +66,10 @@ class CRBookUpload(_UploadMixin, db.Model):
     # Upload-level OCR image adjustments (JSON of a cleaned pp dict) applied to
     # every page of this CR book during (re-)processing.  NULL = no adjustments.
     ocr_pp = db.Column(db.Text, nullable=True)
+    # Per-field value-region rectangles (JSON: field -> [x0,y0,x1,y1] normalized).
+    # When set, each value is cropped from its box and OCR'd instead of being
+    # located by its label.  NULL = label-anchored extraction.
+    ocr_rects = db.Column(db.Text, nullable=True)
 
     records = db.relationship(
         "CRBookRecord", back_populates="upload",

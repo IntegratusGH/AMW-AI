@@ -1144,6 +1144,19 @@ def _refine_field(page, line, full_zoom, kind, fallback):
     return text, conf, []
 
 
+def _line_from_norm(page, box, full_zoom: float) -> dict:
+    """Synthesize an OCR value "line" (full_zoom pixel-space bbox) from a
+    normalized ``[x0,y0,x1,y1]`` rectangle so the label-anchored refinement and
+    crop helpers can operate on a user-drawn box."""
+    x0, y0, x1, y1 = box
+    W, H = page.rect.width, page.rect.height
+    px0, py0 = x0 * W * full_zoom, y0 * H * full_zoom
+    px1, py1 = x1 * W * full_zoom, y1 * H * full_zoom
+    return {"x0": px0, "y0": py0, "x1": px1, "y1": py1,
+            "cx": (px0 + px1) / 2.0, "cy": (py0 + py1) / 2.0,
+            "text": "", "score": None}
+
+
 def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0):
     """Render just a field's value region to a PNG (bytes) for display beside the
     captured text.  ``line`` is the OCR value line (coords in ``full_zoom``
@@ -1160,7 +1173,7 @@ def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0):
 
 
 def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
-                   rule_set: str = "oldcrbook") -> dict:
+                   rule_set: str = "oldcrbook", rects: dict | None = None) -> dict:
     rec: dict = {}
     for field, frags in get_rule_set(rule_set)["labels"].items():
         lbl = _find_label(lines, frags, _CR_LABEL_EXCLUDE.get(field))
@@ -1203,15 +1216,31 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
         m = re.search(r"(19|20)\d{2}", rec["year_of_manufacture"])
         rec["year_of_manufacture"] = m.group(0) if m else None
 
+    # ---- Rectangle override for coarse fields ------------------------------
+    # When the upload defines value-region boxes, crop-and-OCR each coarse field
+    # from its box (the three critical fields are handled by the refinement
+    # pass below, which also uses the box).
+    if rects and page is not None:
+        for _f in ("absolute_owner", "class_of_vehicle", "fuel_type",
+                   "cylinder_capacity", "year_of_manufacture", "colour"):
+            _box = rects.get(_f)
+            if _box:
+                _v, _ = read_rect(page, _box)
+                if _v:
+                    rec[_f] = _v
+
     # ---- High-accuracy refinement of the two critical fields --------------
     # Chassis No and Registration No are re-read from a high-zoom crop with
     # multi-scale recognition-only OCR + character voting, correcting the
     # digit/letter confusions (5<->S, 8<->B, I->1, O->0, ...) the single
     # full-page pass makes.
-    ch_lbl = _find_label(lines, _CR_LABELS["chassis_no"])
-    ch_line = _line_below(lines, ch_lbl) if ch_lbl else None
-    if ch_line is None and ch_lbl and _enh_on():
-        ch_line = _line_same_row(lines, ch_lbl)
+    if rects and rects.get("chassis_no") and page is not None:
+        ch_line = _line_from_norm(page, rects["chassis_no"], full_zoom)
+    else:
+        ch_lbl = _find_label(lines, _CR_LABELS["chassis_no"])
+        ch_line = _line_below(lines, ch_lbl) if ch_lbl else None
+        if ch_line is None and ch_lbl and _enh_on():
+            ch_line = _line_same_row(lines, ch_lbl)
     ch_val, ch_conf, ch_cands = _refine_field(page, ch_line, full_zoom, "chassis",
                                               rec.get("chassis_no"))
     if ch_val:
@@ -1220,11 +1249,14 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     rec["_chassis_cands"] = ch_cands
     rec["_chassis_crop_png"] = crop_value_png(page, ch_line, full_zoom)
 
-    rg_lbl = _find_label(lines, _CR_LABELS["registration_no"],
-                         _CR_LABEL_EXCLUDE["registration_no"])
-    rg_line = _line_below(lines, rg_lbl) if rg_lbl else None
-    if rg_line is None and rg_lbl and _enh_on():
-        rg_line = _line_same_row(lines, rg_lbl)
+    if rects and rects.get("registration_no") and page is not None:
+        rg_line = _line_from_norm(page, rects["registration_no"], full_zoom)
+    else:
+        rg_lbl = _find_label(lines, _CR_LABELS["registration_no"],
+                             _CR_LABEL_EXCLUDE["registration_no"])
+        rg_line = _line_below(lines, rg_lbl) if rg_lbl else None
+        if rg_line is None and rg_lbl and _enh_on():
+            rg_line = _line_same_row(lines, rg_lbl)
     rg_val, rg_conf, _ = _refine_field(page, rg_line, full_zoom, "reg",
                                        rec.get("registration_no"))
     if rg_val:
@@ -1232,10 +1264,13 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     rec["registration_no_confidence"] = rg_conf
     rec["_reg_crop_png"] = crop_value_png(page, rg_line, full_zoom)
 
-    en_lbl = _find_label(lines, _CR_LABELS["engine_no"])
-    en_line = _line_below(lines, en_lbl) if en_lbl else None
-    if en_line is None and en_lbl and _enh_on():
-        en_line = _line_same_row(lines, en_lbl)
+    if rects and rects.get("engine_no") and page is not None:
+        en_line = _line_from_norm(page, rects["engine_no"], full_zoom)
+    else:
+        en_lbl = _find_label(lines, _CR_LABELS["engine_no"])
+        en_line = _line_below(lines, en_lbl) if en_lbl else None
+        if en_line is None and en_lbl and _enh_on():
+            en_line = _line_same_row(lines, en_lbl)
     en_val, en_conf, en_cands = _refine_field(page, en_line, full_zoom, "engine",
                                               rec.get("engine_no"))
     if en_val:
@@ -1366,18 +1401,20 @@ def open_document(path: str):
 
 
 def extract_cr_page(page, zoom: float = 3.0,
-                    rule_set: str = "oldcrbook", pp=None) -> dict | None:
+                    rule_set: str = "oldcrbook", pp=None,
+                    rects: dict | None = None) -> dict | None:
     """OCR + parse a single CR-book page (one vehicle).  None if page is blank.
     ``rule_set`` selects the per-format extractor (see CR_RULE_SETS).  ``pp``
     is the upload-level image adjustment applied to the whole page and every
-    refinement crop for this page."""
+    refinement crop for this page.  ``rects`` (field -> normalized box) makes
+    each value be cropped from its box instead of located by its label."""
     _pp_ctx.pp = pp or None
     try:
         lines = _ocr(_render_page_png(page, zoom))
         if not lines:
             return None
         return _parse_cr_page(lines, page=page, full_zoom=zoom,
-                              rule_set=rule_set)
+                              rule_set=rule_set, rects=rects)
     finally:
         _pp_ctx.pp = None
 
@@ -1417,24 +1454,86 @@ def _line_score_for(lines: list[dict], value) -> float | None:
     return best
 
 
+def clean_rects(rects) -> dict:
+    """Keep only known field keys whose value is a valid normalized rectangle
+    ``[x0,y0,x1,y1]`` (0..1, x0<x1, y0<y1)."""
+    if not isinstance(rects, dict):
+        return {}
+    allowed = {k for k, _ in _CR_TEST_FIELDS}
+    out: dict = {}
+    for k, v in rects.items():
+        if k not in allowed:
+            continue
+        try:
+            x0, y0, x1, y1 = (max(0.0, min(1.0, float(n))) for n in v)
+        except (TypeError, ValueError):
+            continue
+        if x1 <= x0 or y1 <= y0:
+            continue
+        out[k] = [round(x0, 4), round(y0, 4), round(x1, 4), round(y1, 4)]
+    return out
+
+
+def detect_cr_field_boxes(page, pp=None, zoom: float = 3.0,
+                          rule_set: str = "oldcrbook") -> dict:
+    """Auto-detect a normalized value-region box for each display field from the
+    label + value-line layout.  Fields whose value line is not found get a
+    stacked default box so every field is still editable."""
+    _pp_ctx.pp = pp or None
+    try:
+        lines = _ocr(_render_page_png(page, zoom))
+    finally:
+        _pp_ctx.pp = None
+    W, H = page.rect.width, page.rect.height
+    labels = get_rule_set(rule_set)["labels"]
+
+    def _norm_box(ln):
+        return [round(ln["x0"] / zoom / W, 4), round(ln["y0"] / zoom / H, 4),
+                round(ln["x1"] / zoom / W, 4), round(ln["y1"] / zoom / H, 4)]
+
+    boxes: dict = {}
+    for key, _label in _CR_TEST_FIELDS:
+        frags = labels.get(key) or _CR_LABELS.get(key)
+        if not (lines and frags):
+            continue
+        lbl = _find_label(lines, frags, _CR_LABEL_EXCLUDE.get(key))
+        if not lbl:
+            continue
+        vline = _line_below(lines, lbl) or _line_same_row(lines, lbl)
+        if vline:
+            boxes[key] = _norm_box(vline)
+    missing = 0
+    for key, _label in _CR_TEST_FIELDS:
+        if key not in boxes:
+            y = 0.10 + 0.06 * missing
+            boxes[key] = [0.05, round(y, 4), 0.35, round(y + 0.045, 4)]
+            missing += 1
+    return boxes
+
+
 def test_cr_page(page, pp=None, zoom: float = 3.0,
-                 rule_set: str = "oldcrbook") -> list[dict]:
+                 rule_set: str = "oldcrbook", rects: dict | None = None) -> list[dict]:
     """OCR one CR-book page with ``pp`` applied and return the display fields
     (see _CR_TEST_FIELDS) as ``{key,label,value,confidence}`` for the upload
-    OCR-settings "Test OCR" button.  Confidence is the refined per-field score
-    for the three critical identifiers and a best-effort line score otherwise."""
+    OCR-settings "Test OCR" button.  When ``rects`` is given each value is read
+    from its box.  Confidence is the refined per-field score for the three
+    critical identifiers and a best-effort box/line score otherwise."""
     _pp_ctx.pp = pp or None
     try:
         lines = _ocr(_render_page_png(page, zoom))
         rec = (_parse_cr_page(lines, page=page, full_zoom=zoom,
-                              rule_set=rule_set) if lines else {})
+                              rule_set=rule_set, rects=rects) if lines else {})
     finally:
         _pp_ctx.pp = None
     out: list[dict] = []
     for key, label in _CR_TEST_FIELDS:
         value = rec.get(key)
-        conf = (rec.get(_CR_TEST_CONF[key]) if key in _CR_TEST_CONF
-                else _line_score_for(lines if lines else [], value))
+        if key in _CR_TEST_CONF:
+            conf = rec.get(_CR_TEST_CONF[key])
+        elif rects and rects.get(key):
+            _, conf = read_rect(page, rects[key])
+        else:
+            conf = _line_score_for(lines if lines else [], value)
         out.append({
             "key": key, "label": label, "value": value or "",
             "confidence": (round(float(conf), 3) if conf else None),

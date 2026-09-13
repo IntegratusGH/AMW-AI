@@ -247,6 +247,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             # Per-page OCR rule set chosen by the detection pass (per format).
             page_rules: dict[int, str] = {}
             upload_pp = None
+            upload_rects = None
             if kind == "cr":
                 for p in CRUploadPage.query.filter_by(upload_id=upload_id).all():
                     page_rules[p.page_no] = (
@@ -256,13 +257,19 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         upload_pp = ocr.clean_pp(json.loads(up.ocr_pp)) or None
                     except (ValueError, TypeError):
                         upload_pp = None
+                if getattr(up, "ocr_rects", None):
+                    try:
+                        upload_rects = ocr.clean_rects(
+                            json.loads(up.ocr_rects)) or None
+                    except (ValueError, TypeError):
+                        upload_rects = None
             try:
                 for i in range(total):
                     if kind == "cr":
                         rec = ocr.extract_cr_page(
                             doc[i],
                             rule_set=page_rules.get(i + 1, "oldcrbook"),
-                            pp=upload_pp)
+                            pp=upload_pp, rects=upload_rects)
                         page_recs = [rec] if rec else []
                         for r in page_recs:
                             r["page_no"] = i + 1
@@ -597,10 +604,16 @@ def registration_updater():
         name, path = _save_doc(
             cr_form.file.data, current_app.config["CR_BOOK_UPLOAD_DIR"])
         check_format = bool(cr_form.check_format.data)
+        # Inherit OCR image settings + value-region boxes from the previous CR
+        # upload so a same-layout batch auto-processes with the tuned settings.
+        prev = (CRBookUpload.query
+                .order_by(CRBookUpload.uploaded_at.desc()).first())
         up = CRBookUpload(
             filename=name, stored_path=path, uploaded_by=current_user.id,
             status=STATUS_PENDING if check_format else STATUS_PROCESSING,
-            review_status=REVIEW_DETECTING if check_format else REVIEW_READY)
+            review_status=REVIEW_DETECTING if check_format else REVIEW_READY,
+            ocr_pp=(prev.ocr_pp if prev else None),
+            ocr_rects=(prev.ocr_rects if prev else None))
         db.session.add(up)
         record_audit("cr_book_uploaded",
                      f"file={name} check_format={check_format}")
@@ -1371,12 +1384,32 @@ def cr_ocr_test(upload_id: int):
     up = db.session.get(CRBookUpload, upload_id) or abort(404)
     data = request.get_json(silent=True) or {}
     pp = ocr.clean_pp(data.get("pp"))
+    rects = ocr.clean_rects(data.get("rects")) or None
     doc, total = ocr.open_document(up.stored_path)
     try:
-        fields = ocr.test_cr_page(doc[0], pp=pp)
+        fields = ocr.test_cr_page(doc[0], pp=pp, rects=rects)
     finally:
         doc.close()
     return jsonify({"ok": True, "fields": fields})
+
+
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-boxes",
+               methods=["POST"])
+@login_required
+def cr_ocr_boxes(upload_id: int):
+    """Auto-detect value-region boxes for the first page so the OCR-settings
+    popup can seed its movable/resizable rectangles."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    data = request.get_json(silent=True) or {}
+    pp = ocr.clean_pp(data.get("pp"))
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        boxes = ocr.detect_cr_field_boxes(doc[0], pp=pp)
+    finally:
+        doc.close()
+    return jsonify({"ok": True, "boxes": boxes})
 
 
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-settings",
@@ -1390,10 +1423,12 @@ def cr_ocr_settings(upload_id: int):
     up = db.session.get(CRBookUpload, upload_id) or abort(404)
     data = request.get_json(silent=True) or {}
     pp = ocr.clean_pp(data.get("pp"))
+    rects = ocr.clean_rects(data.get("rects"))
     up.ocr_pp = json.dumps(pp) if pp else None
+    up.ocr_rects = json.dumps(rects) if rects else None
     db.session.commit()
     record_audit("cr_ocr_settings",
-                 f"upload_id={upload_id} keys={sorted(pp)}")
+                 f"upload_id={upload_id} pp={sorted(pp)} rects={sorted(rects)}")
     started = False
     if bool(data.get("reprocess")) and up.status != STATUS_PROCESSING \
             and up.review_status == REVIEW_READY:
