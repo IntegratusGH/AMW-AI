@@ -55,9 +55,8 @@
              page), so there is no play/start icon here.  A processed upload can
              still be re-processed. #}
           <button type="button" class="act-btn" title="OCR settings"
-                  aria-label="OCR settings" data-ocr-open data-uid="{{ u.id }}"
-                  data-pp='{{ u.ocr_pp or "{}" }}'
-                  data-rects='{{ u.ocr_rects or "" }}'>{{ icon('cog', 16) }}</button>
+                  aria-label="OCR settings" data-ocr-open
+                  data-uid="{{ u.id }}">{{ icon('cog', 16) }}</button>
           {% if u.processed %}
           <form method="post" class="inline"
                 action="{{ url_for('main.process_upload', kind='cr', upload_id=u.id) }}">
@@ -699,15 +698,17 @@
   resetBtn && resetBtn.addEventListener('click', function () { setControls({}); loadPreview(); });
   saveBtn && saveBtn.addEventListener('click', function () {
     if (uid === null) return;
+    if (!selectedId) { setStatus('Select or create a template first.'); return; }
     saveBtn.disabled = true; setStatus('Saving\u2026');
     fetch(url(SAVE_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ template_id: selectedId, reprocess: !!(reproc && reproc.checked) })
+      body: JSON.stringify({ template_id: selectedId, pp: collectPp(), rects: collectRects(), reprocess: !!(reproc && reproc.checked) })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         saveBtn.disabled = false;
-        if (!d || !d.ok) { setStatus('Save failed.'); return; }
+        if (!d || !d.ok) { setStatus((d && d.error) || 'Save failed.'); return; }
+        if (d.template) { var i = tplIndex(d.template.id); if (i > -1) templates[i] = d.template; }
         closeModal();
         window.location.reload();
       }).catch(function () { saveBtn.disabled = false; setStatus('Network error.'); });

@@ -63,14 +63,6 @@ class CRBookUpload(_UploadMixin, db.Model):
     # Format/validity pre-check state (see REVIEW_* above).
     review_status = db.Column(db.String(20), default=REVIEW_PENDING, nullable=False)
 
-    # Upload-level OCR image adjustments (JSON of a cleaned pp dict) applied to
-    # every page of this CR book during (re-)processing.  NULL = no adjustments.
-    ocr_pp = db.Column(db.Text, nullable=True)
-    # Per-field value-region rectangles (JSON: field -> [x0,y0,x1,y1] normalized).
-    # When set, each value is cropped from its box and OCR'd instead of being
-    # located by its label.  NULL = label-anchored extraction.
-    # (legacy per-upload settings; superseded by template_id below)
-    ocr_rects = db.Column(db.Text, nullable=True)
     # OCR template driving extraction for this upload (image settings + value
     # boxes live on the template).  NULL = label-anchored extraction.
     template_id = db.Column(

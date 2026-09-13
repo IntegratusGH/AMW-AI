@@ -253,11 +253,11 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 for p in CRUploadPage.query.filter_by(upload_id=upload_id).all():
                     page_rules[p.page_no] = (
                         p.format.rule_set if p.format else "_generic")
-                # Prefer the assigned OCR template (image settings + value
-                # boxes); fall back to any legacy per-upload settings.
+                # Extraction is driven by the upload's assigned OCR template
+                # (image settings + value boxes).  No template => label-anchored.
                 tpl = up.template if getattr(up, "template_id", None) else None
-                pp_src = tpl.ocr_pp if tpl else getattr(up, "ocr_pp", None)
-                rects_src = tpl.ocr_rects if tpl else getattr(up, "ocr_rects", None)
+                pp_src = tpl.ocr_pp if tpl else None
+                rects_src = tpl.ocr_rects if tpl else None
                 if pp_src:
                     try:
                         upload_pp = ocr.clean_pp(json.loads(pp_src)) or None
@@ -1510,22 +1510,29 @@ def cr_ocr_template_update(tid: int):
                methods=["POST"])
 @login_required
 def cr_ocr_settings(upload_id: int):
-    """Assign the selected OCR template to this upload and, if requested, kick a
+    """Save the current image settings + value boxes into the selected OCR
+    template, assign that template to this upload, and (if requested) kick a
     re-process so it takes effect immediately."""
     _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
     up = db.session.get(CRBookUpload, upload_id) or abort(404)
     data = request.get_json(silent=True) or {}
     tid = data.get("template_id")
     if tid in (None, "", 0, "0"):
-        up.template_id = None
-    else:
-        tpl = db.session.get(OcrTemplate, int(tid))
-        if tpl is None:
-            return jsonify({"ok": False, "error": "Template not found."}), 400
-        up.template_id = tpl.id
+        return jsonify({"ok": False,
+                        "error": "Select or create a template first."}), 400
+    tpl = db.session.get(OcrTemplate, int(tid))
+    if tpl is None:
+        return jsonify({"ok": False, "error": "Template not found."}), 400
+    pp = ocr.clean_pp(data.get("pp"))
+    rects = ocr.clean_rects(data.get("rects"))
+    tpl.ocr_pp = json.dumps(pp) if pp else None
+    tpl.ocr_rects = json.dumps(rects) if rects else None
+    up.template_id = tpl.id
     db.session.commit()
     record_audit("cr_ocr_settings",
-                 f"upload_id={upload_id} template_id={up.template_id}")
+                 f"upload_id={upload_id} template_id={tpl.id} "
+                 f"pp={sorted(pp)} rects={sorted(rects)}")
     started = False
     if bool(data.get("reprocess")) and up.status != STATUS_PROCESSING \
             and up.review_status == REVIEW_READY:
@@ -1534,7 +1541,8 @@ def cr_ocr_settings(upload_id: int):
         db.session.commit()
         _start_processing("cr", upload_id)
         started = True
-    return jsonify({"ok": True, "reprocessing": started})
+    return jsonify({"ok": True, "reprocessing": started,
+                    "template": _tpl_json(tpl)})
 
 
 def _norm_match(s: str | None) -> str:
