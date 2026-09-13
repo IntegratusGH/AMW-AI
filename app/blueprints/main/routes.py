@@ -249,24 +249,23 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             page_rules: dict[int, str] = {}
             upload_pp = None
             upload_rects = None
+            # Extraction is driven by the upload's assigned OCR template: image
+            # settings for both kinds, plus value boxes for CR.  No template =>
+            # default extraction.
+            tpl = up.template if getattr(up, "template_id", None) else None
+            if tpl and tpl.ocr_pp:
+                try:
+                    upload_pp = ocr.clean_pp(json.loads(tpl.ocr_pp)) or None
+                except (ValueError, TypeError):
+                    upload_pp = None
             if kind == "cr":
                 for p in CRUploadPage.query.filter_by(upload_id=upload_id).all():
                     page_rules[p.page_no] = (
                         p.format.rule_set if p.format else "_generic")
-                # Extraction is driven by the upload's assigned OCR template
-                # (image settings + value boxes).  No template => label-anchored.
-                tpl = up.template if getattr(up, "template_id", None) else None
-                pp_src = tpl.ocr_pp if tpl else None
-                rects_src = tpl.ocr_rects if tpl else None
-                if pp_src:
-                    try:
-                        upload_pp = ocr.clean_pp(json.loads(pp_src)) or None
-                    except (ValueError, TypeError):
-                        upload_pp = None
-                if rects_src:
+                if tpl and tpl.ocr_rects:
                     try:
                         upload_rects = ocr.clean_rects(
-                            json.loads(rects_src)) or None
+                            json.loads(tpl.ocr_rects)) or None
                     except (ValueError, TypeError):
                         upload_rects = None
             try:
@@ -280,7 +279,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         for r in page_recs:
                             r["page_no"] = i + 1
                     else:
-                        page_recs = ocr.extract_receipt_page(doc[i])
+                        page_recs = ocr.extract_receipt_page(doc[i], pp=upload_pp)
 
                     for r in page_recs:
                         if kind == "rc":
@@ -1431,7 +1430,8 @@ def _tpl_json(t: "OcrTemplate") -> dict:
         rects = ocr.clean_rects(json.loads(t.ocr_rects)) if t.ocr_rects else {}
     except (ValueError, TypeError):
         rects = {}
-    return {"id": t.id, "name": t.name, "pp": pp, "rects": rects}
+    return {"id": t.id, "name": t.name, "kind": t.kind or "cr",
+            "pp": pp, "rects": rects}
 
 
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-init")
@@ -1444,8 +1444,9 @@ def cr_ocr_init(upload_id: int):
     up = db.session.get(CRBookUpload, upload_id) or abort(404)
     doc, total = ocr.open_document(up.stored_path)
     doc.close()
-    templates = [_tpl_json(t) for t in
-                 OcrTemplate.query.order_by(OcrTemplate.updated_at.desc()).all()]
+    templates = [_tpl_json(t) for t in OcrTemplate.query
+                 .filter_by(kind="cr")
+                 .order_by(OcrTemplate.updated_at.desc()).all()]
     return jsonify({"ok": True, "pages": total,
                     "template_id": up.template_id, "templates": templates})
 
@@ -1459,10 +1460,13 @@ def cr_ocr_templates():
     _require_module(REGISTRATION_UPDATER_KEY)
     from app.utils import registration_ocr as ocr
     if request.method == "GET":
+        kind = "rc" if request.args.get("kind") == "rc" else "cr"
         templates = [_tpl_json(t) for t in OcrTemplate.query
+                     .filter_by(kind=kind)
                      .order_by(OcrTemplate.updated_at.desc()).all()]
         return jsonify({"ok": True, "templates": templates})
     data = request.get_json(silent=True) or {}
+    kind = "rc" if data.get("kind") == "rc" else "cr"
     name = (data.get("name") or "").strip()
     if not name:
         return jsonify({"ok": False, "error": "Template name is required."}), 400
@@ -1470,8 +1474,8 @@ def cr_ocr_templates():
         return jsonify({"ok": False,
                         "error": "A template with that name already exists."}), 400
     pp = ocr.clean_pp(data.get("pp"))
-    rects = ocr.clean_rects(data.get("rects"))
-    t = OcrTemplate(name=name, created_by=current_user.id,
+    rects = ocr.clean_rects(data.get("rects")) if kind == "cr" else {}
+    t = OcrTemplate(name=name, kind=kind, created_by=current_user.id,
                     ocr_pp=json.dumps(pp) if pp else None,
                     ocr_rects=json.dumps(rects) if rects else None)
     db.session.add(t)
@@ -1540,6 +1544,100 @@ def cr_ocr_settings(upload_id: int):
         up.error = None
         db.session.commit()
         _start_processing("cr", upload_id)
+        started = True
+    return jsonify({"ok": True, "reprocessing": started,
+                    "template": _tpl_json(tpl)})
+
+
+@main_bp.route("/operations/registration-updater/rc/<int:upload_id>/ocr-init")
+@login_required
+def rc_ocr_init(upload_id: int):
+    """Receipts OCR-settings popup bootstrap: page count, the upload's current
+    template, and all receipt ('rc') templates for the dropdown."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(ReceiptUpload, upload_id) or abort(404)
+    doc, total = ocr.open_document(up.stored_path)
+    doc.close()
+    templates = [_tpl_json(t) for t in OcrTemplate.query
+                 .filter_by(kind="rc")
+                 .order_by(OcrTemplate.updated_at.desc()).all()]
+    return jsonify({"ok": True, "pages": total,
+                    "template_id": up.template_id, "templates": templates})
+
+
+@main_bp.route("/operations/registration-updater/rc/<int:upload_id>/ocr-preview",
+               methods=["POST"])
+@login_required
+def rc_ocr_preview(upload_id: int):
+    """Render a receipts page with the given image adjustments for the popup's
+    live preview (page nav supported)."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(ReceiptUpload, upload_id) or abort(404)
+    data = request.get_json(silent=True) or {}
+    pp = ocr.clean_pp(data.get("pp"))
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        idx = max(1, min(total, int(data.get("page") or 1))) - 1
+        png = ocr.render_page_png(doc[idx], pp=pp, zoom=1.6)
+    finally:
+        doc.close()
+    resp = Response(png, mimetype="image/png")
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@main_bp.route("/operations/registration-updater/rc/<int:upload_id>/ocr-test",
+               methods=["POST"])
+@login_required
+def rc_ocr_test(upload_id: int):
+    """Run receipt OCR on one page with the given image adjustments and return
+    the first detected slip's fields (plus a slip count) for "Test OCR"."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(ReceiptUpload, upload_id) or abort(404)
+    data = request.get_json(silent=True) or {}
+    pp = ocr.clean_pp(data.get("pp"))
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        idx = max(1, min(total, int(data.get("page") or 1))) - 1
+        fields = ocr.test_receipt_page(doc[idx], pp=pp)
+    finally:
+        doc.close()
+    return jsonify({"ok": True, "fields": fields})
+
+
+@main_bp.route("/operations/registration-updater/rc/<int:upload_id>/ocr-settings",
+               methods=["POST"])
+@login_required
+def rc_ocr_settings(upload_id: int):
+    """Save the current image settings into the selected receipt OCR template,
+    assign that template to this upload, and (if requested) kick a re-process."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(ReceiptUpload, upload_id) or abort(404)
+    data = request.get_json(silent=True) or {}
+    tid = data.get("template_id")
+    if tid in (None, "", 0, "0"):
+        return jsonify({"ok": False,
+                        "error": "Select or create a template first."}), 400
+    tpl = db.session.get(OcrTemplate, int(tid))
+    if tpl is None or tpl.kind != "rc":
+        return jsonify({"ok": False, "error": "Template not found."}), 400
+    pp = ocr.clean_pp(data.get("pp"))
+    tpl.ocr_pp = json.dumps(pp) if pp else None
+    tpl.ocr_rects = None
+    up.template_id = tpl.id
+    db.session.commit()
+    record_audit("rc_ocr_settings",
+                 f"upload_id={upload_id} template_id={tpl.id} pp={sorted(pp)}")
+    started = False
+    if bool(data.get("reprocess")) and up.status != STATUS_PROCESSING:
+        up.status = STATUS_PROCESSING
+        up.error = None
+        db.session.commit()
+        _start_processing("rc", upload_id)
         started = True
     return jsonify({"ok": True, "reprocessing": started,
                     "template": _tpl_json(tpl)})

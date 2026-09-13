@@ -116,9 +116,9 @@ def render_page_png(page, pp=None, zoom: float = 2.0) -> bytes:
     return cv2.imencode(".png", bgr)[1].tobytes()
 
 
-def _render_page_png(page, zoom: float) -> bytes:
-    import pymupdf
-    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
+def _encode_pix_png(pix) -> bytes:
+    """Encode a rendered pixmap to PNG, applying page-normalization (when the
+    OCR_ENHANCE flag is on) and any thread-local ``pp`` image adjustments."""
     pp = _active_pp()
     if not _enh_on() and not pp:
         return pix.tobytes("png")
@@ -138,6 +138,12 @@ def _render_page_png(page, zoom: float) -> bytes:
     if out is bgr:
         return pix.tobytes("png")
     return cv2.imencode(".png", out)[1].tobytes()
+
+
+def _render_page_png(page, zoom: float) -> bytes:
+    import pymupdf
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
+    return _encode_pix_png(pix)
 
 
 def _ocr(png_bytes: bytes) -> list[dict]:
@@ -184,7 +190,7 @@ def _ocr_page(page, zoom: float = 2.0, tile_px: int = 2000,
         pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom),
                               clip=pymupdf.Rect(0, y, w_pt, y1))
         off = y * zoom
-        for ln in _ocr(pix.tobytes("png")):
+        for ln in _ocr(_encode_pix_png(pix)):
             ln["y0"] += off; ln["y1"] += off; ln["cy"] += off
             merged.append(ln)
         if y1 >= page.rect.height:
@@ -1948,9 +1954,14 @@ def crop_receipt_png(page, y0_px: float, y1_px: float, ocr_zoom: float,
     return pix.tobytes("png")
 
 
-def extract_receipt_page(page, zoom: float = 2.0) -> list[dict]:
-    """OCR + parse one receipts page into its deposit-slip records."""
-    lines = _ocr_page(page, zoom)
+def extract_receipt_page(page, zoom: float = 2.0, pp=None) -> list[dict]:
+    """OCR + parse one receipts page into its deposit-slip records.  ``pp`` is a
+    cleaned image-adjustment dict applied while rendering the page for OCR."""
+    _pp_ctx.pp = pp or None
+    try:
+        lines = _ocr_page(page, zoom)
+    finally:
+        _pp_ctx.pp = None
     out: list[dict] = []
     for seg in _segment_receipts(lines):
         if not seg:
@@ -1988,16 +1999,45 @@ def extract_receipt_page(page, zoom: float = 2.0) -> list[dict]:
     return out
 
 
-def extract_receipt_records(path: str, zoom: float = 2.0) -> tuple[int, list[dict]]:
+def extract_receipt_records(path: str, zoom: float = 2.0,
+                            pp=None) -> tuple[int, list[dict]]:
     doc, page_count = open_document(path)
     records: list[dict] = []
     seg_no = 0
     try:
         for i in range(page_count):
-            for rec in extract_receipt_page(doc[i], zoom):
+            for rec in extract_receipt_page(doc[i], zoom, pp=pp):
                 seg_no += 1
                 rec["segment_no"] = seg_no
                 records.append(rec)
     finally:
         doc.close()
     return page_count, records
+
+
+# Fields surfaced by the receipts OCR-settings "Test OCR" button.
+_RC_TEST_FIELDS = [
+    ("receipt_no", "Receipt No"),
+    ("vehicle_no", "Vehicle No"),
+    ("receipt_date", "Date"),
+    ("total_amount", "Total"),
+    ("bank_charges", "Charges"),
+    ("bank_total", "Bank Total"),
+    ("slip_no", "Slip No"),
+]
+
+
+def test_receipt_page(page, pp=None) -> list[dict]:
+    """Run receipt OCR on one page with the given image adjustments and return
+    the first detected slip's fields (plus a slip count) for the receipts
+    OCR-settings "Test OCR" button."""
+    recs = extract_receipt_page(page, pp=pp)
+    fields = [{"key": "_count", "label": "Slips on page",
+               "value": str(len(recs)), "confidence": None}]
+    rec = recs[0] if recs else {}
+    for key, label in _RC_TEST_FIELDS:
+        v = rec.get(key)
+        fields.append({"key": key, "label": label,
+                       "value": "" if v is None else str(v),
+                       "confidence": None})
+    return fields

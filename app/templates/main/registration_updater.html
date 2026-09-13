@@ -40,6 +40,9 @@
         <td class="dup-cell">{{ u.duplicate_records }}</td>
         <td class="ta-right actions">
           {% if kind == 'rc' %}
+          <button type="button" class="act-btn" title="OCR settings"
+                  aria-label="OCR settings" data-ocr-open data-kind="rc"
+                  data-uid="{{ u.id }}">{{ icon('cog', 16) }}</button>
           <form method="post" class="inline"
                 action="{{ url_for('main.process_upload', kind='rc', upload_id=u.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -55,7 +58,7 @@
              page), so there is no play/start icon here.  A processed upload can
              still be re-processed. #}
           <button type="button" class="act-btn" title="OCR settings"
-                  aria-label="OCR settings" data-ocr-open
+                  aria-label="OCR settings" data-ocr-open data-kind="cr"
                   data-uid="{{ u.id }}">{{ icon('cog', 16) }}</button>
           {% if u.processed %}
           <form method="post" class="inline"
@@ -258,6 +261,10 @@
      data-test-tpl="{{ url_for('main.cr_ocr_test', upload_id=0) }}"
      data-boxes-tpl="{{ url_for('main.cr_ocr_boxes', upload_id=0) }}"
      data-init-tpl="{{ url_for('main.cr_ocr_init', upload_id=0) }}"
+     data-rc-preview-tpl="{{ url_for('main.rc_ocr_preview', upload_id=0) }}"
+     data-rc-save-tpl="{{ url_for('main.rc_ocr_settings', upload_id=0) }}"
+     data-rc-test-tpl="{{ url_for('main.rc_ocr_test', upload_id=0) }}"
+     data-rc-init-tpl="{{ url_for('main.rc_ocr_init', upload_id=0) }}"
      data-tpls-tpl="{{ url_for('main.cr_ocr_templates') }}"
      data-tplupd-tpl="{{ url_for('main.cr_ocr_template_update', tid=0) }}"
      data-csrf="{{ csrf_token() }}">
@@ -308,7 +315,7 @@
             <div class="ocr-overlay" data-ocr-overlay></div>
           </div>
         </div>
-        <p class="muted" style="font-size:.78rem;margin:2px 0 0;">Drag boxes to
+        <p class="muted" data-ocr-hint style="font-size:.78rem;margin:2px 0 0;">Drag boxes to
           move, drag a corner to resize. Boxes are cropped &amp; OCR'd per field.</p>
         <div class="ocr-results" data-ocr-results hidden></div>
       </div>
@@ -372,10 +379,17 @@
   var testBtn = modal.querySelector('[data-ocr-test]');
   var results = modal.querySelector('[data-ocr-results]');
   var statusEl = modal.querySelector('[data-ocr-status]');
-  var PREVIEW_TPL = modal.getAttribute('data-preview-tpl');
-  var SAVE_TPL = modal.getAttribute('data-save-tpl');
-  var TEST_TPL = modal.getAttribute('data-test-tpl');
-  var BOXES_TPL = modal.getAttribute('data-boxes-tpl');
+  function ga(a) { return modal.getAttribute(a); }
+  var URLS = {
+    cr: { preview: ga('data-preview-tpl'), save: ga('data-save-tpl'),
+          test: ga('data-test-tpl'), boxes: ga('data-boxes-tpl'),
+          init: ga('data-init-tpl') },
+    rc: { preview: ga('data-rc-preview-tpl'), save: ga('data-rc-save-tpl'),
+          test: ga('data-rc-test-tpl'), boxes: null,
+          init: ga('data-rc-init-tpl') }
+  };
+  var kind = 'cr';
+  var PREVIEW_TPL, SAVE_TPL, TEST_TPL, BOXES_TPL, INIT_TPL;
   var CSRF = modal.getAttribute('data-csrf') || '';
   var stage = modal.querySelector('[data-ocr-stage]');
   var overlay = modal.querySelector('[data-ocr-overlay]');
@@ -391,7 +405,7 @@
   var pagePrev = modal.querySelector('[data-ocr-page="prev"]');
   var pageNext = modal.querySelector('[data-ocr-page="next"]');
   var pageLabel = modal.querySelector('[data-ocr-pagelabel]');
-  var INIT_TPL = modal.getAttribute('data-init-tpl');
+  var hintEl = modal.querySelector('[data-ocr-hint]');
   var TPLS_URL = modal.getAttribute('data-tpls-tpl');
   var TPLUPD_TPL = modal.getAttribute('data-tplupd-tpl');
   var FIELDS = [['registration_no', 'Reg No'], ['chassis_no', 'Chassis No'],
@@ -403,6 +417,14 @@
   var templates = [], selectedId = null, currentPage = 1, totalPages = 1;
   var uid = null, timer = null;
   function url(tpl) { return tpl.replace(/\/0\//, '/' + uid + '/'); }
+  function setKind(k) {
+    kind = (k === 'rc') ? 'rc' : 'cr';
+    var u = URLS[kind];
+    PREVIEW_TPL = u.preview; SAVE_TPL = u.save; TEST_TPL = u.test;
+    BOXES_TPL = u.boxes; INIT_TPL = u.init;
+    if (detectBtn) detectBtn.style.display = (kind === 'rc') ? 'none' : '';
+    if (hintEl) hintEl.style.display = (kind === 'rc') ? 'none' : '';
+  }
   function neutralFor(k) { if (k === 'gamma') return 1; if (k === 'colorkeep_v') return 130; return 0; }
   function collectPp() {
     var pp = {};
@@ -615,10 +637,11 @@
     rects = (t && t.rects) ? JSON.parse(JSON.stringify(t.rects)) : {};
     renderRects();
     loadPreview();
-    var nb = Object.keys(rects).length, ns = Object.keys(pp).length;
-    setStatus('Loaded “' + (t ? t.name : '') + '” — ' + nb +
-      ' box' + (nb === 1 ? '' : 'es') + ', ' + ns +
-      ' setting' + (ns === 1 ? '' : 's') + '.');
+    var ns = Object.keys(pp).length, nb = Object.keys(rects).length;
+    var parts = (kind === 'cr'
+      ? (nb + ' box' + (nb === 1 ? '' : 'es') + ', ') : '') +
+      ns + ' setting' + (ns === 1 ? '' : 's');
+    setStatus('Loaded “' + (t ? t.name : '') + '” — ' + parts + '.');
   }
   pagePrev && pagePrev.addEventListener('click', function () { gotoPage(currentPage - 1); });
   pageNext && pageNext.addEventListener('click', function () { gotoPage(currentPage + 1); });
@@ -652,7 +675,7 @@
     tplCreateBtn.disabled = true; setStatus('Creating template\u2026');
     fetch(TPLS_URL, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ name: name, pp: collectPp(), rects: collectRects() })
+      body: JSON.stringify({ name: name, kind: kind, pp: collectPp(), rects: collectRects() })
     }).then(function (r) { return r.json(); }).then(function (d) {
       tplCreateBtn.disabled = false;
       if (!d || !d.ok) { setStatus((d && d.error) || 'Create failed.'); return; }
@@ -663,7 +686,8 @@
   }
   tplCreateBtn && tplCreateBtn.addEventListener('click', createTemplate);
   tplNameInput && tplNameInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); createTemplate(); } });
-  function openModal(u) {
+  function openModal(u, k) {
+    setKind(k);
     uid = u; currentPage = 1; totalPages = 1; setPageLabel();
     results.hidden = true; results.innerHTML = '';
     if (tplNewWrap) tplNewWrap.hidden = true;
@@ -682,7 +706,7 @@
         populateTplSelect();
         var t = selectedId ? findTpl(selectedId) : null;
         if (t) loadTemplateIntoEditor(t);
-        else { loadPreview(); loadBoxes(); }
+        else { loadPreview(); if (kind === 'cr') loadBoxes(); }
       }).catch(function () { setStatus('Load failed.'); });
   }
   function closeModal() { modal.hidden = true; uid = null; }
@@ -690,7 +714,8 @@
     var open = e.target.closest ? e.target.closest('[data-ocr-open]') : null;
     if (open) {
       e.preventDefault();
-      openModal(parseInt(open.getAttribute('data-uid'), 10));
+      openModal(parseInt(open.getAttribute('data-uid'), 10),
+        open.getAttribute('data-kind'));
       return;
     }
     if (e.target.closest && e.target.closest('[data-ocr-close]')) closeModal();

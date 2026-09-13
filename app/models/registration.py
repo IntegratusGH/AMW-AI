@@ -97,6 +97,12 @@ class ReceiptUpload(_UploadMixin, db.Model):
         cascade="all, delete-orphan", passive_deletes=True,
     )
 
+    # OCR template driving extraction for this upload (image settings live on
+    # the template).  NULL = default receipt extraction.
+    template_id = db.Column(
+        db.Integer, db.ForeignKey("ocr_templates.id"), nullable=True)
+    template = db.relationship("OcrTemplate")
+
     def __repr__(self) -> str:  # pragma: no cover
         return f"<ReceiptUpload {self.id} {self.filename}>"
 
@@ -370,14 +376,19 @@ class ExportDocument(db.Model):
 
 
 class OcrTemplate(db.Model):
-    """A reusable CR-book OCR template: named image-preprocessing settings plus
-    per-field value-region rectangles.  A cr_book_upload references one template
-    (``template_id``); its settings/boxes drive Test OCR, Process and Reprocess."""
+    """A reusable OCR template: named image-preprocessing settings plus (for CR
+    books) per-field value-region rectangles.  An upload references one template
+    (``template_id``); its settings/boxes drive Test OCR, Process and Reprocess.
+    ``kind`` scopes the template to a document type: 'cr' (CR books, with value
+    boxes) or 'rc' (receipts, image settings only)."""
 
     __tablename__ = "ocr_templates"
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), nullable=False, unique=True)
+    # Document type this template applies to: 'cr' or 'rc'.
+    kind = db.Column(db.String(4), nullable=False, default="cr",
+                     server_default="cr")
     # JSON of a cleaned pp dict (image adjustments applied to every page).
     ocr_pp = db.Column(db.Text, nullable=True)
     # JSON: field -> [x0,y0,x1,y1] normalized value-region rectangles.
