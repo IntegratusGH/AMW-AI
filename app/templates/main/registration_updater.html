@@ -415,6 +415,7 @@
     ['colour', 'Colour']];
   var rects = {}, zoom = 1;
   var templates = [], selectedId = null, currentPage = 1, totalPages = 1;
+  var slipPages = [];
   var uid = null, timer = null;
   function url(tpl) { return tpl.replace(/\/0\//, '/' + uid + '/'); }
   function setKind(k) {
@@ -479,7 +480,7 @@
     fetch(url(PREVIEW_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ pp: collectPp(), page: currentPage })
+      body: JSON.stringify({ pp: collectPp(), page: currentPage, slip: currentPage })
     }).then(function (r) { return r.blob(); })
       .then(function (b) { img.src = URL.createObjectURL(b); setStatus(''); })
       .catch(function () { setStatus('Preview failed.'); });
@@ -511,7 +512,7 @@
     fetch(url(TEST_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), page: currentPage })
+      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), page: currentPage, slip: currentPage })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         testBtn.disabled = false;
@@ -623,7 +624,16 @@
   function tplUpdUrl(id) { return TPLUPD_TPL.replace(/\/0$/, '/' + id); }
   function tplIndex(id) { for (var i = 0; i < templates.length; i++) { if (templates[i].id === id) return i; } return -1; }
   function findTpl(id) { var i = tplIndex(id); return i > -1 ? templates[i] : null; }
-  function setPageLabel() { if (pageLabel) pageLabel.textContent = currentPage + '/' + totalPages; }
+  function setPageLabel() {
+    if (!pageLabel) return;
+    if (kind === 'rc') {
+      var p = slipPages[currentPage - 1];
+      pageLabel.textContent = 'Slip ' + currentPage + ' of ' + totalPages +
+        (p ? ' (page ' + p + ')' : '');
+    } else {
+      pageLabel.textContent = currentPage + '/' + totalPages;
+    }
+  }
   function gotoPage(p) { currentPage = Math.max(1, Math.min(totalPages, p)); setPageLabel(); loadPreview(); }
   function populateTplSelect() {
     var opts = ['<option value="">(no template)</option>'];
@@ -691,14 +701,20 @@
     uid = u; currentPage = 1; totalPages = 1; setPageLabel();
     results.hidden = true; results.innerHTML = '';
     if (tplNewWrap) tplNewWrap.hidden = true;
-    setZoom(1); overlay.innerHTML = ''; rects = {}; setControls({});
+    setZoom(1); overlay.innerHTML = ''; rects = {}; slipPages = []; setControls({});
     modal.hidden = false;
     setStatus('Loading\u2026');
     fetch(url(INIT_TPL), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) { return r.json(); }).then(function (d) {
         if (!d || !d.ok) { setStatus('Load failed.'); return; }
         setStatus('');
-        totalPages = d.pages || 1; setPageLabel();
+        if (kind === 'rc') {
+          slipPages = (d.slips || []).map(function (s) { return s.page; });
+          totalPages = d.slip_count || slipPages.length || 1;
+        } else {
+          totalPages = d.pages || 1;
+        }
+        setPageLabel();
         templates = d.templates || [];
         var chosen = (d.template_id && findTpl(d.template_id)) ? d.template_id
           : (templates.length ? templates[0].id : null);

@@ -1954,6 +1954,57 @@ def crop_receipt_png(page, y0_px: float, y1_px: float, ocr_zoom: float,
     return pix.tobytes("png")
 
 
+def _seg_ybounds(seg: list[dict]) -> tuple[float, float]:
+    """Full-page pixel bounds of one receipt segment: from its top line down to
+    the Cashier footer (or its last line when no Cashier is found)."""
+    y0_px = min(ln["y0"] for ln in seg)
+    csh = [ln for ln in seg if _is_cashier(ln["text"])]
+    y1_px = csh[-1]["y1"] if csh else max(ln["y1"] for ln in seg)
+    return y0_px, y1_px
+
+
+def _is_real_segment(seg: list[dict]) -> bool:
+    """A segment is a real slip only if it carries at least one anchor field."""
+    rec = _parse_receipt_segment(seg)
+    return any(rec.get(k) for k in
+              ("slip_no", "vehicle_no", "application_no", "receipt_no"))
+
+
+def _real_segments(lines: list[dict]) -> list[list[dict]]:
+    """Segment a page's OCR lines and keep only real slips, top-to-bottom."""
+    return [seg for seg in _segment_receipts(lines)
+            if seg and _is_real_segment(seg)]
+
+
+def _process_receipt_segment(page, seg: list[dict], zoom: float) -> dict:
+    """Parse + refine one receipt segment into a record (vehicle/amount
+    refinement, formula cross-check, and the per-slip display crop)."""
+    rec = _parse_receipt_segment(seg)
+    # refine the vehicle number with multi-scale recognition OCR + voting.
+    vline = rec.pop("_vehicle_line", None)
+    v, _vconf = _refine_vehicle(page, vline, zoom, rec.get("vehicle_no"))
+    if v:
+        rec["vehicle_no"] = v
+    # refine the currency amounts the same way, then cross-check the slip's
+    # Bank Total = Total + Charges formula (correct/flag on mismatch).
+    al = rec.pop("_amt_lines", {}) or {}
+    tt, ct = _refine_amount(page, al.get("total_amount"), zoom,
+                            rec.get("total_amount"))
+    ch, cc = _refine_amount(page, al.get("bank_charges"), zoom,
+                            rec.get("bank_charges"))
+    bt, cb = _refine_amount(page, al.get("bank_total"), zoom,
+                            rec.get("bank_total"))
+    tt, ch, bt, review = _reconcile_amounts(tt, ch, bt, ct, cc, cb)
+    rec["total_amount"] = tt
+    rec["bank_charges"] = ch
+    rec["bank_total"] = bt
+    rec["needs_review"] = review
+    # crop from the PEOPLE'S header (segment top) to the Cashier footer.
+    y0_px, y1_px = _seg_ybounds(seg)
+    rec["_image_crop_png"] = crop_receipt_png(page, y0_px, y1_px, zoom)
+    return rec
+
+
 def extract_receipt_page(page, zoom: float = 2.0, pp=None) -> list[dict]:
     """OCR + parse one receipts page into its deposit-slip records.  ``pp`` is a
     cleaned image-adjustment dict applied while rendering the page for OCR."""
@@ -1962,41 +2013,8 @@ def extract_receipt_page(page, zoom: float = 2.0, pp=None) -> list[dict]:
         lines = _ocr_page(page, zoom)
     finally:
         _pp_ctx.pp = None
-    out: list[dict] = []
-    for seg in _segment_receipts(lines):
-        if not seg:
-            continue
-        rec = _parse_receipt_segment(seg)
-        # skip empty noise segments (no slip and no vehicle/application)
-        if not any(rec.get(k) for k in
-                   ("slip_no", "vehicle_no", "application_no", "receipt_no")):
-            continue
-        # refine the vehicle number with multi-scale recognition OCR + voting.
-        vline = rec.pop("_vehicle_line", None)
-        v, _vconf = _refine_vehicle(page, vline, zoom, rec.get("vehicle_no"))
-        if v:
-            rec["vehicle_no"] = v
-        # refine the currency amounts the same way, then cross-check the slip's
-        # Bank Total = Total + Charges formula (correct/flag on mismatch).
-        al = rec.pop("_amt_lines", {}) or {}
-        tt, ct = _refine_amount(page, al.get("total_amount"), zoom,
-                                rec.get("total_amount"))
-        ch, cc = _refine_amount(page, al.get("bank_charges"), zoom,
-                                rec.get("bank_charges"))
-        bt, cb = _refine_amount(page, al.get("bank_total"), zoom,
-                                rec.get("bank_total"))
-        tt, ch, bt, review = _reconcile_amounts(tt, ch, bt, ct, cc, cb)
-        rec["total_amount"] = tt
-        rec["bank_charges"] = ch
-        rec["bank_total"] = bt
-        rec["needs_review"] = review
-        # crop from the PEOPLE'S header (segment top) to the Cashier footer.
-        y0_px = min(ln["y0"] for ln in seg)
-        csh = [ln for ln in seg if _is_cashier(ln["text"])]
-        y1_px = csh[-1]["y1"] if csh else max(ln["y1"] for ln in seg)
-        rec["_image_crop_png"] = crop_receipt_png(page, y0_px, y1_px, zoom)
-        out.append(rec)
-    return out
+    return [_process_receipt_segment(page, seg, zoom)
+            for seg in _real_segments(lines)]
 
 
 def extract_receipt_records(path: str, zoom: float = 2.0,
@@ -2035,6 +2053,71 @@ def test_receipt_page(page, pp=None) -> list[dict]:
     fields = [{"key": "_count", "label": "Slips on page",
                "value": str(len(recs)), "confidence": None}]
     rec = recs[0] if recs else {}
+    for key, label in _RC_TEST_FIELDS:
+        v = rec.get(key)
+        fields.append({"key": key, "label": label,
+                       "value": "" if v is None else str(v),
+                       "confidence": None})
+    return fields
+
+
+def segment_document(path: str, zoom: float = 2.0,
+                     pp=None) -> list[dict]:
+    """Separate a receipts document into individual slips.  Returns one entry
+    per detected slip (top-to-bottom, across all pages) with the page index and
+    the slip's full-page pixel bounds so callers can render/OCR it in isolation:
+        {"page": int, "k": int, "y0": float, "y1": float, "zoom": float}
+    ``k`` is the slip's 0-based index among the real slips on its page."""
+    doc, page_count = open_document(path)
+    slips: list[dict] = []
+    try:
+        for p in range(page_count):
+            page = doc[p]
+            _pp_ctx.pp = pp or None
+            try:
+                lines = _ocr_page(page, zoom)
+            finally:
+                _pp_ctx.pp = None
+            for k, seg in enumerate(_real_segments(lines)):
+                y0_px, y1_px = _seg_ybounds(seg)
+                slips.append({"page": p, "k": k,
+                              "y0": y0_px, "y1": y1_px, "zoom": zoom})
+    finally:
+        doc.close()
+    return slips
+
+
+def render_slip_png(page, y0_px: float, y1_px: float, ocr_zoom: float,
+                    pp=None, disp_zoom: float = 2.0, pad_above_pt: float = 8.0,
+                    pad_below_pt: float = 10.0) -> bytes | None:
+    """Render one separated slip's region to a PNG, applying ``pp`` image
+    adjustments (used by the receipts OCR-settings live preview)."""
+    import pymupdf
+    y0 = max(0.0, y0_px / ocr_zoom - pad_above_pt)
+    y1 = min(page.rect.height, y1_px / ocr_zoom + pad_below_pt)
+    if y1 <= y0:
+        return None
+    _pp_ctx.pp = pp or None
+    try:
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(disp_zoom, disp_zoom),
+                              clip=pymupdf.Rect(0, y0, page.rect.width, y1))
+        return _encode_pix_png(pix)
+    finally:
+        _pp_ctx.pp = None
+
+
+def test_receipt_slip(page, k: int, pp=None, zoom: float = 2.0) -> list[dict]:
+    """OCR one page with the given image adjustments and return the ``k``-th
+    separated slip's fields (plus the page's slip count) for "Test OCR"."""
+    _pp_ctx.pp = pp or None
+    try:
+        lines = _ocr_page(page, zoom)
+    finally:
+        _pp_ctx.pp = None
+    segs = _real_segments(lines)
+    fields = [{"key": "_count", "label": "Slips on page",
+               "value": str(len(segs)), "confidence": None}]
+    rec = _process_receipt_segment(page, segs[k], zoom) if 0 <= k < len(segs) else {}
     for key, label in _RC_TEST_FIELDS:
         v = rec.get(key)
         fields.append({"key": key, "label": label,

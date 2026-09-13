@@ -1549,20 +1549,46 @@ def cr_ocr_settings(upload_id: int):
                     "template": _tpl_json(tpl)})
 
 
+# Per-upload receipt slip index (the "separated document"), cached so the popup's
+# slip navigation doesn't re-run segmentation on every step.  Keyed by upload
+# id; invalidated when the source file's mtime changes.
+_RC_SLIP_CACHE: dict[int, dict] = {}
+
+
+def _rc_slip_index(up) -> list[dict]:
+    """Return the cached slip index for a receipt upload, (re)computing the
+    separation when missing or when the source file has changed."""
+    from app.utils import registration_ocr as ocr
+    try:
+        mtime = os.path.getmtime(up.stored_path)
+    except OSError:
+        mtime = None
+    cached = _RC_SLIP_CACHE.get(up.id)
+    if cached and cached.get("mtime") == mtime:
+        return cached["slips"]
+    slips = ocr.segment_document(up.stored_path)
+    _RC_SLIP_CACHE[up.id] = {"mtime": mtime, "slips": slips}
+    return slips
+
+
 @main_bp.route("/operations/registration-updater/rc/<int:upload_id>/ocr-init")
 @login_required
 def rc_ocr_init(upload_id: int):
-    """Receipts OCR-settings popup bootstrap: page count, the upload's current
-    template, and all receipt ('rc') templates for the dropdown."""
+    """Receipts OCR-settings popup bootstrap: separate the document into slips,
+    then return the slip index (page per slip), the upload's current template,
+    and all receipt ('rc') templates for the dropdown."""
     _require_module(REGISTRATION_UPDATER_KEY)
     from app.utils import registration_ocr as ocr
     up = db.session.get(ReceiptUpload, upload_id) or abort(404)
     doc, total = ocr.open_document(up.stored_path)
     doc.close()
+    slips = _rc_slip_index(up)
     templates = [_tpl_json(t) for t in OcrTemplate.query
                  .filter_by(kind="rc")
                  .order_by(OcrTemplate.updated_at.desc()).all()]
     return jsonify({"ok": True, "pages": total,
+                    "slip_count": len(slips),
+                    "slips": [{"page": s["page"] + 1} for s in slips],
                     "template_id": up.template_id, "templates": templates})
 
 
@@ -1570,17 +1596,25 @@ def rc_ocr_init(upload_id: int):
                methods=["POST"])
 @login_required
 def rc_ocr_preview(upload_id: int):
-    """Render a receipts page with the given image adjustments for the popup's
-    live preview (page nav supported)."""
+    """Render one separated slip with the given image adjustments for the
+    popup's live preview (slip nav supported)."""
     _require_module(REGISTRATION_UPDATER_KEY)
     from app.utils import registration_ocr as ocr
     up = db.session.get(ReceiptUpload, upload_id) or abort(404)
     data = request.get_json(silent=True) or {}
     pp = ocr.clean_pp(data.get("pp"))
+    slips = _rc_slip_index(up)
+    idx = int(data.get("slip") or 1) - 1
     doc, total = ocr.open_document(up.stored_path)
     try:
-        idx = max(1, min(total, int(data.get("page") or 1))) - 1
-        png = ocr.render_page_png(doc[idx], pp=pp, zoom=1.6)
+        if 0 <= idx < len(slips):
+            s = slips[idx]
+            png = ocr.render_slip_png(doc[s["page"]], s["y0"], s["y1"],
+                                      s["zoom"], pp=pp)
+            if png is None:
+                png = ocr.render_page_png(doc[s["page"]], pp=pp, zoom=1.6)
+        else:
+            png = ocr.render_page_png(doc[0], pp=pp, zoom=1.6)
     finally:
         doc.close()
     resp = Response(png, mimetype="image/png")
@@ -1592,17 +1626,22 @@ def rc_ocr_preview(upload_id: int):
                methods=["POST"])
 @login_required
 def rc_ocr_test(upload_id: int):
-    """Run receipt OCR on one page with the given image adjustments and return
-    the first detected slip's fields (plus a slip count) for "Test OCR"."""
+    """Run receipt OCR on one separated slip with the given image adjustments
+    and return that slip's fields (plus the page's slip count) for "Test OCR"."""
     _require_module(REGISTRATION_UPDATER_KEY)
     from app.utils import registration_ocr as ocr
     up = db.session.get(ReceiptUpload, upload_id) or abort(404)
     data = request.get_json(silent=True) or {}
     pp = ocr.clean_pp(data.get("pp"))
+    slips = _rc_slip_index(up)
+    idx = int(data.get("slip") or 1) - 1
     doc, total = ocr.open_document(up.stored_path)
     try:
-        idx = max(1, min(total, int(data.get("page") or 1))) - 1
-        fields = ocr.test_receipt_page(doc[idx], pp=pp)
+        if 0 <= idx < len(slips):
+            s = slips[idx]
+            fields = ocr.test_receipt_slip(doc[s["page"]], s["k"], pp=pp)
+        else:
+            fields = ocr.test_receipt_page(doc[0], pp=pp)
     finally:
         doc.close()
     return jsonify({"ok": True, "fields": fields})
