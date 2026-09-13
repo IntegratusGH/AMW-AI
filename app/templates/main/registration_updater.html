@@ -611,10 +611,15 @@
     tplSelect.value = selectedId ? String(selectedId) : '';
   }
   function loadTemplateIntoEditor(t) {
-    setControls((t && t.pp) || {});
+    var pp = (t && t.pp) || {};
+    setControls(pp);
     rects = (t && t.rects) ? JSON.parse(JSON.stringify(t.rects)) : {};
     renderRects();
     loadPreview();
+    var nb = Object.keys(rects).length, ns = Object.keys(pp).length;
+    setStatus('Loaded “' + (t ? t.name : '') + '” — ' + nb +
+      ' box' + (nb === 1 ? '' : 'es') + ', ' + ns +
+      ' setting' + (ns === 1 ? '' : 's') + '.');
   }
   pagePrev && pagePrev.addEventListener('click', function () { gotoPage(currentPage - 1); });
   pageNext && pageNext.addEventListener('click', function () { gotoPage(currentPage + 1); });
