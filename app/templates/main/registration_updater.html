@@ -408,11 +408,16 @@
   var hintEl = modal.querySelector('[data-ocr-hint]');
   var TPLS_URL = modal.getAttribute('data-tpls-tpl');
   var TPLUPD_TPL = modal.getAttribute('data-tplupd-tpl');
-  var FIELDS = [['registration_no', 'Reg No'], ['chassis_no', 'Chassis No'],
+  var FIELDS_CR = [['registration_no', 'Reg No'], ['chassis_no', 'Chassis No'],
     ['engine_no', 'Engine No'], ['absolute_owner', 'Absolute Owner'],
     ['class_of_vehicle', 'Class'], ['fuel_type', 'Fuel'],
     ['cylinder_capacity', 'CC'], ['year_of_manufacture', 'Year'],
     ['colour', 'Colour']];
+  var FIELDS_RC = [['receipt_no', 'Receipt No'], ['vehicle_no', 'Vehicle No'],
+    ['receipt_date', 'Date'], ['total_amount', 'Total'],
+    ['bank_charges', 'Charges'], ['bank_total', 'Bank Total'],
+    ['slip_no', 'Slip No']];
+  var FIELDS = FIELDS_CR;
   var rects = {}, zoom = 1;
   var templates = [], selectedId = null, currentPage = 1, totalPages = 1;
   var slipPages = [];
@@ -423,8 +428,9 @@
     var u = URLS[kind];
     PREVIEW_TPL = u.preview; SAVE_TPL = u.save; TEST_TPL = u.test;
     BOXES_TPL = u.boxes; INIT_TPL = u.init;
-    if (detectBtn) detectBtn.style.display = (kind === 'rc') ? 'none' : '';
-    if (hintEl) hintEl.style.display = (kind === 'rc') ? 'none' : '';
+    FIELDS = (kind === 'rc') ? FIELDS_RC : FIELDS_CR;
+    if (detectBtn) detectBtn.style.display = '';
+    if (hintEl) hintEl.style.display = '';
   }
   function neutralFor(k) { if (k === 'gamma') return 1; if (k === 'colorkeep_v') return 130; return 0; }
   function collectPp() {
@@ -530,6 +536,14 @@
     });
     return out;
   }
+  function defaultRects() {
+    var out = {}, n = FIELDS.length, band = 0.86 / n;
+    FIELDS.forEach(function (f, i) {
+      var y0 = 0.06 + i * band;
+      out[f[0]] = clampRect([0.30, y0, 0.92, y0 + Math.min(0.09, band - 0.02)]);
+    });
+    return out;
+  }
   function clampRect(r) {
     var w = Math.max(0.01, Math.min(1, r[2] - r[0]));
     var h = Math.max(0.01, Math.min(1, r[3] - r[1]));
@@ -602,6 +616,11 @@
   }
   function loadBoxes() {
     if (uid === null) return;
+    if (kind === 'rc') {
+      rects = defaultRects(); renderRects();
+      setStatus('Default boxes added \u2014 drag to position, then Save.');
+      return;
+    }
     setStatus('Detecting positions\u2026');
     fetch(url(BOXES_TPL), {
       method: 'POST',
@@ -645,6 +664,7 @@
     var pp = (t && t.pp) || {};
     setControls(pp);
     rects = (t && t.rects) ? JSON.parse(JSON.stringify(t.rects)) : {};
+    if (kind === 'rc' && !Object.keys(rects).length) rects = defaultRects();
     renderRects();
     loadPreview();
     var ns = Object.keys(pp).length, nb = Object.keys(rects).length;
@@ -722,7 +742,8 @@
         populateTplSelect();
         var t = selectedId ? findTpl(selectedId) : null;
         if (t) loadTemplateIntoEditor(t);
-        else { loadPreview(); if (kind === 'cr') loadBoxes(); }
+        else if (kind === 'cr') { loadPreview(); loadBoxes(); }
+        else { rects = defaultRects(); renderRects(); loadPreview(); }
       }).catch(function () { setStatus('Load failed.'); });
   }
   function closeModal() { modal.hidden = true; uid = null; }

@@ -265,9 +265,15 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 if tpl and tpl.ocr_rects:
                     try:
                         upload_rects = ocr.clean_rects(
-                            json.loads(tpl.ocr_rects)) or None
+                            json.loads(tpl.ocr_rects), "cr") or None
                     except (ValueError, TypeError):
                         upload_rects = None
+            elif tpl and tpl.ocr_rects:
+                try:
+                    upload_rects = ocr.clean_rects(
+                        json.loads(tpl.ocr_rects), "rc") or None
+                except (ValueError, TypeError):
+                    upload_rects = None
             try:
                 for i in range(total):
                     if kind == "cr":
@@ -279,7 +285,8 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         for r in page_recs:
                             r["page_no"] = i + 1
                     else:
-                        page_recs = ocr.extract_receipt_page(doc[i], pp=upload_pp)
+                        page_recs = ocr.extract_receipt_page(
+                            doc[i], pp=upload_pp, rects=upload_rects)
 
                     for r in page_recs:
                         if kind == "rc":
@@ -1427,7 +1434,8 @@ def _tpl_json(t: "OcrTemplate") -> dict:
     except (ValueError, TypeError):
         pp = {}
     try:
-        rects = ocr.clean_rects(json.loads(t.ocr_rects)) if t.ocr_rects else {}
+        rects = (ocr.clean_rects(json.loads(t.ocr_rects), t.kind or "cr")
+                 if t.ocr_rects else {})
     except (ValueError, TypeError):
         rects = {}
     return {"id": t.id, "name": t.name, "kind": t.kind or "cr",
@@ -1474,7 +1482,7 @@ def cr_ocr_templates():
         return jsonify({"ok": False,
                         "error": "A template with that name already exists."}), 400
     pp = ocr.clean_pp(data.get("pp"))
-    rects = ocr.clean_rects(data.get("rects")) if kind == "cr" else {}
+    rects = ocr.clean_rects(data.get("rects"), kind)
     t = OcrTemplate(name=name, kind=kind, created_by=current_user.id,
                     ocr_pp=json.dumps(pp) if pp else None,
                     ocr_rects=json.dumps(rects) if rects else None)
@@ -1633,13 +1641,15 @@ def rc_ocr_test(upload_id: int):
     up = db.session.get(ReceiptUpload, upload_id) or abort(404)
     data = request.get_json(silent=True) or {}
     pp = ocr.clean_pp(data.get("pp"))
+    rects = ocr.clean_rects(data.get("rects"), "rc")
     slips = _rc_slip_index(up)
     idx = int(data.get("slip") or 1) - 1
     doc, total = ocr.open_document(up.stored_path)
     try:
         if 0 <= idx < len(slips):
             s = slips[idx]
-            fields = ocr.test_receipt_slip(doc[s["page"]], s["k"], pp=pp)
+            fields = ocr.test_receipt_slip(doc[s["page"]], s["k"],
+                                           pp=pp, rects=rects)
         else:
             fields = ocr.test_receipt_page(doc[0], pp=pp)
     finally:
@@ -1665,8 +1675,9 @@ def rc_ocr_settings(upload_id: int):
     if tpl is None or tpl.kind != "rc":
         return jsonify({"ok": False, "error": "Template not found."}), 400
     pp = ocr.clean_pp(data.get("pp"))
+    rects = ocr.clean_rects(data.get("rects"), "rc")
     tpl.ocr_pp = json.dumps(pp) if pp else None
-    tpl.ocr_rects = None
+    tpl.ocr_rects = json.dumps(rects) if rects else None
     up.template_id = tpl.id
     db.session.commit()
     record_audit("rc_ocr_settings",

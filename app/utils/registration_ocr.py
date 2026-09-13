@@ -1479,12 +1479,13 @@ def _line_score_for(lines: list[dict], value) -> float | None:
     return best
 
 
-def clean_rects(rects) -> dict:
-    """Keep only known field keys whose value is a valid normalized rectangle
-    ``[x0,y0,x1,y1]`` (0..1, x0<x1, y0<y1)."""
+def clean_rects(rects, kind: str = "cr") -> dict:
+    """Keep only known field keys (for the given document ``kind``) whose value
+    is a valid normalized rectangle ``[x0,y0,x1,y1]`` (0..1, x0<x1, y0<y1)."""
     if not isinstance(rects, dict):
         return {}
-    allowed = {k for k, _ in _CR_TEST_FIELDS}
+    fields = _RC_TEST_FIELDS if kind == "rc" else _CR_TEST_FIELDS
+    allowed = {k for k, _ in fields}
     out: dict = {}
     for k, v in rects.items():
         if k not in allowed:
@@ -1976,9 +1977,12 @@ def _real_segments(lines: list[dict]) -> list[list[dict]]:
             if seg and _is_real_segment(seg)]
 
 
-def _process_receipt_segment(page, seg: list[dict], zoom: float) -> dict:
+def _process_receipt_segment(page, seg: list[dict], zoom: float,
+                             rects=None, pp=None) -> dict:
     """Parse + refine one receipt segment into a record (vehicle/amount
-    refinement, formula cross-check, and the per-slip display crop)."""
+    refinement, formula cross-check, and the per-slip display crop).  When
+    ``rects`` is given, each field's normalized box (relative to this slip) is
+    cropped and OCR'd, overriding the label-anchored value when it reads."""
     rec = _parse_receipt_segment(seg)
     # refine the vehicle number with multi-scale recognition OCR + voting.
     vline = rec.pop("_vehicle_line", None)
@@ -2001,30 +2005,37 @@ def _process_receipt_segment(page, seg: list[dict], zoom: float) -> dict:
     rec["needs_review"] = review
     # crop from the PEOPLE'S header (segment top) to the Cashier footer.
     y0_px, y1_px = _seg_ybounds(seg)
+    if rects:
+        region = _slip_region_pts(page, y0_px, y1_px, zoom)
+        for name, val in read_receipt_rects(page, region, rects, pp=pp).items():
+            if val is not None and val != "":
+                rec[name] = val
     rec["_image_crop_png"] = crop_receipt_png(page, y0_px, y1_px, zoom)
     return rec
 
 
-def extract_receipt_page(page, zoom: float = 2.0, pp=None) -> list[dict]:
+def extract_receipt_page(page, zoom: float = 2.0, pp=None,
+                         rects=None) -> list[dict]:
     """OCR + parse one receipts page into its deposit-slip records.  ``pp`` is a
-    cleaned image-adjustment dict applied while rendering the page for OCR."""
+    cleaned image-adjustment dict applied while rendering the page for OCR;
+    ``rects`` (field -> normalized box within a slip) drives box-based reads."""
     _pp_ctx.pp = pp or None
     try:
         lines = _ocr_page(page, zoom)
     finally:
         _pp_ctx.pp = None
-    return [_process_receipt_segment(page, seg, zoom)
+    return [_process_receipt_segment(page, seg, zoom, rects=rects, pp=pp)
             for seg in _real_segments(lines)]
 
 
 def extract_receipt_records(path: str, zoom: float = 2.0,
-                            pp=None) -> tuple[int, list[dict]]:
+                            pp=None, rects=None) -> tuple[int, list[dict]]:
     doc, page_count = open_document(path)
     records: list[dict] = []
     seg_no = 0
     try:
         for i in range(page_count):
-            for rec in extract_receipt_page(doc[i], zoom, pp=pp):
+            for rec in extract_receipt_page(doc[i], zoom, pp=pp, rects=rects):
                 seg_no += 1
                 rec["segment_no"] = seg_no
                 records.append(rec)
@@ -2087,26 +2098,83 @@ def segment_document(path: str, zoom: float = 2.0,
     return slips
 
 
+# Padding (PDF points) added around a slip's detected header/footer bounds when
+# rendering/reading it in isolation.  Shared by the live preview and rect-based
+# extraction so boxes drawn on the preview map to the same region on extraction.
+_SLIP_PAD_ABOVE_PT = 8.0
+_SLIP_PAD_BELOW_PT = 10.0
+
+
+def _slip_region_pts(page, y0_px: float, y1_px: float,
+                     ocr_zoom: float) -> tuple[float, float, float, float]:
+    """Full-width slip region in PDF points (with standard padding)."""
+    y0 = max(0.0, y0_px / ocr_zoom - _SLIP_PAD_ABOVE_PT)
+    y1 = min(page.rect.height, y1_px / ocr_zoom + _SLIP_PAD_BELOW_PT)
+    return 0.0, y0, page.rect.width, y1
+
+
 def render_slip_png(page, y0_px: float, y1_px: float, ocr_zoom: float,
-                    pp=None, disp_zoom: float = 2.0, pad_above_pt: float = 8.0,
-                    pad_below_pt: float = 10.0) -> bytes | None:
+                    pp=None, disp_zoom: float = 2.0) -> bytes | None:
     """Render one separated slip's region to a PNG, applying ``pp`` image
     adjustments (used by the receipts OCR-settings live preview)."""
     import pymupdf
-    y0 = max(0.0, y0_px / ocr_zoom - pad_above_pt)
-    y1 = min(page.rect.height, y1_px / ocr_zoom + pad_below_pt)
-    if y1 <= y0:
+    rx0, ry0, rx1, ry1 = _slip_region_pts(page, y0_px, y1_px, ocr_zoom)
+    if ry1 <= ry0:
         return None
     _pp_ctx.pp = pp or None
     try:
         pix = page.get_pixmap(matrix=pymupdf.Matrix(disp_zoom, disp_zoom),
-                              clip=pymupdf.Rect(0, y0, page.rect.width, y1))
+                              clip=pymupdf.Rect(rx0, ry0, rx1, ry1))
         return _encode_pix_png(pix)
     finally:
         _pp_ctx.pp = None
 
 
-def test_receipt_slip(page, k: int, pp=None, zoom: float = 2.0) -> list[dict]:
+def _parse_receipt_field(name: str, text: str | None):
+    """Normalize a rect-cropped OCR read into the receipt field's value type."""
+    if not text:
+        return None
+    t = text.strip()
+    if name in ("total_amount", "bank_charges", "bank_total"):
+        return _to_decimal(_norm_amount(t))
+    if name == "receipt_date":
+        m = re.search(r"(\d{2})[/\s.]{0,2}(\d{2})[/\s.]{0,2}(\d{4})", t)
+        return f"{m.group(1)}/{m.group(2)}/{m.group(3)}" if m else None
+    if name == "vehicle_no":
+        mm = _VEHICLE_RE.search(t.upper())
+        return f"{mm.group(1)}-{mm.group(2)}{mm.group(3)}" if mm else None
+    if name == "slip_no":
+        m = re.search(r"0\d{6,7}", t.replace(" ", ""))
+        return m.group(0) if m else None
+    if name == "receipt_no":
+        m = re.search(r"\d{1,4}", t)
+        return m.group(0) if m else None
+    return t or None
+
+
+def read_receipt_rects(page, region_pts, rects, pp=None) -> dict:
+    """OCR each normalized rect (relative to one slip's ``region_pts`` in PDF
+    points) and normalize per receipt field.  Returns {field: value}."""
+    import pymupdf
+    rx0, ry0, rx1, ry1 = region_pts
+    rw, rh = (rx1 - rx0), (ry1 - ry0)
+    out: dict = {}
+    for name, box in (rects or {}).items():
+        try:
+            x0, y0, x1, y1 = box
+        except (TypeError, ValueError):
+            continue
+        rect = pymupdf.Rect(rx0 + x0 * rw, ry0 + y0 * rh,
+                            rx0 + x1 * rw, ry0 + y1 * rh)
+        cands = [(_clean(t), s) for t, s in
+                 _rec_candidates(page, rect, pp=pp) if _clean(t)]
+        raw = max(cands, key=lambda c: c[1])[0] if cands else None
+        out[name] = _parse_receipt_field(name, raw)
+    return out
+
+
+def test_receipt_slip(page, k: int, pp=None, zoom: float = 2.0,
+                      rects=None) -> list[dict]:
     """OCR one page with the given image adjustments and return the ``k``-th
     separated slip's fields (plus the page's slip count) for "Test OCR"."""
     _pp_ctx.pp = pp or None
@@ -2117,7 +2185,8 @@ def test_receipt_slip(page, k: int, pp=None, zoom: float = 2.0) -> list[dict]:
     segs = _real_segments(lines)
     fields = [{"key": "_count", "label": "Slips on page",
                "value": str(len(segs)), "confidence": None}]
-    rec = _process_receipt_segment(page, segs[k], zoom) if 0 <= k < len(segs) else {}
+    rec = (_process_receipt_segment(page, segs[k], zoom, rects=rects, pp=pp)
+           if 0 <= k < len(segs) else {})
     for key, label in _RC_TEST_FIELDS:
         v = rec.get(key)
         fields.append({"key": key, "label": label,
