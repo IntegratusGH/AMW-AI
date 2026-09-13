@@ -69,7 +69,13 @@ class CRBookUpload(_UploadMixin, db.Model):
     # Per-field value-region rectangles (JSON: field -> [x0,y0,x1,y1] normalized).
     # When set, each value is cropped from its box and OCR'd instead of being
     # located by its label.  NULL = label-anchored extraction.
+    # (legacy per-upload settings; superseded by template_id below)
     ocr_rects = db.Column(db.Text, nullable=True)
+    # OCR template driving extraction for this upload (image settings + value
+    # boxes live on the template).  NULL = label-anchored extraction.
+    template_id = db.Column(
+        db.Integer, db.ForeignKey("ocr_templates.id"), nullable=True)
+    template = db.relationship("OcrTemplate")
 
     records = db.relationship(
         "CRBookRecord", back_populates="upload",
@@ -369,3 +375,25 @@ class ExportDocument(db.Model):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<ExportDocument {self.id} n={self.records_count}>"
+
+
+class OcrTemplate(db.Model):
+    """A reusable CR-book OCR template: named image-preprocessing settings plus
+    per-field value-region rectangles.  A cr_book_upload references one template
+    (``template_id``); its settings/boxes drive Test OCR, Process and Reprocess."""
+
+    __tablename__ = "ocr_templates"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False, unique=True)
+    # JSON of a cleaned pp dict (image adjustments applied to every page).
+    ocr_pp = db.Column(db.Text, nullable=True)
+    # JSON: field -> [x0,y0,x1,y1] normalized value-region rectangles.
+    ocr_rects = db.Column(db.Text, nullable=True)
+    created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow,
+                           onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<OcrTemplate {self.id} {self.name!r}>"

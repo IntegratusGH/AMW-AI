@@ -591,6 +591,16 @@ select.input { appearance: auto; }
 .tmpl-check { display: inline-flex; align-items: center; gap: 6px;
   font-size: .85rem; color: var(--text); }
 .tmpl-modal__panel--wide { width: min(980px, 94vw); }
+.ocr-tpl { display: flex; align-items: center; gap: 4px; margin-left: auto;
+  margin-right: 8px; flex-wrap: wrap; }
+.ocr-tpl select { min-width: 150px; max-width: 220px; padding: 3px 6px;
+  font-size: .85rem; }
+.ocr-tpl-new { display: inline-flex; align-items: center; gap: 4px; }
+.ocr-tpl-new input { padding: 3px 6px; font-size: .85rem; width: 160px; }
+.ocr-pagelabel { font-size: .82rem; color: var(--text-muted);
+  min-width: 42px; text-align: center; font-variant-numeric: tabular-nums; }
+.ocr-toolbar__sep { width: 1px; align-self: stretch; margin: 2px 4px;
+  background: var(--border); }
 .ocr-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .ocr-toolbar .btn-sm { padding: 2px 8px; font-size: .8rem; }
 .ocr-zoomlabel { font-size: .8rem; color: var(--text-muted);

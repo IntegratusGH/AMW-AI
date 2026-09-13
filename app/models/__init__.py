@@ -43,6 +43,7 @@ from app.models.registration import (
     ExportDocument,
     MatchedRecord,
     OcrCorrection,
+    OcrTemplate,
     ReceiptRecord,
     ReceiptUpload,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "ReceiptUpload",
     "ReceiptRecord",
     "OcrCorrection",
+    "OcrTemplate",
     "MatchedRecord",
     "ExportDocument",
     "UPLOAD_STATUSES",
