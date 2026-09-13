@@ -590,6 +590,14 @@ select.input { appearance: auto; }
 .tmpl-checks { display: flex; flex-wrap: wrap; gap: 12px; }
 .tmpl-check { display: inline-flex; align-items: center; gap: 6px;
   font-size: .85rem; color: var(--text); }
+.tmpl-modal__panel--wide { width: min(900px, 94vw); }
+.ocr-results table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+.ocr-results th, .ocr-results td { text-align: left; padding: 4px 8px;
+  border-bottom: 1px solid var(--border); vertical-align: top; }
+.ocr-results th { color: var(--text-muted); font-weight: 600;
+  white-space: nowrap; width: 34%; }
+.ocr-results td.val { font-family: monospace; word-break: break-word; }
+.ocr-results td.conf { text-align: right; white-space: nowrap; width: 66px; }
 @media (max-width: 560px) {
   .tmpl-modal__body { grid-template-columns: 1fr; }
 }

@@ -255,10 +255,11 @@
 <div class="tmpl-modal" data-ocr-modal hidden
      data-preview-tpl="{{ url_for('main.cr_ocr_preview', upload_id=0) }}"
      data-save-tpl="{{ url_for('main.cr_ocr_settings', upload_id=0) }}"
+     data-test-tpl="{{ url_for('main.cr_ocr_test', upload_id=0) }}"
      data-csrf="{{ csrf_token() }}">
   <div class="tmpl-modal__backdrop" data-ocr-close></div>
-  <div class="tmpl-modal__panel" role="dialog" aria-modal="true"
-       aria-label="OCR image settings">
+  <div class="tmpl-modal__panel tmpl-modal__panel--wide" role="dialog"
+       aria-modal="true" aria-label="OCR image settings">
     <div class="tmpl-modal__head">
       <h3>OCR settings &mdash; first record</h3>
       <button type="button" class="btn btn-icon" data-ocr-close
@@ -267,6 +268,7 @@
     <div class="tmpl-modal__body">
       <div class="tmpl-preview">
         <img data-ocr-img alt="first record preview">
+        <div class="ocr-results" data-ocr-results hidden></div>
       </div>
       <div class="tmpl-settings">
         <label class="tmpl-slider">Brightness <span data-out="brightness">0</span>
@@ -308,6 +310,7 @@
         <input type="checkbox" data-ocr-reprocess checked><span>Re-process now</span></label>
       <span class="tmpl-status" data-ocr-status></span>
       <button type="button" class="btn" data-ocr-reset>Reset</button>
+      <button type="button" class="btn" data-ocr-test>Test OCR</button>
       <button type="button" class="btn btn-primary" data-ocr-save>Save</button>
     </div>
   </div>
@@ -324,9 +327,12 @@
   var reproc = modal.querySelector('[data-ocr-reprocess]');
   var saveBtn = modal.querySelector('[data-ocr-save]');
   var resetBtn = modal.querySelector('[data-ocr-reset]');
+  var testBtn = modal.querySelector('[data-ocr-test]');
+  var results = modal.querySelector('[data-ocr-results]');
   var statusEl = modal.querySelector('[data-ocr-status]');
   var PREVIEW_TPL = modal.getAttribute('data-preview-tpl');
   var SAVE_TPL = modal.getAttribute('data-save-tpl');
+  var TEST_TPL = modal.getAttribute('data-test-tpl');
   var CSRF = modal.getAttribute('data-csrf') || '';
   var uid = null, timer = null;
   function url(tpl) { return tpl.replace(/\/0\//, '/' + uid + '/'); }
@@ -395,11 +401,42 @@
     c.addEventListener('change', function () { syncThreshold(); syncOut(); debounced(); });
   });
   thval && thval.addEventListener('input', function () { syncOut(); debounced(); });
+  function confBadge(c) {
+    if (c === null || c === undefined || c === '') return '<span class="badge badge-muted">\u2014</span>';
+    var pct = Math.round(c * 100), cls = c >= 0.75 ? 'badge-success' : (c >= 0.55 ? 'badge-warning' : 'badge-danger');
+    return '<span class="badge ' + cls + '">' + pct + '%</span>';
+  }
+  function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+  function renderResults(fields) {
+    var rows = (fields || []).map(function (f) {
+      return '<tr><th>' + esc(f.label) + '</th><td class="val">' +
+        (f.value ? esc(f.value) : '<span class="muted">\u2014</span>') +
+        '</td><td class="conf">' + confBadge(f.confidence) + '</td></tr>';
+    }).join('');
+    results.innerHTML = '<table><tbody>' + rows + '</tbody></table>';
+    results.hidden = false;
+  }
+  function runTest() {
+    if (uid === null) return;
+    testBtn.disabled = true; setStatus('Running OCR\u2026');
+    fetch(url(TEST_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ pp: collectPp() })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        testBtn.disabled = false;
+        if (!d || !d.ok) { setStatus('Test failed.'); return; }
+        renderResults(d.fields); setStatus('');
+      }).catch(function () { testBtn.disabled = false; setStatus('Network error.'); });
+  }
+  testBtn && testBtn.addEventListener('click', runTest);
   function openModal(u, ppJson) {
     uid = u;
     var pp = {};
     try { pp = JSON.parse(ppJson || '{}') || {}; } catch (e) { pp = {}; }
     setControls(pp);
+    results.hidden = true; results.innerHTML = '';
     modal.hidden = false;
     loadPreview();
   }

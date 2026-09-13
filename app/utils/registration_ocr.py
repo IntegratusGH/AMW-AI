@@ -1382,6 +1382,66 @@ def extract_cr_page(page, zoom: float = 3.0,
         _pp_ctx.pp = None
 
 
+# Fields shown (in order) by the CR upload OCR-settings "Test OCR" button.
+_CR_TEST_FIELDS = [
+    ("registration_no", "Reg No"),
+    ("chassis_no", "Chassis No"),
+    ("engine_no", "Engine No"),
+    ("absolute_owner", "Absolute Owner"),
+    ("class_of_vehicle", "Class"),
+    ("fuel_type", "Fuel"),
+    ("cylinder_capacity", "CC"),
+    ("year_of_manufacture", "Year"),
+    ("colour", "Colour"),
+]
+_CR_TEST_CONF = {
+    "registration_no": "registration_no_confidence",
+    "chassis_no": "chassis_no_confidence",
+    "engine_no": "engine_no_confidence",
+}
+
+
+def _line_score_for(lines: list[dict], value) -> float | None:
+    """Best OCR score among lines whose text contains (or is contained by) the
+    value -- a best-effort confidence for coarse fields with no refined score."""
+    nv = _norm(value or "")
+    if not nv:
+        return None
+    best = None
+    for ln in lines:
+        nt = _norm(ln.get("text"))
+        if nt and (nv in nt or nt in nv):
+            s = ln.get("score")
+            if s and (best is None or s > best):
+                best = s
+    return best
+
+
+def test_cr_page(page, pp=None, zoom: float = 3.0,
+                 rule_set: str = "oldcrbook") -> list[dict]:
+    """OCR one CR-book page with ``pp`` applied and return the display fields
+    (see _CR_TEST_FIELDS) as ``{key,label,value,confidence}`` for the upload
+    OCR-settings "Test OCR" button.  Confidence is the refined per-field score
+    for the three critical identifiers and a best-effort line score otherwise."""
+    _pp_ctx.pp = pp or None
+    try:
+        lines = _ocr(_render_page_png(page, zoom))
+        rec = (_parse_cr_page(lines, page=page, full_zoom=zoom,
+                              rule_set=rule_set) if lines else {})
+    finally:
+        _pp_ctx.pp = None
+    out: list[dict] = []
+    for key, label in _CR_TEST_FIELDS:
+        value = rec.get(key)
+        conf = (rec.get(_CR_TEST_CONF[key]) if key in _CR_TEST_CONF
+                else _line_score_for(lines if lines else [], value))
+        out.append({
+            "key": key, "label": label, "value": value or "",
+            "confidence": (round(float(conf), 3) if conf else None),
+        })
+    return out
+
+
 def extract_cr_records(path: str, zoom: float = 3.0) -> tuple[int, list[dict]]:
     doc, page_count = open_document(path)
     records: list[dict] = []

@@ -1360,6 +1360,25 @@ def cr_ocr_preview(upload_id: int):
     return resp
 
 
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-test",
+               methods=["POST"])
+@login_required
+def cr_ocr_test(upload_id: int):
+    """Run CR OCR on the first page with the given image adjustments and return
+    the captured fields with confidence, for the OCR-settings "Test OCR" button."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    data = request.get_json(silent=True) or {}
+    pp = ocr.clean_pp(data.get("pp"))
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        fields = ocr.test_cr_page(doc[0], pp=pp)
+    finally:
+        doc.close()
+    return jsonify({"ok": True, "fields": fields})
+
+
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-settings",
                methods=["POST"])
 @login_required
