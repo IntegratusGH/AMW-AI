@@ -87,15 +87,22 @@
       {% for r in records %}
       <tr class="{{ 'row-review' if r.needs_review else '' }}" data-search="{{ r.vehicle_no or '' }}">
         <td>{% if r.needs_review %}<span class="badge badge-warning">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
-        <td class="mono">{{ r.slip_no or '—' }}</td>
-        <td>{{ r.receipt_no or '—' }}</td>
-        <td>{{ r.receipt_date or '—' }}</td>
+        <td class="mono">{% if r.slip_crop %}<img class="val-crop" loading="lazy" alt="Slip No scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='slip') }}">{% endif %}{{ r.slip_no or '—' }}</td>
+        <td>{% if r.receipt_no_crop %}<img class="val-crop" loading="lazy" alt="Receipt No scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='receipt') }}">{% endif %}{{ r.receipt_no or '—' }}</td>
+        <td>{% if r.date_crop %}<img class="val-crop" loading="lazy" alt="Date scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='date') }}">{% endif %}{{ r.receipt_date or '—' }}</td>
         <td>{{ r.receipt_time or '—' }}</td>
-        <td class="mono">{{ r.vehicle_no or '—' }}</td>
+        <td class="mono">{% if r.vehicle_crop %}<img class="val-crop" loading="lazy" alt="Vehicle No scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='vehicle') }}">{% endif %}{{ r.vehicle_no or '—' }}</td>
         <td class="mono">{{ r.application_no or '—' }}</td>
-        <td class="ta-right">{{ '%.2f'|format(r.total_amount) if r.total_amount is not none else '—' }}</td>
-        <td class="ta-right">{{ '%.2f'|format(r.bank_charges) if r.bank_charges is not none else '—' }}</td>
-        <td class="ta-right">{{ '%.2f'|format(r.bank_total) if r.bank_total is not none else '—' }}</td>
+        <td class="ta-right">{% if r.total_crop %}<img class="val-crop" loading="lazy" alt="Total scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='total') }}">{% endif %}{{ '%.2f'|format(r.total_amount) if r.total_amount is not none else '—' }}</td>
+        <td class="ta-right">{% if r.charges_crop %}<img class="val-crop" loading="lazy" alt="Charges scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='charges') }}">{% endif %}{{ '%.2f'|format(r.bank_charges) if r.bank_charges is not none else '—' }}</td>
+        <td class="ta-right">{% if r.bank_total_crop %}<img class="val-crop" loading="lazy" alt="Bank Total scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='banktotal') }}">{% endif %}{{ '%.2f'|format(r.bank_total) if r.bank_total is not none else '—' }}</td>
         <td>{% if r.is_duplicate %}<span class="badge badge-warning">Dup</span>{% else %}—{% endif %}</td>
         <td>{{ '%.2f'|format(r.confidence) if r.confidence is not none else '' }}</td>
         <td class="ta-right">

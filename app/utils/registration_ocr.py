@@ -1355,18 +1355,23 @@ def cr_field_options() -> list[dict]:
             for k in _CR_LABELS]
 
 
-def render_crop_png(page, box, pp=None, zoom: float = 6.0) -> bytes:
-    """Render one normalized rectangle as a PNG for the settings preview
-    (optionally with the box's trainer adjustments applied)."""
+def _encode_rect_png(page, rect, pp=None, zoom: float = 6.0) -> bytes:
+    """Render one absolute PDF-point rectangle to a PNG (with optional pp)."""
     import cv2
-    import pymupdf
-    x0, y0, x1, y1 = box
-    W, H = page.rect.width, page.rect.height
-    rect = pymupdf.Rect(x0 * W, y0 * H, x1 * W, y1 * H)
     bgr = _crop_bgr(page, rect, zoom)
     if pp:
         bgr = _apply_pp(bgr, pp)
     return cv2.imencode(".png", bgr)[1].tobytes()
+
+
+def render_crop_png(page, box, pp=None, zoom: float = 6.0) -> bytes:
+    """Render one normalized rectangle as a PNG for the settings preview
+    (optionally with the box's trainer adjustments applied)."""
+    import pymupdf
+    x0, y0, x1, y1 = box
+    W, H = page.rect.width, page.rect.height
+    rect = pymupdf.Rect(x0 * W, y0 * H, x1 * W, y1 * H)
+    return _encode_rect_png(page, rect, pp=pp, zoom=zoom)
 
 
 def read_rect(page, box, pp=None) -> tuple[str | None, float]:
@@ -2007,9 +2012,11 @@ def _process_receipt_segment(page, seg: list[dict], zoom: float,
     y0_px, y1_px = _seg_ybounds(seg)
     if rects:
         region = _slip_region_pts(page, y0_px, y1_px, zoom)
-        for name, val in read_receipt_rects(page, region, rects, pp=pp).items():
+        vals, crops = read_receipt_rects(page, region, rects, pp=pp)
+        for name, val in vals.items():
             if val is not None and val != "":
                 rec[name] = val
+        rec["_rc_field_crops"] = crops
     rec["_image_crop_png"] = crop_receipt_png(page, y0_px, y1_px, zoom)
     return rec
 
@@ -2152,13 +2159,16 @@ def _parse_receipt_field(name: str, text: str | None):
     return t or None
 
 
-def read_receipt_rects(page, region_pts, rects, pp=None) -> dict:
+def read_receipt_rects(page, region_pts, rects, pp=None) -> tuple[dict, dict]:
     """OCR each normalized rect (relative to one slip's ``region_pts`` in PDF
-    points) and normalize per receipt field.  Returns {field: value}."""
+    points) and normalize per receipt field.  Returns ``(values, crops)`` where
+    ``values`` maps field -> value and ``crops`` maps field -> PNG bytes of the
+    box (so the records page can show the scan above each value)."""
     import pymupdf
     rx0, ry0, rx1, ry1 = region_pts
     rw, rh = (rx1 - rx0), (ry1 - ry0)
-    out: dict = {}
+    values: dict = {}
+    crops: dict = {}
     for name, box in (rects or {}).items():
         try:
             x0, y0, x1, y1 = box
@@ -2169,8 +2179,9 @@ def read_receipt_rects(page, region_pts, rects, pp=None) -> dict:
         cands = [(_clean(t), s) for t, s in
                  _rec_candidates(page, rect, pp=pp) if _clean(t)]
         raw = max(cands, key=lambda c: c[1])[0] if cands else None
-        out[name] = _parse_receipt_field(name, raw)
-    return out
+        values[name] = _parse_receipt_field(name, raw)
+        crops[name] = _encode_rect_png(page, rect, pp=pp, zoom=4.0)
+    return values, crops
 
 
 def test_receipt_slip(page, k: int, pp=None, zoom: float = 2.0,

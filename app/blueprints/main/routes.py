@@ -187,6 +187,26 @@ def _assign_columns(obj, data: dict) -> None:
             setattr(obj, name, val)
 
 
+# Receipt template-box field -> ReceiptRecord crop-filename column.  Keys match
+# the rc field keys emitted in ``_rc_field_crops``; used to persist and to serve
+# the per-field value-region crops on the records page.
+_RC_CROP_ATTR = {
+    "slip_no": "slip_crop",
+    "receipt_no": "receipt_no_crop",
+    "receipt_date": "date_crop",
+    "vehicle_no": "vehicle_crop",
+    "total_amount": "total_crop",
+    "bank_charges": "charges_crop",
+    "bank_total": "bank_total_crop",
+}
+# Short URL token (used by the receipt_value_crop route) -> crop column.
+_RC_CROP_TOKEN = {
+    "slip": "slip_crop", "receipt": "receipt_no_crop", "date": "date_crop",
+    "vehicle": "vehicle_crop", "total": "total_crop",
+    "charges": "charges_crop", "banktotal": "bank_total_crop",
+}
+
+
 def _delete_cr_crops(app, rec) -> None:
     """Remove the cropped value-region files belonging to a CR record."""
     crop_dir = os.path.join(app.config["CR_BOOK_CROP_DIR"], str(rec.upload_id))
@@ -448,19 +468,27 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         ro.receipt_date = day
                 db.session.commit()
 
-            # Persist each receipt's cropped page region for the image viewer.
+            # Persist each receipt's cropped page region for the image viewer,
+            # plus the per-field value-region crops from the template's boxes.
             if kind == "rc" and rc_pending:
                 crop_dir = os.path.join(
                     app.config["RECEIPT_CROP_DIR"], str(upload_id))
                 os.makedirs(crop_dir, exist_ok=True)
                 for rec_obj, r in rc_pending:
                     png = r.get("_image_crop_png")
-                    if not png:
-                        continue
-                    fn = f"{rec_obj.id}.png"
-                    with open(os.path.join(crop_dir, fn), "wb") as fh:
-                        fh.write(png)
-                    rec_obj.image_crop = fn
+                    if png:
+                        fn = f"{rec_obj.id}.png"
+                        with open(os.path.join(crop_dir, fn), "wb") as fh:
+                            fh.write(png)
+                        rec_obj.image_crop = fn
+                    for field, attr in _RC_CROP_ATTR.items():
+                        fpng = (r.get("_rc_field_crops") or {}).get(field)
+                        if not fpng:
+                            continue
+                        fn = f"{rec_obj.id}_{field}.png"
+                        with open(os.path.join(crop_dir, fn), "wb") as fh:
+                            fh.write(fpng)
+                        setattr(rec_obj, attr, fn)
                 db.session.commit()
 
             up.processed = True
@@ -1091,6 +1119,25 @@ def receipt_image(upload_id: int, record_id: int):
         abort(404)
     crop_dir = os.path.join(current_app.config["RECEIPT_CROP_DIR"], str(upload_id))
     resp = send_from_directory(crop_dir, rec.image_crop)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@main_bp.route("/operations/registration-updater/rc/<int:upload_id>"
+               "/crop/<int:record_id>/<field>")
+@login_required
+def receipt_value_crop(upload_id: int, record_id: int, field: str):
+    """Serve one receipt's per-field value-region crop (from the template box)."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    attr = _RC_CROP_TOKEN.get(field)
+    if not attr:
+        abort(404)
+    rec = db.session.get(ReceiptRecord, record_id) or abort(404)
+    fn = getattr(rec, attr, None)
+    if rec.upload_id != upload_id or not fn:
+        abort(404)
+    crop_dir = os.path.join(current_app.config["RECEIPT_CROP_DIR"], str(upload_id))
+    resp = send_from_directory(crop_dir, fn)
     resp.headers["X-Content-Type-Options"] = "nosniff"
     return resp
 

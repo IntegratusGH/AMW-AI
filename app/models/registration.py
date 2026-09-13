@@ -234,6 +234,15 @@ class ReceiptRecord(db.Model):
     # Filename of the cropped scan of this receipt's region on the source page
     # (shown in the image viewer on the records page).
     image_crop = db.Column(db.String(255), nullable=True)
+    # Filenames of the per-field value-region crops taken from the assigned OCR
+    # template's boxes (shown above each value on the records page).
+    slip_crop = db.Column(db.String(255), nullable=True)
+    receipt_no_crop = db.Column(db.String(255), nullable=True)
+    date_crop = db.Column(db.String(255), nullable=True)
+    vehicle_crop = db.Column(db.String(255), nullable=True)
+    total_crop = db.Column(db.String(255), nullable=True)
+    charges_crop = db.Column(db.String(255), nullable=True)
+    bank_total_crop = db.Column(db.String(255), nullable=True)
 
     is_duplicate = db.Column(db.Boolean, default=False, nullable=False)
     # Set when the Total/Charges/Bank Total figures do not balance (or a value
