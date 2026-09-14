@@ -2267,27 +2267,70 @@ _SLIP_PAD_BELOW_PT = 10.0
 
 def _slip_region_pts(page, y0_px: float, y1_px: float,
                      ocr_zoom: float) -> tuple[float, float, float, float]:
-    """Full-width slip region in PDF points (with standard padding)."""
+    """Full-width slip frame in PDF points (with standard padding).  The bottom
+    is deliberately NOT clamped to the page height: slips are a fixed physical
+    size, so the last slip on a page must keep the same frame height as the rest
+    (the part past the page edge is white-padded at render time).  Clamping it
+    here would shrink the frame and, because boxes are normalized to it, shift
+    every box on that slip upward."""
     y0 = max(0.0, y0_px / ocr_zoom - _SLIP_PAD_ABOVE_PT)
-    y1 = min(page.rect.height, y1_px / ocr_zoom + _SLIP_PAD_BELOW_PT)
+    y1 = y1_px / ocr_zoom + _SLIP_PAD_BELOW_PT
     return 0.0, y0, page.rect.width, y1
+
+
+def _region_bgr_padded(page, region_pts, zoom: float, pp=None,
+                       enh: bool = False):
+    """Render a slip frame to a BGR ndarray of exactly ``((rx1-rx0)*zoom,
+    (ry1-ry0)*zoom)`` px, white-padding any part of the frame that extends past
+    the page edge.  This keeps every slip's frame identical in pixel geometry so
+    normalized boxes (and anchor patches) map 1:1 across slips -- including the
+    last slip whose frame runs off the bottom of the page.  Image adjustments
+    are applied to the rendered content (not the padding) so processing matches
+    a full, unpadded slip."""
+    import cv2
+    import numpy as np
+    import pymupdf
+    rx0, ry0, rx1, ry1 = region_pts
+    tw = max(1, int(round((rx1 - rx0) * zoom)))
+    th = max(1, int(round((ry1 - ry0) * zoom)))
+    canvas = np.full((th, tw, 3), 255, np.uint8)
+    cx0, cy0 = max(rx0, 0.0), max(ry0, 0.0)
+    cx1, cy1 = min(rx1, page.rect.width), min(ry1, page.rect.height)
+    if cx1 > cx0 and cy1 > cy0:
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom),
+                              clip=pymupdf.Rect(cx0, cy0, cx1, cy1))
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+            pix.height, pix.width, pix.n)
+        if pix.n == 4:
+            bgr = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+        elif pix.n == 1:
+            bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        else:
+            bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        if enh:
+            bgr = _normalize_page_bgr(bgr)
+        if pp:
+            bgr = _apply_pp(bgr, pp)
+        oy = int(round((cy0 - ry0) * zoom))
+        ox = int(round((cx0 - rx0) * zoom))
+        h = min(bgr.shape[0], th - oy)
+        w = min(bgr.shape[1], tw - ox)
+        if h > 0 and w > 0:
+            canvas[oy:oy + h, ox:ox + w] = bgr[:h, :w]
+    return canvas
 
 
 def render_slip_png(page, y0_px: float, y1_px: float, ocr_zoom: float,
                     pp=None, disp_zoom: float = 2.0) -> bytes | None:
-    """Render one separated slip's region to a PNG, applying ``pp`` image
-    adjustments (used by the receipts OCR-settings live preview)."""
-    import pymupdf
-    rx0, ry0, rx1, ry1 = _slip_region_pts(page, y0_px, y1_px, ocr_zoom)
-    if ry1 <= ry0:
+    """Render one separated slip's frame to a PNG, applying ``pp`` image
+    adjustments (used by the receipts OCR-settings live preview).  The frame is
+    white-padded past the page edge so its height matches every other slip."""
+    import cv2
+    region = _slip_region_pts(page, y0_px, y1_px, ocr_zoom)
+    if region[3] <= region[1]:
         return None
-    _pp_ctx.pp = pp or None
-    try:
-        pix = page.get_pixmap(matrix=pymupdf.Matrix(disp_zoom, disp_zoom),
-                              clip=pymupdf.Rect(rx0, ry0, rx1, ry1))
-        return _encode_pix_png(pix)
-    finally:
-        _pp_ctx.pp = None
+    bgr = _region_bgr_padded(page, region, disp_zoom, pp=pp, enh=_enh_on())
+    return cv2.imencode(".png", bgr)[1].tobytes()
 
 
 def _parse_receipt_field(name: str, text: str | None):
@@ -2327,20 +2370,12 @@ _ANCHOR_SEARCH_PAD = 0.06  # search-window pad as a fraction of region size
 
 
 def _region_gray(page, region_pts, zoom: float):
-    """Render a slip region to a grayscale ndarray at ``zoom`` (raw, no pp)."""
+    """Render a slip frame to a grayscale ndarray at ``zoom`` (raw, no pp),
+    white-padded past the page edge so the frame's pixel geometry is identical
+    across slips (anchor patch positions stay consistent on the last slip)."""
     import cv2
-    import numpy as np
-    import pymupdf
-    rx0, ry0, rx1, ry1 = region_pts
-    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom),
-                          clip=pymupdf.Rect(rx0, ry0, rx1, ry1))
-    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
-        pix.height, pix.width, pix.n)
-    if pix.n == 4:
-        return cv2.cvtColor(img, cv2.COLOR_RGBA2GRAY)
-    if pix.n == 1:
-        return img[:, :, 0].copy()
-    return cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    return cv2.cvtColor(_region_bgr_padded(page, region_pts, zoom),
+                        cv2.COLOR_BGR2GRAY)
 
 
 def crop_anchor_patch_b64(page, region_pts, box,
