@@ -660,6 +660,9 @@ def registration_updater():
         db.session.add(up)
         record_audit("receipt_uploaded", f"file={name}")
         db.session.commit()
+        # Pre-separate the roll into slips in the background so the OCR-settings
+        # popup opens instantly when the operator gets to it.
+        _start_rc_warm(up.id)
         flash("Receipts uploaded. Click Process to extract records.", "success")
         return redirect(url_for("main.registration_updater", tab="rc"))
 
@@ -1592,11 +1595,32 @@ def cr_ocr_settings(upload_id: int):
 # slip navigation doesn't re-run segmentation on every step.  Keyed by upload
 # id; invalidated when the source file's mtime changes.
 _RC_SLIP_CACHE: dict[int, dict] = {}
+_RC_SLIP_LOCKS: dict[int, threading.Lock] = {}
+_RC_SLIP_LOCKS_GUARD = threading.Lock()
+
+
+def _rc_slip_lock(upload_id: int) -> threading.Lock:
+    """Per-upload lock so a background warm-up and an early popup open never run
+    the (expensive) full-document segmentation twice."""
+    with _RC_SLIP_LOCKS_GUARD:
+        lk = _RC_SLIP_LOCKS.get(upload_id)
+        if lk is None:
+            lk = _RC_SLIP_LOCKS[upload_id] = threading.Lock()
+        return lk
+
+
+def _rc_slip_cache_file(up) -> str:
+    """Slip-index cache path, co-located with the uploaded file so it survives
+    re-processing (which clears the crop dir)."""
+    return f"{up.stored_path}.slips.json"
 
 
 def _rc_slip_index(up) -> list[dict]:
-    """Return the cached slip index for a receipt upload, (re)computing the
-    separation when missing or when the source file has changed."""
+    """Return the slip index for a receipt upload (page + full-page bounds per
+    slip).  Separating the receipt roll requires OCR'ing the whole document,
+    which is slow, so the result is cached in memory and on disk (keyed by the
+    source file's mtime).  The OCR-settings popup therefore pays this cost at
+    most once per file version, even across service restarts."""
     from app.utils import registration_ocr as ocr
     try:
         mtime = os.path.getmtime(up.stored_path)
@@ -1605,9 +1629,48 @@ def _rc_slip_index(up) -> list[dict]:
     cached = _RC_SLIP_CACHE.get(up.id)
     if cached and cached.get("mtime") == mtime:
         return cached["slips"]
-    slips = ocr.segment_document(up.stored_path)
-    _RC_SLIP_CACHE[up.id] = {"mtime": mtime, "slips": slips}
-    return slips
+    cache_file = _rc_slip_cache_file(up)
+    with _rc_slip_lock(up.id):
+        cached = _RC_SLIP_CACHE.get(up.id)  # re-check after acquiring the lock
+        if cached and cached.get("mtime") == mtime:
+            return cached["slips"]
+        try:
+            with open(cache_file, encoding="utf-8") as fh:
+                disk = json.load(fh)
+            if disk.get("mtime") == mtime:
+                _RC_SLIP_CACHE[up.id] = disk
+                return disk["slips"]
+        except (OSError, ValueError):
+            pass
+        slips = ocr.segment_document(up.stored_path)
+        entry = {"mtime": mtime, "slips": slips}
+        _RC_SLIP_CACHE[up.id] = entry
+        try:
+            with open(cache_file, "w", encoding="utf-8") as fh:
+                json.dump(entry, fh)
+        except OSError:
+            pass
+        return slips
+
+
+def _warm_rc_slips(app, upload_id: int) -> None:
+    """Pre-compute the slip index in the background right after upload so the
+    OCR-settings popup is ready by the time the operator opens it."""
+    with app.app_context():
+        up = db.session.get(ReceiptUpload, upload_id)
+        if up is None:
+            return
+        try:
+            _rc_slip_index(up)
+        except Exception:  # pragma: no cover - warm-up is best-effort
+            current_app.logger.exception(
+                "Receipt slip pre-segmentation failed (upload %s)", upload_id)
+
+
+def _start_rc_warm(upload_id: int) -> None:
+    app = current_app._get_current_object()
+    threading.Thread(
+        target=_warm_rc_slips, args=(app, upload_id), daemon=True).start()
 
 
 @main_bp.route("/operations/registration-updater/rc/<int:upload_id>/ocr-init")
@@ -2031,6 +2094,12 @@ def delete_upload(kind: str, upload_id: int):
     if kind not in _DOC_KINDS:
         abort(404)
     up = db.session.get(_DOC_KINDS[kind]["upload_model"], upload_id) or abort(404)
+    if kind == "rc":
+        _RC_SLIP_CACHE.pop(upload_id, None)
+        try:
+            os.remove(_rc_slip_cache_file(up))
+        except OSError:
+            pass
     try:
         if up.stored_path and os.path.exists(up.stored_path):
             os.remove(up.stored_path)
