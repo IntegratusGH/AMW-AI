@@ -1196,12 +1196,28 @@ def _line_from_norm(page, box, full_zoom: float) -> dict:
             "text": "", "score": None, "rect": True}
 
 
-# Render scale for stored value-region crops when pp removes guilloche (FFT).
-# The notch filter only suppresses the periodic pattern at a modest scale; at
-# high zoom the guilloche peak falls inside the protected low-frequency centre
-# and survives.  This zoom keeps crops readable while descreening as cleanly as
-# the low-zoom OCR-settings preview.
-_CROP_DESCREEN_ZOOM = 2.5
+# Rendered short-side pixel cap for stored value-region crops when pp removes
+# guilloche (FFT).  _fft_descreen protects a low-frequency centre whose radius
+# grows with pixel size, so on a wide page a high render zoom pushes the (scale-
+# invariant) guilloche peak inside the protected zone and it survives.  Capping
+# the short side keeps the peak outside the centre while leaving crops readable
+# (validated on letter-size CR pages, where this maps to ~zoom 2.5, matching the
+# clean low-zoom OCR-settings preview).
+_DESCREEN_MAX_PX = 1530
+
+
+def _descreen_zoom(page, base_zoom: float) -> float:
+    """Cap ``base_zoom`` so the FFT guilloche notch stays effective: limit the
+    rendered short side to _DESCREEN_MAX_PX.  Wide pages (CR) are scaled down so
+    the guilloche peak is not swallowed by the protected centre; narrow pages
+    (e.g. receipt rolls) fall under the cap and keep their base zoom/resolution."""
+    try:
+        short_pt = min(float(page.rect.width), float(page.rect.height))
+    except Exception:
+        return base_zoom
+    if short_pt <= 0:
+        return base_zoom
+    return min(base_zoom, _DESCREEN_MAX_PX / short_pt)
 
 
 def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0,
@@ -1314,7 +1330,7 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     # render the page for crops at the descreen-effective zoom so the stored crop
     # matches the preview.
     _crop_pp = _active_pp()
-    _crop_zoom = (_CROP_DESCREEN_ZOOM
+    _crop_zoom = (_descreen_zoom(page, 5.0)
                   if (_crop_pp and _crop_pp.get("fft")) else 5.0)
     _crop_page_bgr = (_page_bgr(page, _crop_pp, _crop_zoom)
                       if (_crop_pp and page is not None) else None)
@@ -2553,7 +2569,7 @@ def read_receipt_rects(page, region_pts, rects, pp=None,
     # is sliced from the same pp-processed image the OCR-settings popup shows.
     # Guilloche removal (FFT) is only effective at a modest render scale, so drop
     # to the descreen zoom when it is enabled (see _CROP_DESCREEN_ZOOM).
-    _crop_zoom = _CROP_DESCREEN_ZOOM if (pp and pp.get("fft")) else 4.0
+    _crop_zoom = _descreen_zoom(page, 4.0) if (pp and pp.get("fft")) else 4.0
     page_bgr = _page_bgr(page, pp, _crop_zoom) if pp else None
     M = calibrate_slip_affine(page, region_pts, anchors) if anchors else None
     cz = _CALIB_ZOOM
