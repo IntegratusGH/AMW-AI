@@ -1927,6 +1927,23 @@ def _seg_ybounds(seg: list[dict]) -> tuple[float, float]:
     return y0_px, y1_px
 
 
+def _seg_bounds_normalized(segs: list[list[dict]]) -> list[tuple[float, float]]:
+    """Per-slip ``(y0_px, y1_px)`` bounds for a page's segments, with the bottom
+    pinned to the median height when there are enough slips.  A slip's cashier
+    footer is occasionally under-detected (most often the last slip on a page),
+    which shrinks that slip's frame; since boxes are normalized to the frame
+    height that would shift every box on the slip upward.  Slips are a fixed
+    physical size, so a uniform height keeps the frame consistent.  This is the
+    single source of truth shared by segment_document (popup), extraction and
+    Test OCR so a box drawn on the preview maps identically at extraction."""
+    bounds = [_seg_ybounds(seg) for seg in segs]
+    if len(bounds) >= 3:
+        import statistics
+        med = statistics.median(y1 - y0 for (y0, y1) in bounds)
+        bounds = [(y0, y0 + med) for (y0, _y1) in bounds]
+    return bounds
+
+
 def _is_real_segment(seg: list[dict]) -> bool:
     """A segment is a real slip only if it carries at least one anchor field."""
     rec = _parse_receipt_segment(seg)
@@ -1941,7 +1958,8 @@ def _real_segments(lines: list[dict]) -> list[list[dict]]:
 
 
 def _process_receipt_segment(page, seg: list[dict], zoom: float,
-                             rects=None, pp=None, anchors=None) -> dict:
+                             rects=None, pp=None, anchors=None,
+                             ybounds=None) -> dict:
     """Parse one receipt segment into a record.
 
     When ``rects`` is given (an assigned template's boxes), extraction is
@@ -1953,7 +1971,9 @@ def _process_receipt_segment(page, seg: list[dict], zoom: float,
     amount formula) are applied."""
     rec = _parse_receipt_segment(seg)
     # crop from the PEOPLE'S header (segment top) to the Cashier footer.
-    y0_px, y1_px = _seg_ybounds(seg)
+    # ``ybounds`` (the median-normalized frame) is used when supplied so the
+    # extracted region matches the popup/segment_document exactly.
+    y0_px, y1_px = ybounds if ybounds is not None else _seg_ybounds(seg)
     if rects:
         region = _slip_region_pts(page, y0_px, y1_px, zoom)
         vals, crops = read_receipt_rects(page, region, rects, pp=pp,
@@ -2000,9 +2020,11 @@ def extract_receipt_page(page, zoom: float = 2.0, pp=None,
     (a cleaned image-adjustment dict) is applied only to the per-box value reads
     within each slip, driven by ``rects`` (field -> normalized box)."""
     lines = _ocr_page(page, zoom)
+    segs = _real_segments(lines)
+    bounds = _seg_bounds_normalized(segs)
     return [_process_receipt_segment(page, seg, zoom, rects=rects, pp=pp,
-                                     anchors=anchors)
-            for seg in _real_segments(lines)]
+                                     anchors=anchors, ybounds=yb)
+            for seg, yb in zip(segs, bounds)]
 
 
 def extract_receipt_records(path: str, zoom: float = 2.0,
@@ -2237,24 +2259,13 @@ def segment_document(path: str, zoom: float = 2.0,
                 lines = _ocr_page(page, zoom)
             finally:
                 _pp_ctx.pp = None
-            for k, seg in enumerate(_real_segments(lines)):
-                y0_px, y1_px = _seg_ybounds(seg)
+            segs = _real_segments(lines)
+            bounds = _seg_bounds_normalized(segs)
+            for k, (y0_px, y1_px) in enumerate(bounds):
                 slips.append({"page": p, "k": k,
                               "y0": y0_px, "y1": y1_px, "zoom": zoom})
     finally:
         doc.close()
-    # Pin every slip to the median detected height.  The per-slip bottom bound
-    # (cashier/footer line) is occasionally under-detected -- most often on the
-    # last slip of a roll -- which shrinks that slip's frame so a single shared
-    # box set (and its calibration anchors) map onto the wrong place.  A uniform
-    # height (slips are a fixed physical size) keeps the frame consistent; the
-    # detected top is stable and kept, and downstream rendering clamps y1 to the
-    # page, so an over-run last slip is simply capped.
-    if len(slips) >= 3:
-        import statistics
-        med_h = statistics.median(s["y1"] - s["y0"] for s in slips)
-        for s in slips:
-            s["y1"] = s["y0"] + med_h
     return slips
 
 
@@ -2562,10 +2573,11 @@ def test_receipt_slip(page, k: int, pp=None, zoom: float = 2.0,
     preview reads the same region here."""
     lines = _ocr_page(page, zoom)
     segs = _real_segments(lines)
+    bounds = _seg_bounds_normalized(segs)
     fields = [{"key": "_count", "label": "Slips on page",
                "value": str(len(segs)), "confidence": None}]
     rec = (_process_receipt_segment(page, segs[k], zoom, rects=rects, pp=pp,
-                                    anchors=anchors)
+                                    anchors=anchors, ybounds=bounds[k])
            if 0 <= k < len(segs) else {})
     for key, label in _RC_TEST_FIELDS:
         v = rec.get(key)
