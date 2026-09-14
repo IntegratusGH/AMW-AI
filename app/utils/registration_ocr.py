@@ -1223,8 +1223,20 @@ def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0,
 
 
 def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
-                   rule_set: str = "oldcrbook", rects: dict | None = None) -> dict:
+                   rule_set: str = "oldcrbook", rects: dict | None = None,
+                   anchors=None) -> dict:
     rec: dict = {}
+    # Anchor calibration (CR is page-granular, so the frame is the full page):
+    # register this page to the reference via the anchor patches and transform
+    # every value box through the resulting similarity transform before reading,
+    # so boxes track the page's actual offset/scale/rotation.
+    if rects and anchors and page is not None:
+        _cz = _CALIB_ZOOM
+        _W, _H = page.rect.width, page.rect.height
+        _M = calibrate_slip_affine(page, (0.0, 0.0, _W, _H), anchors)
+        if _M is not None:
+            rects = {k: _apply_calib_norm(b, _M, _W * _cz, _H * _cz)
+                     for k, b in rects.items()}
     for field, frags in get_rule_set(rule_set)["labels"].items():
         lbl = _find_label(lines, frags, _CR_LABEL_EXCLUDE.get(field))
         if not lbl:
@@ -1472,7 +1484,7 @@ def open_document(path: str):
 
 def extract_cr_page(page, zoom: float = 3.0,
                     rule_set: str = "oldcrbook", pp=None,
-                    rects: dict | None = None) -> dict | None:
+                    rects: dict | None = None, anchors=None) -> dict | None:
     """OCR + parse a single CR-book page (one vehicle).  None if page is blank.
     ``rule_set`` selects the per-format extractor (see CR_RULE_SETS).  ``pp``
     is the upload-level image adjustment applied to the whole page and every
@@ -1484,7 +1496,7 @@ def extract_cr_page(page, zoom: float = 3.0,
         if not lines:
             return None
         return _parse_cr_page(lines, page=page, full_zoom=zoom,
-                              rule_set=rule_set, rects=rects)
+                              rule_set=rule_set, rects=rects, anchors=anchors)
     finally:
         _pp_ctx.pp = None
 
@@ -1583,7 +1595,8 @@ def detect_cr_field_boxes(page, pp=None, zoom: float = 3.0,
 
 
 def test_cr_page(page, pp=None, zoom: float = 3.0,
-                 rule_set: str = "oldcrbook", rects: dict | None = None) -> list[dict]:
+                 rule_set: str = "oldcrbook", rects: dict | None = None,
+                 anchors=None) -> list[dict]:
     """OCR one CR-book page with ``pp`` applied and return the display fields
     (see _CR_TEST_FIELDS) as ``{key,label,value,confidence}`` for the upload
     OCR-settings "Test OCR" button.  When ``rects`` is given each value is read
@@ -1593,7 +1606,8 @@ def test_cr_page(page, pp=None, zoom: float = 3.0,
     try:
         lines = _ocr(_render_page_png(page, zoom))
         rec = (_parse_cr_page(lines, page=page, full_zoom=zoom,
-                              rule_set=rule_set, rects=rects) if lines else {})
+                              rule_set=rule_set, rects=rects,
+                              anchors=anchors) if lines else {})
     finally:
         _pp_ctx.pp = None
     out: list[dict] = []
@@ -2152,7 +2166,8 @@ def extract_page(kind: str, page, *, rule_set: str = "oldcrbook",
     drives per-slip box calibration."""
     if kind == "rc":
         return extract_receipt_page(page, pp=pp, rects=rects, anchors=anchors)
-    rec = extract_cr_page(page, rule_set=rule_set, pp=pp, rects=rects)
+    rec = extract_cr_page(page, rule_set=rule_set, pp=pp, rects=rects,
+                          anchors=anchors)
     return [rec] if rec else []
 
 
@@ -2228,6 +2243,18 @@ def segment_document(path: str, zoom: float = 2.0,
                               "y0": y0_px, "y1": y1_px, "zoom": zoom})
     finally:
         doc.close()
+    # Pin every slip to the median detected height.  The per-slip bottom bound
+    # (cashier/footer line) is occasionally under-detected -- most often on the
+    # last slip of a roll -- which shrinks that slip's frame so a single shared
+    # box set (and its calibration anchors) map onto the wrong place.  A uniform
+    # height (slips are a fixed physical size) keeps the frame consistent; the
+    # detected top is stable and kept, and downstream rendering clamps y1 to the
+    # page, so an over-run last slip is simply capped.
+    if len(slips) >= 3:
+        import statistics
+        med_h = statistics.median(s["y1"] - s["y0"] for s in slips)
+        for s in slips:
+            s["y1"] = s["y0"] + med_h
     return slips
 
 
@@ -2428,6 +2455,20 @@ def calibrate_slip_affine(page, region_pts, anchors,
     M, _ = cv2.estimateAffinePartial2D(
         np.float32(src), np.float32(dst), method=cv2.RANSAC)
     return M
+
+
+def _apply_calib_norm(box, M, rw_px: float, rh_px: float):
+    """Transform a normalized region box ``[x0,y0,x1,y1]`` through a calibration
+    affine ``M`` (region-pixel space) and return a normalized box in the same
+    region.  ``rw_px``/``rh_px`` are the region's pixel size at the zoom M was
+    solved at.  Used by the CR (full-page) calibration path."""
+    import numpy as np
+    x0, y0, x1, y1 = box
+    pts = np.float32([[x0 * rw_px, y0 * rh_px], [x1 * rw_px, y1 * rh_px]])
+    tp = (M[:, :2] @ pts.T).T + M[:, 2]
+    nx0, nx1 = sorted((float(tp[0, 0]) / rw_px, float(tp[1, 0]) / rw_px))
+    ny0, ny1 = sorted((float(tp[0, 1]) / rh_px, float(tp[1, 1]) / rh_px))
+    return [nx0, ny0, nx1, ny1]
 
 
 def read_receipt_rects(page, region_pts, rects, pp=None,

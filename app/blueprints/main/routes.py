@@ -318,7 +318,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         json.loads(tpl.ocr_rects), "rc") or None
                 except (ValueError, TypeError):
                     upload_rects = None
-            if kind == "rc" and tpl and getattr(tpl, "ocr_anchors", None):
+            if tpl and getattr(tpl, "ocr_anchors", None):
                 try:
                     upload_anchors = ocr.clean_anchors(
                         json.loads(tpl.ocr_anchors)) or None
@@ -1478,10 +1478,13 @@ def cr_ocr_test(upload_id: int):
     data = request.get_json(silent=True) or {}
     pp = ocr.clean_pp(data.get("pp"))
     rects = ocr.clean_rects(data.get("rects")) or None
+    anchors = _cr_anchor_patches(
+        up, data.get("ref_slip") or data.get("page") or 1,
+        data.get("anchors")) or None
     doc, total = ocr.open_document(up.stored_path)
     try:
         idx = max(1, min(total, int(data.get("page") or 1))) - 1
-        fields = ocr.test_cr_page(doc[idx], pp=pp, rects=rects)
+        fields = ocr.test_cr_page(doc[idx], pp=pp, rects=rects, anchors=anchors)
     finally:
         doc.close()
     return jsonify({"ok": True, "fields": fields})
@@ -1551,6 +1554,29 @@ def _rc_anchor_patches(up, ref_slip, anchor_boxes) -> list[dict]:
     try:
         page = doc[s["page"]]
         region = ocr._slip_region_pts(page, s["y0"], s["y1"], s["zoom"])
+        return ocr.build_anchor_patches(page, region, boxes)
+    finally:
+        doc.close()
+
+
+def _cr_anchor_patches(up, ref_page, anchor_boxes) -> list[dict]:
+    """Crop image patches for the given normalized anchor boxes from a CR
+    upload's reference page (full-page frame), returning [{box, patch(b64)}].
+    Used by CR Test OCR (live) and the settings save."""
+    from app.utils import registration_ocr as ocr
+    boxes = []
+    for b in (anchor_boxes or []):
+        try:
+            boxes.append([float(v) for v in b][:4])
+        except (TypeError, ValueError):
+            continue
+    if not boxes:
+        return []
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        idx = max(1, min(total, int(ref_page or 1))) - 1
+        page = doc[idx]
+        region = (0.0, 0.0, page.rect.width, page.rect.height)
         return ocr.build_anchor_patches(page, region, boxes)
     finally:
         doc.close()
@@ -1652,13 +1678,16 @@ def cr_ocr_settings(upload_id: int):
         return jsonify({"ok": False, "error": "Template not found."}), 400
     pp = ocr.clean_pp(data.get("pp"))
     rects = ocr.clean_rects(data.get("rects"))
+    anchors = ocr.clean_anchors(_cr_anchor_patches(
+        up, data.get("ref_slip") or 1, data.get("anchors")))
     tpl.ocr_pp = json.dumps(pp) if pp else None
     tpl.ocr_rects = json.dumps(rects) if rects else None
+    tpl.ocr_anchors = json.dumps(anchors) if anchors else None
     up.template_id = tpl.id
     db.session.commit()
     record_audit("cr_ocr_settings",
                  f"upload_id={upload_id} template_id={tpl.id} "
-                 f"pp={sorted(pp)} rects={sorted(rects)}")
+                 f"pp={sorted(pp)} rects={sorted(rects)} anchors={len(anchors)}")
     started = False
     if bool(data.get("reprocess")) and up.status != STATUS_PROCESSING \
             and up.review_status == REVIEW_READY:

@@ -325,9 +325,9 @@
           move, drag a corner to resize. Boxes are cropped &amp; OCR'd per field.</p>
         <p class="muted" data-ocr-anchor-hint
            style="font-size:.78rem;margin:2px 0 0;display:none;">Place up to 3
-          anchors on fixed, always-printed marks (e.g. a header word). Every slip
-          is aligned to these before its value boxes are read. This slip is the
-          reference.</p>
+          anchors on fixed, always-printed marks (e.g. a header word). Every
+          page/slip is aligned to these before its value boxes are read. The
+          current page/slip is the reference.</p>
         <div class="ocr-results" data-ocr-results hidden></div>
       </div>
       <div class="tmpl-settings">
@@ -446,9 +446,7 @@
     FIELDS = (kind === 'rc') ? FIELDS_RC : FIELDS_CR;
     if (detectBtn) detectBtn.style.display = (kind === 'rc') ? 'none' : '';
     if (hintEl) hintEl.style.display = '';
-    if (anchorToggleBtn)
-      anchorToggleBtn.style.display = (kind === 'rc') ? '' : 'none';
-    if (kind !== 'rc') anchorMode = false;
+    if (anchorToggleBtn) anchorToggleBtn.style.display = '';
   }
   function neutralFor(k) { if (k === 'gamma') return 1; if (k === 'colorkeep_v') return 130; return 0; }
   function collectPp() {
@@ -666,12 +664,11 @@
   function updateAnchorUi() {
     if (anchorToggleBtn) anchorToggleBtn.classList.toggle('is-on', anchorMode);
     if (anchorAddBtn) {
-      anchorAddBtn.style.display = (kind === 'rc' && anchorMode) ? '' : 'none';
+      anchorAddBtn.style.display = anchorMode ? '' : 'none';
       anchorAddBtn.disabled = anchors.length >= 3;
     }
     if (anchorHint) anchorHint.style.display = anchorMode ? '' : 'none';
-    if (hintEl) hintEl.style.display =
-      (kind === 'rc' && anchorMode) ? 'none' : '';
+    if (hintEl) hintEl.style.display = anchorMode ? 'none' : '';
   }
   function renderRects() {
     overlay.innerHTML = '';
@@ -743,7 +740,7 @@
     setControls(pp);
     rects = (t && t.rects) ? JSON.parse(JSON.stringify(t.rects)) : {};
     if (kind === 'rc' && !Object.keys(rects).length) rects = defaultRects();
-    anchors = (kind === 'rc' && t && t.anchors)
+    anchors = (t && t.anchors)
       ? JSON.parse(JSON.stringify(t.anchors)) : [];
     anchorRefSlip = 1;
     renderRects();
