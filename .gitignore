@@ -38,3 +38,4 @@ scripts/sql/
 # Sample scanned documents (contain real vehicle-registration PII)
 SampleCRBook/
 SampleCS-Receipt/
+_*.py
