@@ -1927,14 +1927,12 @@ def _process_receipt_segment(page, seg: list[dict], zoom: float,
 
 def extract_receipt_page(page, zoom: float = 2.0, pp=None,
                          rects=None) -> list[dict]:
-    """OCR + parse one receipts page into its deposit-slip records.  ``pp`` is a
-    cleaned image-adjustment dict applied while rendering the page for OCR;
-    ``rects`` (field -> normalized box within a slip) drives box-based reads."""
-    _pp_ctx.pp = pp or None
-    try:
-        lines = _ocr_page(page, zoom)
-    finally:
-        _pp_ctx.pp = None
+    """OCR + parse one receipts page into its deposit-slip records.  Slip
+    detection and label anchoring run on the RAW page so segmentation matches
+    the OCR-settings popup (segment_document) and any drawn boxes align; ``pp``
+    (a cleaned image-adjustment dict) is applied only to the per-box value reads
+    within each slip, driven by ``rects`` (field -> normalized box)."""
+    lines = _ocr_page(page, zoom)
     return [_process_receipt_segment(page, seg, zoom, rects=rects, pp=pp)
             for seg in _real_segments(lines)]
 
