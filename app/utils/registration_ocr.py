@@ -97,9 +97,12 @@ def _active_pp():
     return getattr(_pp_ctx, "pp", None)
 
 
-def render_page_png(page, pp=None, zoom: float = 2.0) -> bytes:
-    """Render a full page as PNG with an explicit ``pp`` applied (used by the
-    CR upload OCR-settings preview).  ``pp`` is a cleaned adjustment dict."""
+def _page_bgr(page, pp=None, zoom: float = 2.0):
+    """Render a full page to a BGR image with ``pp`` applied.  Single source of
+    truth for the pp pipeline so the OCR-settings preview and the persisted
+    value-region crops are produced identically (the crops are sliced out of
+    this full-page render so page-adaptive steps -- Otsu/autocontrast/removebg
+    -- see the whole page, exactly as the popup does)."""
     import cv2
     import numpy as np
     import pymupdf
@@ -114,7 +117,29 @@ def render_page_png(page, pp=None, zoom: float = 2.0) -> bytes:
         bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     if pp:
         bgr = _apply_pp(bgr, pp)
-    return cv2.imencode(".png", bgr)[1].tobytes()
+    return bgr
+
+
+def _slice_png(page_bgr, rect, zoom: float):
+    """Slice a PDF-point ``rect`` out of a page BGR rendered at ``zoom`` and
+    encode it as PNG bytes (clamped to the image bounds).  Returns None when the
+    region is empty."""
+    import cv2
+    h, w = page_bgr.shape[:2]
+    x0 = max(0, min(w, int(round(rect.x0 * zoom))))
+    y0 = max(0, min(h, int(round(rect.y0 * zoom))))
+    x1 = max(0, min(w, int(round(rect.x1 * zoom))))
+    y1 = max(0, min(h, int(round(rect.y1 * zoom))))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return cv2.imencode(".png", page_bgr[y0:y1, x0:x1])[1].tobytes()
+
+
+def render_page_png(page, pp=None, zoom: float = 2.0) -> bytes:
+    """Render a full page as PNG with an explicit ``pp`` applied (used by the
+    CR upload OCR-settings preview).  ``pp`` is a cleaned adjustment dict."""
+    import cv2
+    return cv2.imencode(".png", _page_bgr(page, pp, zoom))[1].tobytes()
 
 
 def _encode_pix_png(pix) -> bytes:
@@ -1171,10 +1196,14 @@ def _line_from_norm(page, box, full_zoom: float) -> dict:
             "text": "", "score": None, "rect": True}
 
 
-def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0):
+def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0,
+                   page_bgr=None):
     """Render just a field's value region to a PNG (bytes) for display beside the
     captured text.  ``line`` is the OCR value line (coords in ``full_zoom``
-    pixel space); a little padding keeps the value fully visible.  Returns
+    pixel space); a little padding keeps the value fully visible.  When
+    ``page_bgr`` (a full page rendered with the upload's pp at ``disp_zoom``) is
+    given, the region is sliced out of it so the stored crop matches the
+    OCR-settings popup; otherwise the raw page region is rendered.  Returns
     ``None`` when the region is unavailable."""
     if page is None or line is None:
         return None
@@ -1187,6 +1216,8 @@ def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0):
         rect = pymupdf.Rect(
             line["x0"] / full_zoom - 6, line["y0"] / full_zoom - 4,
             line["x1"] / full_zoom + 18, line["y1"] / full_zoom + 4)
+    if page_bgr is not None:
+        return _slice_png(page_bgr, rect, disp_zoom)
     pix = page.get_pixmap(matrix=pymupdf.Matrix(disp_zoom, disp_zoom), clip=rect)
     return pix.tobytes("png")
 
@@ -1254,6 +1285,11 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     # multi-scale recognition-only OCR + character voting, correcting the
     # digit/letter confusions (5<->S, 8<->B, I->1, O->0, ...) the single
     # full-page pass makes.
+    # When an upload pp is active, render the whole page once with it so each
+    # value crop is sliced from the same pp-processed image the popup shows.
+    _crop_pp = _active_pp()
+    _crop_page_bgr = (_page_bgr(page, _crop_pp, 5.0)
+                      if (_crop_pp and page is not None) else None)
     if rects and rects.get("chassis_no") and page is not None:
         ch_line = _line_from_norm(page, rects["chassis_no"], full_zoom)
         ch_fb, ch_rect = None, True   # box-only: no label fallback
@@ -1269,7 +1305,8 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
         rec["chassis_no"] = ch_val
     rec["chassis_no_confidence"] = ch_conf
     rec["_chassis_cands"] = ch_cands
-    rec["_chassis_crop_png"] = crop_value_png(page, ch_line, full_zoom)
+    rec["_chassis_crop_png"] = crop_value_png(page, ch_line, full_zoom,
+                                              page_bgr=_crop_page_bgr)
 
     if rects and rects.get("registration_no") and page is not None:
         rg_line = _line_from_norm(page, rects["registration_no"], full_zoom)
@@ -1286,7 +1323,8 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     if rg_val or rg_rect:
         rec["registration_no"] = rg_val
     rec["registration_no_confidence"] = rg_conf
-    rec["_reg_crop_png"] = crop_value_png(page, rg_line, full_zoom)
+    rec["_reg_crop_png"] = crop_value_png(page, rg_line, full_zoom,
+                                          page_bgr=_crop_page_bgr)
 
     if rects and rects.get("engine_no") and page is not None:
         en_line = _line_from_norm(page, rects["engine_no"], full_zoom)
@@ -1303,7 +1341,8 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
         rec["engine_no"] = en_val
     rec["engine_no_confidence"] = en_conf
     rec["_engine_cands"] = en_cands
-    rec["_engine_crop_png"] = crop_value_png(page, en_line, full_zoom)
+    rec["_engine_crop_png"] = crop_value_png(page, en_line, full_zoom,
+                                             page_bgr=_crop_page_bgr)
 
     rec["needs_review"] = bool(_chassis_review(rec.get("chassis_no"), ch_conf)
                                or _reg_review(rec.get("registration_no"), rg_conf)
@@ -2253,6 +2292,9 @@ def read_receipt_rects(page, region_pts, rects, pp=None) -> tuple[dict, dict]:
     rw, rh = (rx1 - rx0), (ry1 - ry0)
     values: dict = {}
     crops: dict = {}
+    # When a pp is active, render the whole page once with it so each field crop
+    # is sliced from the same pp-processed image the OCR-settings popup shows.
+    page_bgr = _page_bgr(page, pp, 4.0) if pp else None
     for name, box in (rects or {}).items():
         try:
             x0, y0, x1, y1 = box
@@ -2264,9 +2306,10 @@ def read_receipt_rects(page, region_pts, rects, pp=None) -> tuple[dict, dict]:
                  _rec_candidates(page, rect, pp=pp) if _clean(t)]
         raw = max(cands, key=lambda c: c[1])[0] if cands else None
         values[name] = _parse_receipt_field(name, raw)
-        # Crop the RAW box (no pp) so the operator verifies the extracted value
-        # against the actual scan, not the preprocessed image the OCR consumed.
-        crops[name] = _encode_rect_png(page, rect, pp=None, zoom=4.0)
+        # Slice the crop from the pp-processed page (matching the popup) when a
+        # pp is set; otherwise render the raw box (the true scan).
+        crops[name] = (_slice_png(page_bgr, rect, 4.0) if page_bgr is not None
+                       else _encode_rect_png(page, rect, pp=None, zoom=4.0))
     return values, crops
 
 
