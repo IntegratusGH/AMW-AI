@@ -331,6 +331,16 @@
         <div class="ocr-results" data-ocr-results hidden></div>
       </div>
       <div class="tmpl-settings">
+        <div class="tabs ocr-tabs" data-tabs>
+          <div class="tab-bar" role="tablist">
+            <button class="tab-btn is-active" type="button" role="tab"
+                    data-tab-target="ocr-tab-image">Image setting</button>
+            <button class="tab-btn" type="button" role="tab"
+                    data-tab-target="ocr-tab-field">Field setting</button>
+            <button class="tab-btn" type="button" role="tab"
+                    data-tab-target="ocr-tab-position">Position setting</button>
+          </div>
+          <section class="tab-panel is-active" id="ocr-tab-image" role="tabpanel">
         <label class="tmpl-slider">Brightness <span data-out="brightness">0</span>
           <input type="range" data-pp="brightness" min="-100" max="100" step="1" value="0"></label>
         <label class="tmpl-slider">Contrast <span data-out="contrast">0</span>
@@ -363,6 +373,14 @@
         <label class="tmpl-slider" data-thval-wrap hidden>Threshold value
           <span data-out="thval">128</span>
           <input type="range" data-thval min="0" max="255" step="1" value="128"></label>
+          </section>
+          <section class="tab-panel" id="ocr-tab-field" role="tabpanel">
+            <p class="muted ocr-tab-placeholder">Field settings will appear here.</p>
+          </section>
+          <section class="tab-panel" id="ocr-tab-position" role="tabpanel">
+            <p class="muted ocr-tab-placeholder">Position settings will appear here.</p>
+          </section>
+        </div>
       </div>
     </div>
     <div class="tmpl-modal__foot">

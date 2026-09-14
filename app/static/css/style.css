@@ -588,6 +588,10 @@ select.input { appearance: auto; }
 .tmpl-slider select { padding: 6px 8px; border: 1px solid var(--border);
   border-radius: var(--radius-sm); background: var(--surface); color: var(--text); }
 .tmpl-checks { display: flex; flex-wrap: wrap; gap: 12px; }
+.ocr-tabs .tab-bar { margin-bottom: 12px; }
+.ocr-tabs .tab-btn { padding: 8px 12px; font-size: 13px; }
+.tmpl-settings .tab-panel.is-active { display: flex; flex-direction: column; gap: 10px; }
+.ocr-tab-placeholder { font-size: .85rem; padding: 8px 0; }
 .tmpl-check { display: inline-flex; align-items: center; gap: 6px;
   font-size: .85rem; color: var(--text); }
 .tmpl-modal__panel--wide { width: min(980px, 94vw); }
