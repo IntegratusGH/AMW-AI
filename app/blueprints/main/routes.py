@@ -292,6 +292,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             page_rules: dict[int, str] = {}
             upload_pp = None
             upload_rects = None
+            upload_anchors = None
             # Extraction is driven by the upload's assigned OCR template: image
             # settings for both kinds, plus value boxes for CR.  No template =>
             # default extraction.
@@ -317,6 +318,12 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         json.loads(tpl.ocr_rects), "rc") or None
                 except (ValueError, TypeError):
                     upload_rects = None
+            if kind == "rc" and tpl and getattr(tpl, "ocr_anchors", None):
+                try:
+                    upload_anchors = ocr.clean_anchors(
+                        json.loads(tpl.ocr_anchors)) or None
+                except (ValueError, TypeError):
+                    upload_anchors = None
             try:
                 for i in range(total):
                     # Unified per-page extractor dispatch (region strategy):
@@ -324,7 +331,8 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                     page_recs = ocr.extract_page(
                         kind, doc[i],
                         rule_set=page_rules.get(i + 1, "oldcrbook"),
-                        pp=upload_pp, rects=upload_rects)
+                        pp=upload_pp, rects=upload_rects,
+                        anchors=upload_anchors)
                     if kind == "cr":
                         for r in page_recs:
                             r["page_no"] = i + 1
@@ -1511,8 +1519,41 @@ def _tpl_json(t: "OcrTemplate") -> dict:
                  if t.ocr_rects else {})
     except (ValueError, TypeError):
         rects = {}
+    try:
+        anchors = (ocr.clean_anchors(json.loads(t.ocr_anchors))
+                   if getattr(t, "ocr_anchors", None) else [])
+    except (ValueError, TypeError):
+        anchors = []
     return {"id": t.id, "name": t.name, "kind": t.kind or "cr",
-            "pp": pp, "rects": rects}
+            "pp": pp, "rects": rects,
+            "anchors": [a["box"] for a in anchors]}
+
+
+def _rc_anchor_patches(up, ref_slip, anchor_boxes) -> list[dict]:
+    """Crop image patches for the given normalized anchor boxes from a receipt
+    upload's reference slip, returning [{box, patch(b64)}] for storage/matching.
+    Used by receipt Test OCR (live) and the settings save."""
+    from app.utils import registration_ocr as ocr
+    boxes = []
+    for b in (anchor_boxes or []):
+        try:
+            boxes.append([float(v) for v in b][:4])
+        except (TypeError, ValueError):
+            continue
+    if not boxes:
+        return []
+    slips = _rc_slip_index(up)
+    idx = int(ref_slip or 1) - 1
+    if not (0 <= idx < len(slips)):
+        return []
+    s = slips[idx]
+    doc, _ = ocr.open_document(up.stored_path)
+    try:
+        page = doc[s["page"]]
+        region = ocr._slip_region_pts(page, s["y0"], s["y1"], s["zoom"])
+        return ocr.build_anchor_patches(page, region, boxes)
+    finally:
+        doc.close()
 
 
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-init")
@@ -1777,12 +1818,17 @@ def rc_ocr_test(upload_id: int):
     rects = ocr.clean_rects(data.get("rects"), "rc")
     slips = _rc_slip_index(up)
     idx = int(data.get("slip") or 1) - 1
+    # Live calibration: crop anchor patches from the popup's reference slip so
+    # Test OCR on any slip reflects the same per-slip registration extraction
+    # will use.
+    anchors = _rc_anchor_patches(
+        up, data.get("ref_slip") or 1, data.get("anchors")) or None
     doc, total = ocr.open_document(up.stored_path)
     try:
         if 0 <= idx < len(slips):
             s = slips[idx]
             fields = ocr.test_receipt_slip(doc[s["page"]], s["k"],
-                                           pp=pp, rects=rects)
+                                           pp=pp, rects=rects, anchors=anchors)
         else:
             fields = ocr.test_receipt_page(doc[0], pp=pp)
     finally:
@@ -1809,12 +1855,16 @@ def rc_ocr_settings(upload_id: int):
         return jsonify({"ok": False, "error": "Template not found."}), 400
     pp = ocr.clean_pp(data.get("pp"))
     rects = ocr.clean_rects(data.get("rects"), "rc")
+    anchors = ocr.clean_anchors(_rc_anchor_patches(
+        up, data.get("ref_slip") or 1, data.get("anchors")))
     tpl.ocr_pp = json.dumps(pp) if pp else None
     tpl.ocr_rects = json.dumps(rects) if rects else None
+    tpl.ocr_anchors = json.dumps(anchors) if anchors else None
     up.template_id = tpl.id
     db.session.commit()
     record_audit("rc_ocr_settings",
-                 f"upload_id={upload_id} template_id={tpl.id} pp={sorted(pp)}")
+                 f"upload_id={upload_id} template_id={tpl.id} "
+                 f"pp={sorted(pp)} anchors={len(anchors)}")
     started = False
     if bool(data.get("reprocess")) and up.status != STATUS_PROCESSING:
         up.status = STATUS_PROCESSING

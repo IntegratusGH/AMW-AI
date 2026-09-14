@@ -308,6 +308,12 @@
           <button type="button" class="btn btn-sm" data-ocr-zoom="fit" title="Fit">Fit</button>
           <button type="button" class="btn btn-sm" data-ocr-detect
                   title="Auto-detect value positions">Detect positions</button>
+          <button type="button" class="btn btn-sm" data-ocr-anchor-toggle
+                  title="Define calibration anchors (receipts)"
+                  style="display:none;">Anchors</button>
+          <button type="button" class="btn btn-sm" data-ocr-anchor-add
+                  title="Add a calibration anchor"
+                  style="display:none;">+ anchor</button>
         </div>
         <div class="ocr-viewport" data-ocr-viewport>
           <div class="ocr-stage" data-ocr-stage>
@@ -317,6 +323,11 @@
         </div>
         <p class="muted" data-ocr-hint style="font-size:.78rem;margin:2px 0 0;">Drag boxes to
           move, drag a corner to resize. Boxes are cropped &amp; OCR'd per field.</p>
+        <p class="muted" data-ocr-anchor-hint
+           style="font-size:.78rem;margin:2px 0 0;display:none;">Place up to 3
+          anchors on fixed, always-printed marks (e.g. a header word). Every slip
+          is aligned to these before its value boxes are read. This slip is the
+          reference.</p>
         <div class="ocr-results" data-ocr-results hidden></div>
       </div>
       <div class="tmpl-settings">
@@ -395,6 +406,9 @@
   var overlay = modal.querySelector('[data-ocr-overlay]');
   var zoomLabel = modal.querySelector('[data-ocr-zoomlabel]');
   var detectBtn = modal.querySelector('[data-ocr-detect]');
+  var anchorToggleBtn = modal.querySelector('[data-ocr-anchor-toggle]');
+  var anchorAddBtn = modal.querySelector('[data-ocr-anchor-add]');
+  var anchorHint = modal.querySelector('[data-ocr-anchor-hint]');
   var tplSelect = modal.querySelector('[data-ocr-tpl]');
   var tplSaveBtn = modal.querySelector('[data-ocr-tpl-save]');
   var tplAddBtn = modal.querySelector('[data-ocr-tpl-add]');
@@ -421,6 +435,7 @@
   var rects = {}, zoom = 1;
   var templates = [], selectedId = null, currentPage = 1, totalPages = 1;
   var slipPages = [];
+  var anchors = [], anchorMode = false, anchorRefSlip = 1;
   var uid = null, timer = null;
   function url(tpl) { return tpl.replace(/\/0\//, '/' + uid + '/'); }
   function setKind(k) {
@@ -429,8 +444,11 @@
     PREVIEW_TPL = u.preview; SAVE_TPL = u.save; TEST_TPL = u.test;
     BOXES_TPL = u.boxes; INIT_TPL = u.init;
     FIELDS = (kind === 'rc') ? FIELDS_RC : FIELDS_CR;
-    if (detectBtn) detectBtn.style.display = '';
+    if (detectBtn) detectBtn.style.display = (kind === 'rc') ? 'none' : '';
     if (hintEl) hintEl.style.display = '';
+    if (anchorToggleBtn)
+      anchorToggleBtn.style.display = (kind === 'rc') ? '' : 'none';
+    if (kind !== 'rc') anchorMode = false;
   }
   function neutralFor(k) { if (k === 'gamma') return 1; if (k === 'colorkeep_v') return 130; return 0; }
   function collectPp() {
@@ -518,7 +536,7 @@
     fetch(url(TEST_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), page: currentPage, slip: currentPage })
+      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), page: currentPage, slip: currentPage, anchors: collectAnchors(), ref_slip: anchorRefSlip })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         testBtn.disabled = false;
@@ -562,11 +580,11 @@
     box.style.width = ((r[2] - r[0]) * 100) + '%';
     box.style.height = ((r[3] - r[1]) * 100) + '%';
   }
-  function wireBox(box, key) {
+  function wireDrag(box, getR, setR) {
     box.addEventListener('pointerdown', function (e) {
       var handle = e.target.getAttribute && e.target.getAttribute('data-h');
       e.preventDefault(); e.stopPropagation();
-      var r0 = rects[key].slice();
+      var r0 = getR().slice();
       var sb = stage.getBoundingClientRect();
       var sx = e.clientX, sy = e.clientY;
       function move(ev) {
@@ -582,8 +600,8 @@
           if (r[2] < r[0] + 0.01) r[2] = r[0] + 0.01;
           if (r[3] < r[1] + 0.01) r[3] = r[1] + 0.01;
         }
-        rects[key] = clampRect(r);
-        positionBox(box, rects[key]);
+        setR(clampRect(r));
+        positionBox(box, getR());
       }
       function up() {
         document.removeEventListener('pointermove', move);
@@ -593,8 +611,23 @@
       document.addEventListener('pointerup', up);
     });
   }
-  function renderRects() {
-    overlay.innerHTML = '';
+  function wireBox(box, key) {
+    wireDrag(box, function () { return rects[key]; },
+             function (r) { rects[key] = r; });
+  }
+  function wireAnchor(box, i) {
+    wireDrag(box, function () { return anchors[i]; },
+             function (r) { anchors[i] = r; anchorRefSlip = currentPage; });
+  }
+  function addHandles(box) {
+    ['nw', 'ne', 'sw', 'se'].forEach(function (h) {
+      var hd = document.createElement('span');
+      hd.className = 'ocr-rect__h ocr-rect__h--' + h;
+      hd.setAttribute('data-h', h);
+      box.appendChild(hd);
+    });
+  }
+  function renderFields() {
     FIELDS.forEach(function (f) {
       var key = f[0], r = rects[key];
       if (!r) return;
@@ -604,14 +637,50 @@
       var lab = document.createElement('span');
       lab.className = 'ocr-rect__label'; lab.textContent = f[1];
       box.appendChild(lab);
-      ['nw', 'ne', 'sw', 'se'].forEach(function (h) {
-        var hd = document.createElement('span');
-        hd.className = 'ocr-rect__h ocr-rect__h--' + h;
-        hd.setAttribute('data-h', h);
-        box.appendChild(hd);
-      });
+      addHandles(box);
       overlay.appendChild(box);
       wireBox(box, key);
+    });
+  }
+  function renderAnchors() {
+    anchors.forEach(function (r, i) {
+      var box = document.createElement('div');
+      box.className = 'ocr-rect ocr-anchor';
+      positionBox(box, r);
+      var lab = document.createElement('span');
+      lab.className = 'ocr-rect__label'; lab.textContent = 'Anchor ' + (i + 1);
+      box.appendChild(lab);
+      var del = document.createElement('span');
+      del.className = 'ocr-anchor__del'; del.textContent = '\u00d7';
+      del.title = 'Remove anchor';
+      del.addEventListener('pointerdown', function (e) {
+        e.stopPropagation(); e.preventDefault();
+        anchors.splice(i, 1); anchorRefSlip = currentPage; renderRects();
+      });
+      box.appendChild(del);
+      addHandles(box);
+      overlay.appendChild(box);
+      wireAnchor(box, i);
+    });
+  }
+  function updateAnchorUi() {
+    if (anchorToggleBtn) anchorToggleBtn.classList.toggle('is-on', anchorMode);
+    if (anchorAddBtn) {
+      anchorAddBtn.style.display = (kind === 'rc' && anchorMode) ? '' : 'none';
+      anchorAddBtn.disabled = anchors.length >= 3;
+    }
+    if (anchorHint) anchorHint.style.display = anchorMode ? '' : 'none';
+    if (hintEl) hintEl.style.display =
+      (kind === 'rc' && anchorMode) ? 'none' : '';
+  }
+  function renderRects() {
+    overlay.innerHTML = '';
+    if (anchorMode) renderAnchors(); else renderFields();
+    updateAnchorUi();
+  }
+  function collectAnchors() {
+    return anchors.map(function (r) {
+      return [round4(r[0]), round4(r[1]), round4(r[2]), round4(r[3])];
     });
   }
   function loadBoxes() {
@@ -640,6 +709,15 @@
     });
   });
   detectBtn && detectBtn.addEventListener('click', loadBoxes);
+  anchorToggleBtn && anchorToggleBtn.addEventListener('click', function () {
+    anchorMode = !anchorMode; renderRects();
+  });
+  anchorAddBtn && anchorAddBtn.addEventListener('click', function () {
+    if (anchors.length >= 3) return;
+    var y = 0.10 + anchors.length * 0.12;
+    anchors.push(clampRect([0.35, y, 0.65, y + 0.06]));
+    anchorRefSlip = currentPage; renderRects();
+  });
   function tplUpdUrl(id) { return TPLUPD_TPL.replace(/\/0$/, '/' + id); }
   function tplIndex(id) { for (var i = 0; i < templates.length; i++) { if (templates[i].id === id) return i; } return -1; }
   function findTpl(id) { var i = tplIndex(id); return i > -1 ? templates[i] : null; }
@@ -665,6 +743,9 @@
     setControls(pp);
     rects = (t && t.rects) ? JSON.parse(JSON.stringify(t.rects)) : {};
     if (kind === 'rc' && !Object.keys(rects).length) rects = defaultRects();
+    anchors = (kind === 'rc' && t && t.anchors)
+      ? JSON.parse(JSON.stringify(t.anchors)) : [];
+    anchorRefSlip = 1;
     renderRects();
     loadPreview();
     var ns = Object.keys(pp).length, nb = Object.keys(rects).length;
@@ -721,7 +802,8 @@
     uid = u; currentPage = 1; totalPages = 1; setPageLabel();
     results.hidden = true; results.innerHTML = '';
     if (tplNewWrap) tplNewWrap.hidden = true;
-    setZoom(1); overlay.innerHTML = ''; rects = {}; slipPages = []; setControls({});
+    setZoom(1); overlay.innerHTML = ''; rects = {}; slipPages = [];
+    anchors = []; anchorMode = false; anchorRefSlip = 1; setControls({});
     modal.hidden = false;
     setStatus('Loading\u2026');
     fetch(url(INIT_TPL), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -765,7 +847,7 @@
     fetch(url(SAVE_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ template_id: selectedId, pp: collectPp(), rects: collectRects(), reprocess: !!(reproc && reproc.checked) })
+      body: JSON.stringify({ template_id: selectedId, pp: collectPp(), rects: collectRects(), reprocess: !!(reproc && reproc.checked), anchors: collectAnchors(), ref_slip: anchorRefSlip })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         saveBtn.disabled = false;

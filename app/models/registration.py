@@ -416,6 +416,12 @@ class OcrTemplate(db.Model):
     ocr_pp = db.Column(db.Text, nullable=True)
     # JSON: field -> [x0,y0,x1,y1] normalized value-region rectangles.
     ocr_rects = db.Column(db.Text, nullable=True)
+    # JSON (receipts): up to 3 calibration anchors --
+    # [{"box":[x0,y0,x1,y1], "patch":"<base64 png>"}].  Each is a small image
+    # patch captured from a reference slip at a fixed, always-printed spot; at
+    # extraction every slip is registered to the reference via these anchors so
+    # the value boxes track its actual offset/scale.
+    ocr_anchors = db.Column(db.Text, nullable=True)
     # JSON: ordered list of this template's own field definitions --
     # [{"key","label","type","role","box":[x0,y0,x1,y1]|null,"pp":{...}|null}].
     # Supersedes the fixed per-kind field lists so each template carries its own

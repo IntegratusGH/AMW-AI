@@ -624,6 +624,15 @@ select.input { appearance: auto; }
 .ocr-rect__h--ne { right: -6px; top: -6px; cursor: nesw-resize; }
 .ocr-rect__h--sw { left: -6px; bottom: -6px; cursor: nesw-resize; }
 .ocr-rect__h--se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.ocr-anchor { border-color: #d97706; background: rgba(217, 119, 6, .12); }
+.ocr-anchor .ocr-rect__label { background: #d97706; }
+.ocr-anchor .ocr-rect__h { border-color: #d97706; }
+.ocr-anchor__del { position: absolute; top: -15px; right: -2px; width: 15px;
+  height: 14px; line-height: 13px; text-align: center; font-size: 12px;
+  background: #b91c1c; color: #fff; border-radius: 3px; cursor: pointer;
+  pointer-events: auto; }
+.ocr-toolbar .btn-sm.is-on { background: #d97706; color: #fff;
+  border-color: #d97706; }
 .ocr-results table { width: 100%; border-collapse: collapse; font-size: .82rem; }
 .ocr-results th, .ocr-results td { text-align: left; padding: 4px 8px;
   border-bottom: 1px solid var(--border); vertical-align: top; }
