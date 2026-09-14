@@ -1888,13 +1888,34 @@ def _real_segments(lines: list[dict]) -> list[list[dict]]:
 
 def _process_receipt_segment(page, seg: list[dict], zoom: float,
                              rects=None, pp=None) -> dict:
-    """Parse + refine one receipt segment into a record (vehicle/amount
-    refinement and the per-slip display crop).  When ``rects`` is given, each
-    field's normalized box (relative to this slip) is cropped and OCR'd,
-    overriding the label-anchored value when it reads.  No post-OCR rules
-    (sequential numbering, batch date, amount formula) are applied."""
+    """Parse one receipt segment into a record.
+
+    When ``rects`` is given (an assigned template's boxes), extraction is
+    strictly box-driven: every displayed field comes from its own box (and its
+    shown crop is that same box), while fields without a box are left empty --
+    so the table reflects exactly the template's cropped reads.  With no boxes,
+    fall back to full auto extraction (label anchoring + multi-scale vehicle /
+    amount refinement).  No post-OCR rules (sequential numbering, batch date,
+    amount formula) are applied."""
     rec = _parse_receipt_segment(seg)
-    # refine the vehicle number with multi-scale recognition OCR + voting.
+    # crop from the PEOPLE'S header (segment top) to the Cashier footer.
+    y0_px, y1_px = _seg_ybounds(seg)
+    if rects:
+        region = _slip_region_pts(page, y0_px, y1_px, zoom)
+        vals, crops = read_receipt_rects(page, region, rects, pp=pp)
+        # Populate boxed fields from their box; clear every other extractable
+        # field so nothing outside the template leaks in from label anchoring.
+        for f in _RC_BOX_FIELDS:
+            rec[f] = vals.get(f) if f in rects else None
+        rec["application_no"] = None
+        rec["receipt_time"] = None
+        rec["needs_review"] = False
+        rec["_rc_field_crops"] = crops
+        rec.pop("_vehicle_line", None)
+        rec.pop("_amt_lines", None)
+        rec["_image_crop_png"] = crop_receipt_png(page, y0_px, y1_px, zoom)
+        return rec
+    # No template boxes: refine the vehicle number with multi-scale OCR + voting.
     vline = rec.pop("_vehicle_line", None)
     v, _vconf = _refine_vehicle(page, vline, zoom, rec.get("vehicle_no"))
     if v:
@@ -1912,15 +1933,6 @@ def _process_receipt_segment(page, seg: list[dict], zoom: float,
     rec["bank_charges"] = ch
     rec["bank_total"] = bt
     rec["needs_review"] = False
-    # crop from the PEOPLE'S header (segment top) to the Cashier footer.
-    y0_px, y1_px = _seg_ybounds(seg)
-    if rects:
-        region = _slip_region_pts(page, y0_px, y1_px, zoom)
-        vals, crops = read_receipt_rects(page, region, rects, pp=pp)
-        for name, val in vals.items():
-            if val is not None and val != "":
-                rec[name] = val
-        rec["_rc_field_crops"] = crops
     rec["_image_crop_png"] = crop_receipt_png(page, y0_px, y1_px, zoom)
     return rec
 
@@ -1963,6 +1975,9 @@ _RC_TEST_FIELDS = [
     ("bank_total", "Bank Total"),
     ("slip_no", "Slip No"),
 ]
+# Receipt fields that can be captured via a template box (i.e. every field the
+# strict template-box extraction populates).
+_RC_BOX_FIELDS = [k for k, _ in _RC_TEST_FIELDS]
 
 
 def test_receipt_page(page, pp=None) -> list[dict]:
@@ -2082,7 +2097,9 @@ def read_receipt_rects(page, region_pts, rects, pp=None) -> tuple[dict, dict]:
                  _rec_candidates(page, rect, pp=pp) if _clean(t)]
         raw = max(cands, key=lambda c: c[1])[0] if cands else None
         values[name] = _parse_receipt_field(name, raw)
-        crops[name] = _encode_rect_png(page, rect, pp=pp, zoom=4.0)
+        # Crop the RAW box (no pp) so the operator verifies the extracted value
+        # against the actual scan, not the preprocessed image the OCR consumed.
+        crops[name] = _encode_rect_png(page, rect, pp=None, zoom=4.0)
     return values, crops
 
 
