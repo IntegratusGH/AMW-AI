@@ -11,6 +11,7 @@ so nothing is lost, and ``confidence`` records the mean OCR score.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
@@ -1978,6 +1979,127 @@ _RC_TEST_FIELDS = [
 # Receipt fields that can be captured via a template box (i.e. every field the
 # strict template-box extraction populates).
 _RC_BOX_FIELDS = [k for k, _ in _RC_TEST_FIELDS]
+
+
+# ===== Unified template field model (doc-type agnostic) ===================
+# A template owns an ordered list of field definitions, each of which is a dict:
+#   {"key", "label", "type", "role", "box":[x0,y0,x1,y1]|None, "pp":{...}|None}
+# ``type`` selects the normalizer/validator + accuracy strategy; ``role`` maps
+# the field onto a record's canonical typed column so Mapping/Export/Dedup keep
+# working regardless of how a template labels a field.  These helpers are the
+# single source of truth for both doc kinds; the extractor is switched onto them
+# in a later phase (this phase only adds + backfills the data).
+_RC_FIELD_LABELS = {
+    "slip_no": "Slip No", "receipt_no": "Receipt No", "receipt_date": "Date",
+    "receipt_time": "Time", "vehicle_no": "Vehicle No",
+    "application_no": "Application No", "applicant_name": "Applicant",
+    "total_amount": "Total", "bank_charges": "Charges",
+    "bank_total": "Bank Total",
+}
+# Field key -> extraction/normalization type (default "text").
+_FIELD_TYPE = {
+    "registration_no": "plate", "chassis_no": "chassis",
+    "engine_no": "engine", "vehicle_no": "plate", "receipt_date": "date",
+    "total_amount": "currency", "bank_charges": "currency",
+    "bank_total": "currency",
+}
+# Built-in (default) field set per doc kind, in display order.
+_DEFAULT_FIELD_KEYS = {
+    "cr": [k for k, _ in _CR_TEST_FIELDS],
+    "rc": _RC_BOX_FIELDS,
+}
+
+
+def field_label(kind: str, key: str) -> str:
+    labels = _RC_FIELD_LABELS if kind == "rc" else CR_FIELD_LABELS
+    return labels.get(key) or key.replace("_", " ").title()
+
+
+def field_type(key: str) -> str:
+    return _FIELD_TYPE.get(key, "text")
+
+
+def default_field_defs(kind: str) -> list[dict]:
+    """Built-in field definitions for a doc kind (no boxes / pp yet)."""
+    return [{"key": k, "label": field_label(kind, k), "type": field_type(k),
+             "role": k, "box": None, "pp": None}
+            for k in _DEFAULT_FIELD_KEYS.get(kind, [])]
+
+
+def clean_fields(fields, kind: str = "cr") -> list[dict]:
+    """Validate/normalize a template's ``fields`` list into clean field defs.
+    Non-dict / keyless / duplicate entries are dropped; boxes are validated like
+    clean_rects; missing label/type/role are filled from the built-ins."""
+    if not isinstance(fields, list):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for f in fields:
+        if not isinstance(f, dict):
+            continue
+        key = str(f.get("key") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        cbox = None
+        box = f.get("box")
+        if isinstance(box, (list, tuple)) and len(box) == 4:
+            try:
+                x0, y0, x1, y1 = (max(0.0, min(1.0, float(n))) for n in box)
+                if x1 > x0 and y1 > y0:
+                    cbox = [round(x0, 4), round(y0, 4),
+                            round(x1, 4), round(y1, 4)]
+            except (TypeError, ValueError):
+                cbox = None
+        out.append({
+            "key": key,
+            "label": str(f.get("label") or field_label(kind, key)),
+            "type": str(f.get("type") or field_type(key)),
+            "role": str(f.get("role") or key),
+            "box": cbox,
+            "pp": (clean_pp(f.get("pp")) or None),
+        })
+    return out
+
+
+def fields_from_rects(kind: str, rects, pp=None) -> list[dict]:
+    """Build a fields list from a legacy ``ocr_rects`` {key: box} map: start from
+    the built-in defs for the kind, attach each field's box, and append any extra
+    boxed keys not in the built-in set."""
+    rects = rects if isinstance(rects, dict) else {}
+    defs = default_field_defs(kind)
+    by_key = {d["key"]: d for d in defs}
+    for key, box in rects.items():
+        d = by_key.get(key)
+        if d is None:
+            d = {"key": key, "label": field_label(kind, key),
+                 "type": field_type(key), "role": key, "box": None, "pp": None}
+            defs.append(d)
+            by_key[key] = d
+        d["box"] = box
+    return clean_fields(defs, kind)
+
+
+def template_field_defs(template) -> list[dict]:
+    """Return a template's field defs: parse its ``fields`` JSON when present,
+    else derive them from the legacy ``ocr_rects`` + built-ins."""
+    kind = getattr(template, "kind", "cr") or "cr"
+    raw = getattr(template, "fields", None)
+    if raw:
+        try:
+            defs = clean_fields(json.loads(raw), kind)
+            if defs:
+                return defs
+        except (ValueError, TypeError):
+            pass
+    rects = {}
+    raw_rects = getattr(template, "ocr_rects", None)
+    if raw_rects:
+        try:
+            rects = clean_rects(json.loads(raw_rects), kind)
+        except (ValueError, TypeError):
+            rects = {}
+    return fields_from_rects(kind, rects)
 
 
 def test_receipt_page(page, pp=None) -> list[dict]:

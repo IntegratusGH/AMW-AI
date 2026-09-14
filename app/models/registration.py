@@ -151,6 +151,13 @@ class CRBookRecord(db.Model):
     engine_no_confidence = db.Column(db.Float, nullable=True)
     needs_review = db.Column(db.Boolean, default=False, nullable=False)
     raw_text = db.Column(db.Text, nullable=True)
+    # Template-defined field data (hybrid storage): JSON maps of field key ->
+    # value / crop filename / confidence for every field of this record's
+    # template.  The canonical typed columns above stay authoritative for
+    # mapping/export/dedup/search; these hold the full, template-driven set.
+    field_values = db.Column(db.Text, nullable=True)
+    field_crops = db.Column(db.Text, nullable=True)
+    field_confidence = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     upload = db.relationship("CRBookUpload", back_populates="records")
@@ -250,6 +257,13 @@ class ReceiptRecord(db.Model):
     needs_review = db.Column(db.Boolean, default=False, nullable=False)
     confidence = db.Column(db.Float, nullable=True)
     raw_text = db.Column(db.Text, nullable=True)
+    # Template-defined field data (hybrid storage): JSON maps of field key ->
+    # value / crop filename / confidence for every field of this record's
+    # template.  The canonical typed columns above stay authoritative for
+    # mapping/export/dedup/search; these hold the full, template-driven set.
+    field_values = db.Column(db.Text, nullable=True)
+    field_crops = db.Column(db.Text, nullable=True)
+    field_confidence = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     upload = db.relationship("ReceiptUpload", back_populates="records")
@@ -402,6 +416,12 @@ class OcrTemplate(db.Model):
     ocr_pp = db.Column(db.Text, nullable=True)
     # JSON: field -> [x0,y0,x1,y1] normalized value-region rectangles.
     ocr_rects = db.Column(db.Text, nullable=True)
+    # JSON: ordered list of this template's own field definitions --
+    # [{"key","label","type","role","box":[x0,y0,x1,y1]|null,"pp":{...}|null}].
+    # Supersedes the fixed per-kind field lists so each template carries its own
+    # fields + positions; ``ocr_rects`` is kept as a derived {key: box} view for
+    # back-compat with the current extractor.
+    fields = db.Column(db.Text, nullable=True)
     created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow,
