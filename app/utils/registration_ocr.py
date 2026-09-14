@@ -2102,6 +2102,51 @@ def template_field_defs(template) -> list[dict]:
     return fields_from_rects(kind, rects)
 
 
+def extract_page(kind: str, page, *, rule_set: str = "oldcrbook",
+                 pp=None, rects=None) -> list[dict]:
+    """Unified per-page extractor dispatch (region strategy): returns the list
+    of record dicts a page yields for either doc kind -- CR is page-granular
+    (0/1 record per page), RC is segment-granular (one per detected slip).
+    ``rule_set`` is honoured by CR and ignored by RC."""
+    if kind == "rc":
+        return extract_receipt_page(page, pp=pp, rects=rects)
+    rec = extract_cr_page(page, rule_set=rule_set, pp=pp, rects=rects)
+    return [rec] if rec else []
+
+
+def build_field_data(defs, rec_obj, crop_attr=None, conf_attr=None):
+    """Build a record's hybrid (field_values, field_crops, field_confidence)
+    maps from its template's field defs.  Each field's value/confidence is read
+    from the record's canonical column via the field's ``role`` (so
+    template-defined fields mirror onto the typed columns Mapping/Export/Dedup
+    rely on); crop filenames come from the kind's crop-attr map.  Returns three
+    dicts keyed by field key (empty when the field has no data)."""
+    crop_attr = crop_attr or {}
+    conf_attr = conf_attr or {}
+    values: dict = {}
+    crops: dict = {}
+    conf: dict = {}
+    for d in defs:
+        key = d.get("key")
+        if not key:
+            continue
+        role = d.get("role") or key
+        val = getattr(rec_obj, role, None)
+        if val not in (None, ""):
+            values[key] = str(val)
+        cattr = crop_attr.get(key)
+        if cattr:
+            fn = getattr(rec_obj, cattr, None)
+            if fn:
+                crops[key] = fn
+        kattr = conf_attr.get(key)
+        if kattr:
+            c = getattr(rec_obj, kattr, None)
+            if c is not None:
+                conf[key] = round(float(c), 3)
+    return values, crops, conf
+
+
 def test_receipt_page(page, pp=None) -> list[dict]:
     """Run receipt OCR on one page with the given image adjustments and return
     the first detected slip's fields (plus a slip count) for the receipts

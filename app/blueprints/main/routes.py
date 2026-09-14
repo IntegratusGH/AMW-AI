@@ -158,19 +158,54 @@ def _save_doc(file, dest_dir: str) -> tuple[str, str]:
     return file.filename or safe, path
 
 
-# Per document-type configuration for the generic processing worker.
+# Template-box field -> record crop-filename column, per doc kind.  Used both to
+# persist the per-field value-region crops and (via build_field_data) to fill the
+# hybrid field_crops JSON.  ``_RC_CROP_ATTR`` is also consumed by the receipt
+# crop-persist loop and the receipt_value_crop route.
+_CR_CROP_ATTR = {
+    "chassis_no": "chassis_crop",
+    "registration_no": "reg_crop",
+    "engine_no": "engine_crop",
+}
+# CR field -> per-field confidence column (only the three critical identifiers
+# carry a refined per-field score today).
+_CR_CONF_ATTR = {
+    "chassis_no": "chassis_no_confidence",
+    "registration_no": "registration_no_confidence",
+    "engine_no": "engine_no_confidence",
+}
+_RC_CROP_ATTR = {
+    "slip_no": "slip_crop",
+    "receipt_no": "receipt_no_crop",
+    "receipt_date": "date_crop",
+    "vehicle_no": "vehicle_crop",
+    "total_amount": "total_crop",
+    "bank_charges": "charges_crop",
+    "bank_total": "bank_total_crop",
+}
+
+# Per document-type configuration for the generic processing worker.  ``crop_attr``
+# / ``conf_attr`` map template field keys onto the record's crop/confidence
+# columns; ``granularity`` records the region strategy (one record per page vs
+# one per detected segment).
 _DOC_KINDS = {
     "cr": {
         "upload_model": CRBookUpload,
         "record_model": CRBookRecord,
         "key_field": "chassis_no",
         "noun": "CR book",
+        "granularity": "page",
+        "crop_attr": _CR_CROP_ATTR,
+        "conf_attr": _CR_CONF_ATTR,
     },
     "rc": {
         "upload_model": ReceiptUpload,
         "record_model": ReceiptRecord,
         "key_field": "slip_no",
         "noun": "receipt",
+        "granularity": "segment",
+        "crop_attr": _RC_CROP_ATTR,
+        "conf_attr": {},
     },
 }
 
@@ -187,18 +222,6 @@ def _assign_columns(obj, data: dict) -> None:
             setattr(obj, name, val)
 
 
-# Receipt template-box field -> ReceiptRecord crop-filename column.  Keys match
-# the rc field keys emitted in ``_rc_field_crops``; used to persist and to serve
-# the per-field value-region crops on the records page.
-_RC_CROP_ATTR = {
-    "slip_no": "slip_crop",
-    "receipt_no": "receipt_no_crop",
-    "receipt_date": "date_crop",
-    "vehicle_no": "vehicle_crop",
-    "total_amount": "total_crop",
-    "bank_charges": "charges_crop",
-    "bank_total": "bank_total_crop",
-}
 # Short URL token (used by the receipt_value_crop route) -> crop column.
 _RC_CROP_TOKEN = {
     "slip": "slip_crop", "receipt": "receipt_no_crop", "date": "date_crop",
@@ -296,17 +319,15 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                     upload_rects = None
             try:
                 for i in range(total):
+                    # Unified per-page extractor dispatch (region strategy):
+                    # CR yields 0/1 record per page, RC one per detected slip.
+                    page_recs = ocr.extract_page(
+                        kind, doc[i],
+                        rule_set=page_rules.get(i + 1, "oldcrbook"),
+                        pp=upload_pp, rects=upload_rects)
                     if kind == "cr":
-                        rec = ocr.extract_cr_page(
-                            doc[i],
-                            rule_set=page_rules.get(i + 1, "oldcrbook"),
-                            pp=upload_pp, rects=upload_rects)
-                        page_recs = [rec] if rec else []
                         for r in page_recs:
                             r["page_no"] = i + 1
-                    else:
-                        page_recs = ocr.extract_receipt_page(
-                            doc[i], pp=upload_pp, rects=upload_rects)
 
                     for r in page_recs:
                         if kind == "rc":
@@ -474,6 +495,24 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                             fh.write(fpng)
                         setattr(rec_obj, attr, fn)
                 db.session.commit()
+
+            # Hybrid field storage: mirror each record's final (batch-corrected)
+            # canonical values, crops and confidences into the template-driven
+            # field_values/field_crops/field_confidence JSON.  Driven by the
+            # upload's template field defs (or the kind's built-in defaults),
+            # keyed by field key, values read via each field's role.
+            defs = (ocr.template_field_defs(tpl) if tpl
+                    else ocr.default_field_defs(kind))
+            crop_attr = cfg.get("crop_attr", {})
+            conf_attr = cfg.get("conf_attr", {})
+            for rec_obj in RecordModel.query.filter_by(
+                    upload_id=upload_id).all():
+                fv, fc, fk = ocr.build_field_data(
+                    defs, rec_obj, crop_attr, conf_attr)
+                rec_obj.field_values = json.dumps(fv) if fv else None
+                rec_obj.field_crops = json.dumps(fc) if fc else None
+                rec_obj.field_confidence = json.dumps(fk) if fk else None
+            db.session.commit()
 
             up.processed = True
             up.status = STATUS_DONE
