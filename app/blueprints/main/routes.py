@@ -1768,7 +1768,7 @@ def cr_ocr_template_update(tid: int):
                             "error": "A template with that name already exists."}), 400
         t.name = name
     pp = ocr.clean_pp(data.get("pp"))
-    rects = ocr.clean_rects(data.get("rects"))
+    rects = ocr.clean_rects(data.get("rects"), t.kind or "cr")
     t.ocr_pp = json.dumps(pp) if pp else None
     t.ocr_rects = json.dumps(rects) if rects else None
     _apply_validation(t, data)
