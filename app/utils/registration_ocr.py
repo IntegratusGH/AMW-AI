@@ -1196,6 +1196,14 @@ def _line_from_norm(page, box, full_zoom: float) -> dict:
             "text": "", "score": None, "rect": True}
 
 
+# Render scale for stored value-region crops when pp removes guilloche (FFT).
+# The notch filter only suppresses the periodic pattern at a modest scale; at
+# high zoom the guilloche peak falls inside the protected low-frequency centre
+# and survives.  This zoom keeps crops readable while descreening as cleanly as
+# the low-zoom OCR-settings preview.
+_CROP_DESCREEN_ZOOM = 2.5
+
+
 def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0,
                    page_bgr=None):
     """Render just a field's value region to a PNG (bytes) for display beside the
@@ -1299,8 +1307,16 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     # full-page pass makes.
     # When an upload pp is active, render the whole page once with it so each
     # value crop is sliced from the same pp-processed image the popup shows.
+    # The FFT guilloche notch only removes the pattern at a modest render scale:
+    # at high zoom the periodic peak sits inside the protected low-frequency
+    # centre and survives, so a zoom-5 crop still shows guilloche even though the
+    # popup preview (rendered at low zoom) is clean.  When pp removes guilloche,
+    # render the page for crops at the descreen-effective zoom so the stored crop
+    # matches the preview.
     _crop_pp = _active_pp()
-    _crop_page_bgr = (_page_bgr(page, _crop_pp, 5.0)
+    _crop_zoom = (_CROP_DESCREEN_ZOOM
+                  if (_crop_pp and _crop_pp.get("fft")) else 5.0)
+    _crop_page_bgr = (_page_bgr(page, _crop_pp, _crop_zoom)
                       if (_crop_pp and page is not None) else None)
     if rects and rects.get("chassis_no") and page is not None:
         ch_line = _line_from_norm(page, rects["chassis_no"], full_zoom)
@@ -1318,6 +1334,7 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     rec["chassis_no_confidence"] = ch_conf
     rec["_chassis_cands"] = ch_cands
     rec["_chassis_crop_png"] = crop_value_png(page, ch_line, full_zoom,
+                                              disp_zoom=_crop_zoom,
                                               page_bgr=_crop_page_bgr)
 
     if rects and rects.get("registration_no") and page is not None:
@@ -1336,6 +1353,7 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
         rec["registration_no"] = rg_val
     rec["registration_no_confidence"] = rg_conf
     rec["_reg_crop_png"] = crop_value_png(page, rg_line, full_zoom,
+                                          disp_zoom=_crop_zoom,
                                           page_bgr=_crop_page_bgr)
 
     if rects and rects.get("engine_no") and page is not None:
@@ -1354,6 +1372,7 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     rec["engine_no_confidence"] = en_conf
     rec["_engine_cands"] = en_cands
     rec["_engine_crop_png"] = crop_value_png(page, en_line, full_zoom,
+                                             disp_zoom=_crop_zoom,
                                              page_bgr=_crop_page_bgr)
 
     rec["needs_review"] = bool(_chassis_review(rec.get("chassis_no"), ch_conf)
@@ -2532,7 +2551,10 @@ def read_receipt_rects(page, region_pts, rects, pp=None,
     crops: dict = {}
     # When a pp is active, render the whole page once with it so each field crop
     # is sliced from the same pp-processed image the OCR-settings popup shows.
-    page_bgr = _page_bgr(page, pp, 4.0) if pp else None
+    # Guilloche removal (FFT) is only effective at a modest render scale, so drop
+    # to the descreen zoom when it is enabled (see _CROP_DESCREEN_ZOOM).
+    _crop_zoom = _CROP_DESCREEN_ZOOM if (pp and pp.get("fft")) else 4.0
+    page_bgr = _page_bgr(page, pp, _crop_zoom) if pp else None
     M = calibrate_slip_affine(page, region_pts, anchors) if anchors else None
     cz = _CALIB_ZOOM
     for name, box in (rects or {}).items():
@@ -2558,7 +2580,8 @@ def read_receipt_rects(page, region_pts, rects, pp=None,
         values[name] = _parse_receipt_field(name, raw)
         # Slice the crop from the pp-processed page (matching the popup) when a
         # pp is set; otherwise render the raw box (the true scan).
-        crops[name] = (_slice_png(page_bgr, rect, 4.0) if page_bgr is not None
+        crops[name] = (_slice_png(page_bgr, rect, _crop_zoom)
+                       if page_bgr is not None
                        else _encode_rect_png(page, rect, pp=None, zoom=4.0))
     return values, crops
 
