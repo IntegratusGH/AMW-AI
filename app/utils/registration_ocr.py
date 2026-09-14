@@ -2048,18 +2048,28 @@ def _process_receipt_segment(page, seg: list[dict], zoom: float,
 
 
 def extract_receipt_page(page, zoom: float = 2.0, pp=None,
-                         rects=None, anchors=None) -> list[dict]:
+                         rects=None, anchors=None, progress=None) -> list[dict]:
     """OCR + parse one receipts page into its deposit-slip records.  Slip
     detection and label anchoring run on the RAW page so segmentation matches
     the OCR-settings popup (segment_document) and any drawn boxes align; ``pp``
     (a cleaned image-adjustment dict) is applied only to the per-box value reads
-    within each slip, driven by ``rects`` (field -> normalized box)."""
+    within each slip, driven by ``rects`` (field -> normalized box).  ``progress``
+    (if given) is called as ``progress(done, total)`` before each slip so a long
+    single-page roll can report live per-slip progress."""
     lines = _ocr_page(page, zoom)
     segs = _real_segments(lines)
     bounds = _seg_bounds_normalized(segs)
-    return [_process_receipt_segment(page, seg, zoom, rects=rects, pp=pp,
-                                     anchors=anchors, ybounds=yb)
-            for seg, yb in zip(segs, bounds)]
+    n = len(segs)
+    out: list[dict] = []
+    for idx, (seg, yb) in enumerate(zip(segs, bounds), start=1):
+        if progress is not None:
+            try:
+                progress(idx, n)
+            except Exception:
+                pass
+        out.append(_process_receipt_segment(page, seg, zoom, rects=rects, pp=pp,
+                                            anchors=anchors, ybounds=yb))
+    return out
 
 
 def extract_receipt_records(path: str, zoom: float = 2.0,
@@ -2215,14 +2225,16 @@ def template_field_defs(template) -> list[dict]:
 
 
 def extract_page(kind: str, page, *, rule_set: str = "oldcrbook",
-                 pp=None, rects=None, anchors=None) -> list[dict]:
+                 pp=None, rects=None, anchors=None, progress=None) -> list[dict]:
     """Unified per-page extractor dispatch (region strategy): returns the list
     of record dicts a page yields for either doc kind -- CR is page-granular
     (0/1 record per page), RC is segment-granular (one per detected slip).
     ``rule_set`` is honoured by CR and ignored by RC; ``anchors`` (RC only)
-    drives per-slip box calibration."""
+    drives per-slip box calibration; ``progress`` (RC only) reports per-slip
+    progress."""
     if kind == "rc":
-        return extract_receipt_page(page, pp=pp, rects=rects, anchors=anchors)
+        return extract_receipt_page(page, pp=pp, rects=rects, anchors=anchors,
+                                    progress=progress)
     rec = extract_cr_page(page, rule_set=rule_set, pp=pp, rects=rects,
                           anchors=anchors)
     return [rec] if rec else []

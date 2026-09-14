@@ -275,7 +275,10 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             doc, total = ocr.open_document(up.stored_path)
             up.page_count = total
             up.progress_total = total
-            up.progress_message = f"Starting OCR on {total} page(s)\u2026"
+            up.progress_message = (
+                "Reading receipt roll \u2014 detecting slips\u2026"
+                if kind == "rc"
+                else f"Starting OCR on {total} page(s)\u2026")
             db.session.commit()
 
             key_col = getattr(RecordModel, key_field)
@@ -324,6 +327,21 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         json.loads(tpl.ocr_anchors)) or None
                 except (ValueError, TypeError):
                     upload_anchors = None
+            # Receipts are a single-page roll of many slips, so page-granular
+            # progress never moves during the (long) slip OCR and the UI looks
+            # stuck.  Report per-slip progress instead; rc_slip_base carries
+            # slips completed on prior pages for the rare multi-page roll.
+            rc_slip_base = 0
+
+            def _rc_progress(done_in_page: int, slips_in_page: int) -> None:
+                total_est = rc_slip_base + max(slips_in_page, done_in_page)
+                up.progress_total = total_est or 1
+                up.progress_done = rc_slip_base + done_in_page
+                up.progress_message = (
+                    f"Reading slip {rc_slip_base + done_in_page} "
+                    f"of {total_est}\u2026")
+                db.session.commit()
+
             try:
                 for i in range(total):
                     # Unified per-page extractor dispatch (region strategy):
@@ -332,7 +350,8 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         kind, doc[i],
                         rule_set=page_rules.get(i + 1, "oldcrbook"),
                         pp=upload_pp, rects=upload_rects,
-                        anchors=upload_anchors)
+                        anchors=upload_anchors,
+                        progress=(_rc_progress if kind == "rc" else None))
                     if kind == "cr":
                         for r in page_recs:
                             r["page_no"] = i + 1
@@ -361,7 +380,13 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                             rc_pending.append((rec_obj, r))
                         captured += 1
 
-                    up.progress_done = i + 1
+                    if kind == "rc":
+                        rc_slip_base += len(page_recs)
+                        up.progress_done = rc_slip_base
+                        up.progress_total = max(
+                            up.progress_total or 0, rc_slip_base) or 1
+                    else:
+                        up.progress_done = i + 1
                     up.captured_records = captured
                     up.duplicate_records = duplicates
                     up.progress_message = (
