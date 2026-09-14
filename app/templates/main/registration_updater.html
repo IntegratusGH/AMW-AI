@@ -339,6 +339,8 @@
                     data-tab-target="ocr-tab-field">Field setting</button>
             <button class="tab-btn" type="button" role="tab"
                     data-tab-target="ocr-tab-position">Position setting</button>
+            <button class="tab-btn" type="button" role="tab"
+                    data-tab-target="ocr-tab-template">Template picker</button>
           </div>
           <section class="tab-panel is-active" id="ocr-tab-image" role="tabpanel">
         <label class="tmpl-slider">Brightness <span data-out="brightness">0</span>
@@ -379,6 +381,25 @@
           </section>
           <section class="tab-panel" id="ocr-tab-position" role="tabpanel">
             <p class="muted ocr-tab-placeholder">Position settings will appear here.</p>
+          </section>
+          <section class="tab-panel" id="ocr-tab-template" role="tabpanel">
+            <label class="tmpl-check"><input type="checkbox" data-val-enabled>
+              Enable validation</label>
+            <div class="val-row">
+              <button type="button" class="btn btn-sm" data-val-box-btn
+                      title="Draw the region to read for validation">Validate box</button>
+              <input type="text" class="val-text" data-val-text
+                     placeholder="Validate text" maxlength="200">
+            </div>
+            <label class="tmpl-slider">If fail, try template
+              <select data-val-fail>
+                <option value="">(none)</option>
+              </select></label>
+            <p class="muted ocr-tab-placeholder">When enabled, the validate box is
+              OCR'd (with this template's image settings) before cropping; the
+              template is used only if the read text contains the validate text,
+              otherwise the fail template is tried. If none match, processing
+              stops with “No matched template found.”</p>
           </section>
         </div>
       </div>
@@ -438,6 +459,10 @@
   var pageNext = modal.querySelector('[data-ocr-page="next"]');
   var pageLabel = modal.querySelector('[data-ocr-pagelabel]');
   var hintEl = modal.querySelector('[data-ocr-hint]');
+  var valEnabled = modal.querySelector('[data-val-enabled]');
+  var valBoxBtn = modal.querySelector('[data-val-box-btn]');
+  var valText = modal.querySelector('[data-val-text]');
+  var valFail = modal.querySelector('[data-val-fail]');
   var TPLS_URL = modal.getAttribute('data-tpls-tpl');
   var TPLUPD_TPL = modal.getAttribute('data-tplupd-tpl');
   var FIELDS_CR = [['registration_no', 'Reg No'], ['chassis_no', 'Chassis No'],
@@ -454,6 +479,7 @@
   var templates = [], selectedId = null, currentPage = 1, totalPages = 1;
   var slipPages = [];
   var anchors = [], anchorMode = false, anchorRefSlip = 1;
+  var validateBox = null, validateMode = false;
   var uid = null, timer = null;
   function url(tpl) { return tpl.replace(/\/0\//, '/' + uid + '/'); }
   function setKind(k) {
@@ -688,15 +714,52 @@
     if (anchorHint) anchorHint.style.display = anchorMode ? '' : 'none';
     if (hintEl) hintEl.style.display = anchorMode ? 'none' : '';
   }
+  function renderValidateBox() {
+    if (!validateBox) return;
+    var box = document.createElement('div');
+    box.className = 'ocr-rect ocr-val';
+    positionBox(box, validateBox);
+    var lab = document.createElement('span');
+    lab.className = 'ocr-rect__label'; lab.textContent = 'Validate';
+    box.appendChild(lab);
+    addHandles(box);
+    overlay.appendChild(box);
+    wireDrag(box, function () { return validateBox; },
+             function (r) { validateBox = r; });
+  }
+  function updateValidateUi() {
+    if (valBoxBtn) valBoxBtn.classList.toggle('is-on', validateMode);
+  }
   function renderRects() {
     overlay.innerHTML = '';
-    if (anchorMode) renderAnchors(); else renderFields();
+    if (validateMode) renderValidateBox();
+    else if (anchorMode) renderAnchors();
+    else renderFields();
     updateAnchorUi();
+    updateValidateUi();
   }
   function collectAnchors() {
     return anchors.map(function (r) {
       return [round4(r[0]), round4(r[1]), round4(r[2]), round4(r[3])];
     });
+  }
+  function collectValidateBox() {
+    return validateBox
+      ? [round4(validateBox[0]), round4(validateBox[1]),
+         round4(validateBox[2]), round4(validateBox[3])]
+      : null;
+  }
+  function populateFailSelect() {
+    if (!valFail) return;
+    var cur = valFail.value;
+    var opts = ['<option value="">(none)</option>'];
+    templates.forEach(function (t) {
+      if (selectedId && t.id === selectedId) return;
+      if (t.kind && kind && t.kind !== kind) return;
+      opts.push('<option value="' + t.id + '">' + esc(t.name) + '</option>');
+    });
+    valFail.innerHTML = opts.join('');
+    valFail.value = cur;
   }
   function loadBoxes() {
     if (uid === null) return;
@@ -725,7 +788,15 @@
   });
   detectBtn && detectBtn.addEventListener('click', loadBoxes);
   anchorToggleBtn && anchorToggleBtn.addEventListener('click', function () {
-    anchorMode = !anchorMode; renderRects();
+    anchorMode = !anchorMode; if (anchorMode) validateMode = false; renderRects();
+  });
+  valBoxBtn && valBoxBtn.addEventListener('click', function () {
+    validateMode = !validateMode;
+    if (validateMode) {
+      anchorMode = false;
+      if (!validateBox) validateBox = clampRect([0.30, 0.06, 0.70, 0.14]);
+    }
+    renderRects();
   });
   anchorAddBtn && anchorAddBtn.addEventListener('click', function () {
     if (anchors.length >= 3) return;
@@ -752,6 +823,7 @@
     templates.forEach(function (t) { opts.push('<option value="' + t.id + '">' + esc(t.name) + '</option>'); });
     tplSelect.innerHTML = opts.join('');
     tplSelect.value = selectedId ? String(selectedId) : '';
+    populateFailSelect();
   }
   function loadTemplateIntoEditor(t) {
     var pp = (t && t.pp) || {};
@@ -761,6 +833,13 @@
     anchors = (t && t.anchors)
       ? JSON.parse(JSON.stringify(t.anchors)) : [];
     anchorRefSlip = 1;
+    validateBox = (t && t.validate_box) ? t.validate_box.slice() : null;
+    validateMode = false;
+    if (valEnabled) valEnabled.checked = !!(t && t.validate_enabled);
+    if (valText) valText.value = (t && t.validate_text) || '';
+    populateFailSelect();
+    if (valFail) valFail.value = (t && t.fail_template_id)
+      ? String(t.fail_template_id) : '';
     renderRects();
     loadPreview();
     var ns = Object.keys(pp).length, nb = Object.keys(rects).length;
@@ -782,11 +861,14 @@
     tplSaveBtn.disabled = true; setStatus('Saving template\u2026');
     fetch(tplUpdUrl(selectedId), {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ pp: collectPp(), rects: collectRects() })
+      body: JSON.stringify({ pp: collectPp(), rects: collectRects(),
+        validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
+        validate_text: valText ? valText.value : '', fail_template_id: valFail ? valFail.value : '' })
     }).then(function (r) { return r.json(); }).then(function (d) {
       tplSaveBtn.disabled = false;
       if (!d || !d.ok) { setStatus((d && d.error) || 'Save failed.'); return; }
       var i = tplIndex(d.template.id); if (i > -1) templates[i] = d.template;
+      populateFailSelect();
       setStatus('Template saved.');
     }).catch(function () { tplSaveBtn.disabled = false; setStatus('Network error.'); });
   });
@@ -801,7 +883,9 @@
     tplCreateBtn.disabled = true; setStatus('Creating template\u2026');
     fetch(TPLS_URL, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ name: name, kind: kind, pp: collectPp(), rects: collectRects() })
+      body: JSON.stringify({ name: name, kind: kind, pp: collectPp(), rects: collectRects(),
+        validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
+        validate_text: valText ? valText.value : '', fail_template_id: valFail ? valFail.value : '' })
     }).then(function (r) { return r.json(); }).then(function (d) {
       tplCreateBtn.disabled = false;
       if (!d || !d.ok) { setStatus((d && d.error) || 'Create failed.'); return; }
@@ -818,7 +902,12 @@
     results.hidden = true; results.innerHTML = '';
     if (tplNewWrap) tplNewWrap.hidden = true;
     setZoom(1); overlay.innerHTML = ''; rects = {}; slipPages = [];
-    anchors = []; anchorMode = false; anchorRefSlip = 1; setControls({});
+    anchors = []; anchorMode = false; anchorRefSlip = 1;
+    validateBox = null; validateMode = false;
+    if (valEnabled) valEnabled.checked = false;
+    if (valText) valText.value = '';
+    if (valFail) valFail.value = '';
+    setControls({});
     modal.hidden = false;
     setStatus('Loading\u2026');
     fetch(url(INIT_TPL), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
@@ -862,7 +951,9 @@
     fetch(url(SAVE_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ template_id: selectedId, pp: collectPp(), rects: collectRects(), reprocess: !!(reproc && reproc.checked), anchors: collectAnchors(), ref_slip: anchorRefSlip })
+      body: JSON.stringify({ template_id: selectedId, pp: collectPp(), rects: collectRects(), reprocess: !!(reproc && reproc.checked), anchors: collectAnchors(), ref_slip: anchorRefSlip,
+        validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
+        validate_text: valText ? valText.value : '', fail_template_id: valFail ? valFail.value : '' })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         saveBtn.disabled = false;

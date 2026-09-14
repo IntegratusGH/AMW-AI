@@ -428,6 +428,18 @@ class OcrTemplate(db.Model):
     # fields + positions; ``ocr_rects`` is kept as a derived {key: box} view for
     # back-compat with the current extractor.
     fields = db.Column(db.Text, nullable=True)
+    # Template picker: validation + fallback chain.  When ``validate_enabled``
+    # is set, processing OCRs ``validate_box`` (JSON normalized [x0,y0,x1,y1])
+    # on the page using this template's image settings and only uses the
+    # template if the read text contains ``validate_text``; otherwise it falls
+    # back to ``fail_template_id`` and repeats.  If the chain is exhausted with
+    # no match, processing stops with "No matched template found.".
+    validate_enabled = db.Column(db.Boolean, nullable=False, default=False,
+                                 server_default=db.text("0"))
+    validate_box = db.Column(db.Text, nullable=True)
+    validate_text = db.Column(db.String(200), nullable=True)
+    fail_template_id = db.Column(
+        db.Integer, db.ForeignKey("ocr_templates.id"), nullable=True)
     created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow,

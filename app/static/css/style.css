@@ -631,6 +631,13 @@ select.input { appearance: auto; }
 .ocr-anchor { border-color: #d97706; background: rgba(217, 119, 6, .12); }
 .ocr-anchor .ocr-rect__label { background: #d97706; }
 .ocr-anchor .ocr-rect__h { border-color: #d97706; }
+.ocr-val { border-color: #16a34a; background: rgba(22, 163, 74, .12); }
+.ocr-val .ocr-rect__label { background: #16a34a; }
+.ocr-val .ocr-rect__h { border-color: #16a34a; }
+.ocr-tabs .btn-sm.is-on { background: #16a34a; color: #fff; border-color: #16a34a; }
+.val-row { display: flex; gap: 8px; align-items: center; }
+.val-row .val-text { flex: 1 1 auto; padding: 6px 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--surface); color: var(--text); }
 .ocr-anchor__del { position: absolute; top: -15px; right: -2px; width: 15px;
   height: 14px; line-height: 13px; text-align: center; font-size: 12px;
   background: #b91c1c; color: #fff; border-radius: 3px; cursor: pointer;

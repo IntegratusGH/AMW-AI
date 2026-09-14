@@ -300,6 +300,11 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             # settings for both kinds, plus value boxes for CR.  No template =>
             # default extraction.
             tpl = up.template if getattr(up, "template_id", None) else None
+            # Template picker: pick the effective template by walking the
+            # validation/fallback chain (raises "No matched template found."
+            # when validation is enabled and nothing matches).
+            if tpl is not None:
+                tpl = _resolve_effective_template(kind, doc, tpl)
             if tpl and tpl.ocr_pp:
                 try:
                     upload_pp = ocr.clean_pp(json.loads(tpl.ocr_pp)) or None
@@ -1552,9 +1557,94 @@ def _tpl_json(t: "OcrTemplate") -> dict:
                    if getattr(t, "ocr_anchors", None) else [])
     except (ValueError, TypeError):
         anchors = []
+    try:
+        vbox = json.loads(t.validate_box) if getattr(t, "validate_box", None) else None
+        if not (isinstance(vbox, (list, tuple)) and len(vbox) == 4):
+            vbox = None
+    except (ValueError, TypeError):
+        vbox = None
     return {"id": t.id, "name": t.name, "kind": t.kind or "cr",
             "pp": pp, "rects": rects,
-            "anchors": [a["box"] for a in anchors]}
+            "anchors": [a["box"] for a in anchors],
+            "validate_enabled": bool(getattr(t, "validate_enabled", False)),
+            "validate_box": [float(n) for n in vbox] if vbox else None,
+            "validate_text": getattr(t, "validate_text", None) or "",
+            "fail_template_id": getattr(t, "fail_template_id", None)}
+
+
+def _clean_validation(data: dict, self_id=None):
+    """Parse the Template-picker validation fields from a request payload into
+    ``(enabled, box|None, text|None, fail_template_id|None)``.  The box is a
+    validated normalized ``[x0,y0,x1,y1]``; a fail template equal to the
+    template itself is dropped to avoid a trivial self-cycle."""
+    enabled = bool(data.get("validate_enabled"))
+    box = data.get("validate_box")
+    cbox = None
+    if isinstance(box, (list, tuple)) and len(box) == 4:
+        try:
+            xs = [max(0.0, min(1.0, float(n))) for n in box]
+            if xs[2] > xs[0] and xs[3] > xs[1]:
+                cbox = [round(xs[0], 4), round(xs[1], 4),
+                        round(xs[2], 4), round(xs[3], 4)]
+        except (TypeError, ValueError):
+            cbox = None
+    text = (data.get("validate_text") or "").strip() or None
+    fid = data.get("fail_template_id")
+    try:
+        fid = int(fid) if fid not in (None, "", 0, "0") else None
+    except (TypeError, ValueError):
+        fid = None
+    if self_id is not None and fid == self_id:
+        fid = None
+    return enabled, cbox, text, fid
+
+
+def _apply_validation(tpl, data) -> None:
+    """Write the parsed Template-picker validation fields onto ``tpl``."""
+    enabled, box, text, fid = _clean_validation(data, self_id=tpl.id)
+    tpl.validate_enabled = enabled
+    tpl.validate_box = json.dumps(box) if box else None
+    tpl.validate_text = text
+    tpl.fail_template_id = fid
+
+
+def _resolve_effective_template(kind, doc, base_tpl):
+    """Walk the Template-picker validation/fallback chain and return the template
+    to extract with.  For each template that has validation enabled, apply its
+    image settings and OCR its validate box on the first page; the template is
+    chosen when the read text contains its validate text.  Templates without
+    validation enabled (or misconfigured) are used as-is.  Raises ValueError
+    ("No matched template found.") when validation is enabled and the chain is
+    exhausted without a match."""
+    from app.utils import registration_ocr as ocr
+    page = doc[0]
+    t = base_tpl
+    seen: set[int] = set()
+    while t is not None and t.id not in seen:
+        seen.add(t.id)
+        if not getattr(t, "validate_enabled", False):
+            return t
+        box = None
+        if t.validate_box:
+            try:
+                b = json.loads(t.validate_box)
+                if isinstance(b, (list, tuple)) and len(b) == 4:
+                    box = [float(n) for n in b]
+            except (ValueError, TypeError):
+                box = None
+        expected = (t.validate_text or "").strip()
+        if not box or not expected:
+            return t  # validation enabled but unconfigured -> use as-is
+        try:
+            pp = ocr.clean_pp(json.loads(t.ocr_pp)) if t.ocr_pp else None
+        except (ValueError, TypeError):
+            pp = None
+        text, _ = ocr.read_rect(page, box, pp=pp or None)
+        if text and _norm_match(expected) in _norm_match(text):
+            return t
+        nxt_id = getattr(t, "fail_template_id", None)
+        t = db.session.get(OcrTemplate, nxt_id) if nxt_id else None
+    raise ValueError("No matched template found.")
 
 
 def _rc_anchor_patches(up, ref_slip, anchor_boxes) -> list[dict]:
@@ -1648,9 +1738,13 @@ def cr_ocr_templates():
                         "error": "A template with that name already exists."}), 400
     pp = ocr.clean_pp(data.get("pp"))
     rects = ocr.clean_rects(data.get("rects"), kind)
+    v_enabled, v_box, v_text, v_fail = _clean_validation(data)
     t = OcrTemplate(name=name, kind=kind, created_by=current_user.id,
                     ocr_pp=json.dumps(pp) if pp else None,
-                    ocr_rects=json.dumps(rects) if rects else None)
+                    ocr_rects=json.dumps(rects) if rects else None,
+                    validate_enabled=v_enabled,
+                    validate_box=json.dumps(v_box) if v_box else None,
+                    validate_text=v_text, fail_template_id=v_fail)
     db.session.add(t)
     db.session.commit()
     record_audit("ocr_template_create", f"id={t.id} name={name!r}")
@@ -1677,6 +1771,7 @@ def cr_ocr_template_update(tid: int):
     rects = ocr.clean_rects(data.get("rects"))
     t.ocr_pp = json.dumps(pp) if pp else None
     t.ocr_rects = json.dumps(rects) if rects else None
+    _apply_validation(t, data)
     db.session.commit()
     record_audit("ocr_template_update",
                  f"id={t.id} pp={sorted(pp)} rects={sorted(rects)}")
@@ -1708,6 +1803,7 @@ def cr_ocr_settings(upload_id: int):
     tpl.ocr_pp = json.dumps(pp) if pp else None
     tpl.ocr_rects = json.dumps(rects) if rects else None
     tpl.ocr_anchors = json.dumps(anchors) if anchors else None
+    _apply_validation(tpl, data)
     up.template_id = tpl.id
     db.session.commit()
     record_audit("cr_ocr_settings",
@@ -1914,6 +2010,7 @@ def rc_ocr_settings(upload_id: int):
     tpl.ocr_pp = json.dumps(pp) if pp else None
     tpl.ocr_rects = json.dumps(rects) if rects else None
     tpl.ocr_anchors = json.dumps(anchors) if anchors else None
+    _apply_validation(tpl, data)
     up.template_id = tpl.id
     db.session.commit()
     record_audit("rc_ocr_settings",
