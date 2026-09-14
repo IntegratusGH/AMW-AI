@@ -2315,13 +2315,13 @@ def read_receipt_rects(page, region_pts, rects, pp=None) -> tuple[dict, dict]:
 
 def test_receipt_slip(page, k: int, pp=None, zoom: float = 2.0,
                       rects=None) -> list[dict]:
-    """OCR one page with the given image adjustments and return the ``k``-th
-    separated slip's fields (plus the page's slip count) for "Test OCR"."""
-    _pp_ctx.pp = pp or None
-    try:
-        lines = _ocr_page(page, zoom)
-    finally:
-        _pp_ctx.pp = None
+    """Return the ``k``-th separated slip's fields (plus the page's slip count)
+    for "Test OCR".  Segmentation runs on the RAW page so the tested slip's
+    bounds match the popup's cached segmentation (segment_document, pp=None) and
+    the real extractor (extract_receipt_page); ``pp`` is applied only to the
+    per-box value reads, exactly as at extraction -- so a box drawn on the
+    preview reads the same region here."""
+    lines = _ocr_page(page, zoom)
     segs = _real_segments(lines)
     fields = [{"key": "_count", "label": "Slips on page",
                "value": str(len(segs)), "confidence": None}]
