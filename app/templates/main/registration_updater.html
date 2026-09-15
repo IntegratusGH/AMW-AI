@@ -261,10 +261,12 @@
      data-test-tpl="{{ url_for('main.cr_ocr_test', upload_id=0) }}"
      data-boxes-tpl="{{ url_for('main.cr_ocr_boxes', upload_id=0) }}"
      data-init-tpl="{{ url_for('main.cr_ocr_init', upload_id=0) }}"
+     data-valread-tpl="{{ url_for('main.cr_validate_read', upload_id=0) }}"
      data-rc-preview-tpl="{{ url_for('main.rc_ocr_preview', upload_id=0) }}"
      data-rc-save-tpl="{{ url_for('main.rc_ocr_settings', upload_id=0) }}"
      data-rc-test-tpl="{{ url_for('main.rc_ocr_test', upload_id=0) }}"
      data-rc-init-tpl="{{ url_for('main.rc_ocr_init', upload_id=0) }}"
+     data-rc-valread-tpl="{{ url_for('main.rc_validate_read', upload_id=0) }}"
      data-tpls-tpl="{{ url_for('main.cr_ocr_templates') }}"
      data-tplupd-tpl="{{ url_for('main.cr_ocr_template_update', tid=0) }}"
      data-csrf="{{ csrf_token() }}">
@@ -389,7 +391,12 @@
               <button type="button" class="btn btn-sm" data-val-box-btn
                       title="Draw the region to read for validation">Validate box</button>
               <input type="text" class="val-text" data-val-text
-                     placeholder="Validate text" maxlength="200">
+                     placeholder="Validate text / pattern" maxlength="200">
+            </div>
+            <div class="val-row">
+              <button type="button" class="btn btn-sm" data-val-read
+                      title="OCR the validate box on the current document">Read box (current doc)</button>
+              <span class="val-captured muted" data-val-captured>—</span>
             </div>
             <label class="tmpl-slider">If fail, try template
               <select data-val-fail>
@@ -397,9 +404,14 @@
               </select></label>
             <p class="muted ocr-tab-placeholder">When enabled, the validate box is
               OCR'd (with this template's image settings) before cropping; the
-              template is used only if the read text contains the validate text,
-              otherwise the fail template is tried. If none match, processing
-              stops with “No matched template found.”</p>
+              template is used only if the read text matches the validate
+              text/pattern, otherwise the fail template is tried. If none match,
+              processing stops with “No Match Template”. Plain text is matched
+              loosely (tolerates minor OCR errors). Wildcards: <code>*</code> any
+              run, <code>?</code> one letter, <code>#</code> one digit,
+              <code>[abc]</code>/<code>[a-c]</code> a set/range, <code>[!abc]</code>
+              excludes; combine patterns with <code>and</code>/<code>or</code>/<code>not</code>
+              (e.g. <code>*cash* or *cheque*</code>).</p>
           </section>
         </div>
       </div>
@@ -433,13 +445,13 @@
   var URLS = {
     cr: { preview: ga('data-preview-tpl'), save: ga('data-save-tpl'),
           test: ga('data-test-tpl'), boxes: ga('data-boxes-tpl'),
-          init: ga('data-init-tpl') },
+          init: ga('data-init-tpl'), valread: ga('data-valread-tpl') },
     rc: { preview: ga('data-rc-preview-tpl'), save: ga('data-rc-save-tpl'),
           test: ga('data-rc-test-tpl'), boxes: null,
-          init: ga('data-rc-init-tpl') }
+          init: ga('data-rc-init-tpl'), valread: ga('data-rc-valread-tpl') }
   };
   var kind = 'cr';
-  var PREVIEW_TPL, SAVE_TPL, TEST_TPL, BOXES_TPL, INIT_TPL;
+  var PREVIEW_TPL, SAVE_TPL, TEST_TPL, BOXES_TPL, INIT_TPL, VALREAD_TPL;
   var CSRF = modal.getAttribute('data-csrf') || '';
   var stage = modal.querySelector('[data-ocr-stage]');
   var overlay = modal.querySelector('[data-ocr-overlay]');
@@ -463,6 +475,8 @@
   var valBoxBtn = modal.querySelector('[data-val-box-btn]');
   var valText = modal.querySelector('[data-val-text]');
   var valFail = modal.querySelector('[data-val-fail]');
+  var valReadBtn = modal.querySelector('[data-val-read]');
+  var valCaptured = modal.querySelector('[data-val-captured]');
   var TPLS_URL = modal.getAttribute('data-tpls-tpl');
   var TPLUPD_TPL = modal.getAttribute('data-tplupd-tpl');
   var FIELDS_CR = [['registration_no', 'Reg No'], ['chassis_no', 'Chassis No'],
@@ -486,7 +500,7 @@
     kind = (k === 'rc') ? 'rc' : 'cr';
     var u = URLS[kind];
     PREVIEW_TPL = u.preview; SAVE_TPL = u.save; TEST_TPL = u.test;
-    BOXES_TPL = u.boxes; INIT_TPL = u.init;
+    BOXES_TPL = u.boxes; INIT_TPL = u.init; VALREAD_TPL = u.valread;
     FIELDS = (kind === 'rc') ? FIELDS_RC : FIELDS_CR;
     if (detectBtn) detectBtn.style.display = (kind === 'rc') ? 'none' : '';
     if (hintEl) hintEl.style.display = '';
@@ -587,6 +601,30 @@
       }).catch(function () { testBtn.disabled = false; setStatus('Network error.'); });
   }
   testBtn && testBtn.addEventListener('click', runTest);
+  function readValidateBox() {
+    if (uid === null || !VALREAD_TPL) return;
+    var box = collectValidateBox();
+    if (!box) { if (valCaptured) { valCaptured.textContent = 'Draw the validate box first.'; valCaptured.className = 'val-captured bad'; } return; }
+    valReadBtn.disabled = true;
+    if (valCaptured) { valCaptured.textContent = 'Reading\u2026'; valCaptured.className = 'val-captured muted'; }
+    fetch(url(VALREAD_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ pp: collectPp(), box: box, slip: currentPage, page: currentPage, text: valText ? valText.value : '' })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        valReadBtn.disabled = false;
+        if (!d || !d.ok) { if (valCaptured) { valCaptured.textContent = (d && d.error) || 'Read failed.'; valCaptured.className = 'val-captured bad'; } return; }
+        var t = d.text ? d.text : '(empty)';
+        var has = !!(valText && valText.value.trim());
+        var mark = has ? (d.matched ? ' \u2713 match' : ' \u2717 no match') : '';
+        if (valCaptured) {
+          valCaptured.textContent = 'Captured: ' + t + mark;
+          valCaptured.className = 'val-captured ' + (has ? (d.matched ? 'ok' : 'bad') : 'muted');
+        }
+      }).catch(function () { valReadBtn.disabled = false; if (valCaptured) { valCaptured.textContent = 'Network error.'; valCaptured.className = 'val-captured bad'; } });
+  }
+  valReadBtn && valReadBtn.addEventListener('click', readValidateBox);
   function round4(n) { return Math.round(n * 1e4) / 1e4; }
   function collectRects() {
     var out = {};

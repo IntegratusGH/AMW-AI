@@ -1531,6 +1531,32 @@ def cr_ocr_test(upload_id: int):
     return jsonify({"ok": True, "fields": fields})
 
 
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>/validate-read",
+               methods=["POST"])
+@login_required
+def cr_validate_read(upload_id: int):
+    """OCR the validate box on the current page and return the captured text (and
+    whether it satisfies the given validate pattern) for the Template picker."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    data = request.get_json(silent=True) or {}
+    box = _parse_box(data.get("box"))
+    if not box:
+        return jsonify({"ok": False, "error": "Draw the validate box first."}), 400
+    pp = ocr.clean_pp(data.get("pp"))
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        idx = max(1, min(total, int(data.get("page") or 1))) - 1
+        text, conf = ocr.read_rect(doc[idx], box, pp=pp or None)
+    finally:
+        doc.close()
+    expected = (data.get("text") or "").strip()
+    matched = bool(expected) and _validate_contains(expected, text)
+    return jsonify({"ok": True, "text": text or "", "confidence": conf,
+                    "matched": matched})
+
+
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-boxes",
                methods=["POST"])
 @login_required
@@ -2105,6 +2131,42 @@ def rc_ocr_test(upload_id: int):
     return jsonify({"ok": True, "fields": fields})
 
 
+@main_bp.route("/operations/registration-updater/rc/<int:upload_id>/validate-read",
+               methods=["POST"])
+@login_required
+def rc_validate_read(upload_id: int):
+    """OCR the validate box on the selected slip's frame and return the captured
+    text (and whether it satisfies the validate pattern) for the Template
+    picker.  Receipt boxes are slip-normalized, so the box is read within the
+    chosen slip's region -- exactly as per-slip resolution does at processing."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(ReceiptUpload, upload_id) or abort(404)
+    data = request.get_json(silent=True) or {}
+    box = _parse_box(data.get("box"))
+    if not box:
+        return jsonify({"ok": False, "error": "Draw the validate box first."}), 400
+    pp = ocr.clean_pp(data.get("pp"))
+    slips = _rc_slip_index(up)
+    idx = int(data.get("slip") or 1) - 1
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        if 0 <= idx < len(slips):
+            s = slips[idx]
+            region = ocr._slip_region_pts(
+                doc[s["page"]], s["y0"], s["y1"], s["zoom"])
+            text, conf = ocr.read_slip_rect(
+                doc[s["page"]], region, box, pp=pp or None)
+        else:
+            text, conf = None, 0.0
+    finally:
+        doc.close()
+    expected = (data.get("text") or "").strip()
+    matched = bool(expected) and _validate_contains(expected, text)
+    return jsonify({"ok": True, "text": text or "", "confidence": conf,
+                    "matched": matched})
+
+
 @main_bp.route("/operations/registration-updater/rc/<int:upload_id>/ocr-settings",
                methods=["POST"])
 @login_required
@@ -2168,7 +2230,7 @@ def _lev(a: str, b: str) -> int:
     return prev[-1]
 
 
-def _validate_contains(expected: str | None, text: str | None) -> bool:
+def _fuzzy_contains(expected: str | None, text: str | None) -> bool:
     """True when ``text`` contains ``expected`` after normalization, tolerating
     minor OCR noise.  Validate labels are short, stable words (e.g. "Cash"), and
     a single-character misread ('Cash' -> 'Cast') must not fail the batch, so an
@@ -2188,6 +2250,129 @@ def _validate_contains(expected: str | None, text: str | None) -> bool:
             if _lev(t[i:i + le], e) <= tol:
                 return True
     return False
+
+
+_LOGIC_OPS = {"and", "or", "not"}
+
+
+def _is_wild(pattern: str) -> bool:
+    """True when a validate pattern uses Access-style wildcards (``* ? # [ ]``)
+    or logical operators (and/or/not), so it must be matched as a pattern rather
+    than as a plain, OCR-noise-tolerant label."""
+    if re.search(r"[*?#\[\]]", pattern):
+        return True
+    return any(tok.lower() in _LOGIC_OPS for tok in pattern.split())
+
+
+def _like_to_regex(pattern: str) -> str:
+    """Translate one Access-style ``Like`` pattern into an anchored regex:
+    ``*``=any run, ``?``=one letter, ``#``=one digit, ``[abc]``/``[a-c]``=class,
+    ``[!abc]``=negated class.  Other characters are matched literally."""
+    out = ["^"]
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            out.append(".*")
+        elif c == "?":
+            out.append("[A-Za-z]")
+        elif c == "#":
+            out.append("[0-9]")
+        elif c == "[":
+            j = pattern.find("]", i + 1)
+            if j == -1:
+                out.append(re.escape(c))
+            else:
+                inner = pattern[i + 1:j]
+                neg = inner.startswith("!")
+                if neg:
+                    inner = inner[1:]
+                inner = inner.replace("\\", "\\\\").replace("^", "\\^")
+                out.append("[" + ("^" if neg else "") + inner + "]")
+                i = j
+        else:
+            out.append(re.escape(c))
+        i += 1
+    out.append("$")
+    return "".join(out)
+
+
+def _wild_match_one(pattern: str, text: str) -> bool:
+    try:
+        return re.match(_like_to_regex(pattern), text, re.IGNORECASE) is not None
+    except re.error:
+        return False
+
+
+def _wild_eval(tokens: list[str], text: str) -> bool:
+    """Evaluate a boolean expression of Like-patterns joined by and/or/not
+    (precedence not > and > or).  Each operand is a single whitespace-free
+    pattern token, e.g. ``*c* or *b*`` / ``not *a*``."""
+    pos = 0
+
+    def parse_or():
+        nonlocal pos
+        val = parse_and()
+        while pos < len(tokens) and tokens[pos].lower() == "or":
+            pos += 1
+            rhs = parse_and()
+            val = val or rhs
+        return val
+
+    def parse_and():
+        nonlocal pos
+        val = parse_not()
+        while pos < len(tokens) and tokens[pos].lower() == "and":
+            pos += 1
+            rhs = parse_not()
+            val = val and rhs
+        return val
+
+    def parse_not():
+        nonlocal pos
+        if pos < len(tokens) and tokens[pos].lower() == "not":
+            pos += 1
+            return not parse_not()
+        return parse_operand()
+
+    def parse_operand():
+        nonlocal pos
+        if pos >= len(tokens):
+            return False
+        tok = tokens[pos]
+        pos += 1
+        return _wild_match_one(tok, text)
+
+    return parse_or()
+
+
+def _validate_contains(expected: str | None, text: str | None) -> bool:
+    """True when the OCR ``text`` satisfies the ``expected`` validate pattern.
+    Plain labels use an OCR-noise-tolerant fuzzy contains; patterns using
+    Access-style wildcards (``* ? # [ ]``) or logical operators (and/or/not) are
+    matched exactly per those rules (case-insensitive)."""
+    exp = (expected or "").strip()
+    if not exp:
+        return False
+    if _is_wild(exp):
+        txt = re.sub(r"\s+", " ", (text or "")).strip()
+        toks = exp.split()
+        if any(tok.lower() in _LOGIC_OPS for tok in toks):
+            return _wild_eval(toks, txt)
+        return _wild_match_one(exp, txt)
+    return _fuzzy_contains(exp, text)
+
+
+def _parse_box(raw):
+    """Parse/clamp a normalized ``[x0,y0,x1,y1]`` box from request JSON; return
+    None when malformed or degenerate."""
+    try:
+        b = [float(n) for n in (raw or [])]
+    except (TypeError, ValueError):
+        return None
+    if len(b) != 4 or not (b[2] > b[0] and b[3] > b[1]):
+        return None
+    return [max(0.0, min(1.0, n)) for n in b]
 
 
 @main_bp.route("/operations/registration-updater/training/template/apply",
