@@ -827,12 +827,18 @@
   });
   modal.querySelector('[data-export-save]').addEventListener('click', function () {
     statusEl.textContent = 'Saving…';
+    var payload = collect();
     fetch(SAVE_URL, {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify(collect())
+      body: JSON.stringify(payload)
     }).then(function (r) { return r.json(); }).then(function (d) {
-      statusEl.textContent = (d && d.ok) ? 'Saved.' : 'Save failed.';
+      if (d && d.ok) {
+        cfg = payload;  // keep in-memory state so reopening shows saved values
+        statusEl.textContent = 'Saved.';
+      } else {
+        statusEl.textContent = 'Save failed.';
+      }
     }).catch(function () { statusEl.textContent = 'Save failed.'; });
   });
 })();

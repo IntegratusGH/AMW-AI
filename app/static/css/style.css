@@ -690,6 +690,7 @@ select.input { appearance: auto; }
 }
 
 /* Export-setting popup */
+[data-export-modal] .tmpl-modal__panel { width: min(1274px, 96vw); }
 [data-export-modal] .tmpl-modal__body { display: block; }
 .exp-sec { border: 1px solid var(--border); border-radius: 8px;
   padding: 10px 12px; margin: 0 0 14px; }
