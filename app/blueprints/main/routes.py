@@ -300,11 +300,17 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             # settings for both kinds, plus value boxes for CR.  No template =>
             # default extraction.
             tpl = up.template if getattr(up, "template_id", None) else None
-            # Template picker: pick the effective template by walking the
-            # validation/fallback chain (raises "No matched template found."
-            # when validation is enabled and nothing matches).
+            # Template picker.  Receipts resolve the template PER SLIP (each slip
+            # restarts from the assigned template and walks the validation/
+            # fallback chain), so build a per-slip resolver; CR resolves once for
+            # the page.  Either path raises "No Match Template" when nothing
+            # validates.
+            rc_resolver = None
             if tpl is not None:
-                tpl = _resolve_effective_template(kind, doc, tpl)
+                if kind == "rc":
+                    rc_resolver = _make_rc_slip_resolver(tpl)
+                else:
+                    tpl = _resolve_effective_template(kind, doc, tpl)
             if tpl and tpl.ocr_pp:
                 try:
                     upload_pp = ocr.clean_pp(json.loads(tpl.ocr_pp)) or None
@@ -356,7 +362,8 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         rule_set=page_rules.get(i + 1, "oldcrbook"),
                         pp=upload_pp, rects=upload_rects,
                         anchors=upload_anchors,
-                        progress=(_rc_progress if kind == "rc" else None))
+                        progress=(_rc_progress if kind == "rc" else None),
+                        resolve=(rc_resolver if kind == "rc" else None))
                     if kind == "cr":
                         for r in page_recs:
                             r["page_no"] = i + 1
@@ -1658,7 +1665,69 @@ def _resolve_effective_template(kind, doc, base_tpl):
             return t
         nxt_id = getattr(t, "fail_template_id", None)
         t = db.session.get(OcrTemplate, nxt_id) if nxt_id else None
-    raise ValueError("No matched template found.")
+    raise ValueError("No Match Template")
+
+
+def _make_rc_slip_resolver(base_tpl):
+    """Return a per-slip resolver for the RC Template picker.  For each slip the
+    callback restarts from the assigned template and walks its validation/
+    fallback chain: it applies a template's image settings and OCRs its validate
+    box on that slip, and the first template whose read contains its validate
+    text supplies the slip's ``(pp, rects, anchors)``.  Templates without
+    validation are used as-is.  Raises ValueError("No Match Template") when a
+    slip matches nothing in the chain."""
+    from app.utils import registration_ocr as ocr
+
+    def _pp(t):
+        try:
+            return ocr.clean_pp(json.loads(t.ocr_pp)) if t.ocr_pp else None
+        except (ValueError, TypeError):
+            return None
+
+    def _rects(t):
+        if not t.ocr_rects:
+            return None
+        try:
+            return ocr.clean_rects(json.loads(t.ocr_rects), "rc") or None
+        except (ValueError, TypeError):
+            return None
+
+    def _anchors(t):
+        if not getattr(t, "ocr_anchors", None):
+            return None
+        try:
+            return ocr.clean_anchors(json.loads(t.ocr_anchors)) or None
+        except (ValueError, TypeError):
+            return None
+
+    def _box(t):
+        if not t.validate_box:
+            return None
+        try:
+            b = json.loads(t.validate_box)
+            return ([float(n) for n in b]
+                    if isinstance(b, (list, tuple)) and len(b) == 4 else None)
+        except (ValueError, TypeError):
+            return None
+
+    def resolve(page, region):
+        t = base_tpl
+        seen: set[int] = set()
+        while t is not None and t.id not in seen:
+            seen.add(t.id)
+            box = _box(t)
+            expected = (t.validate_text or "").strip()
+            if (not getattr(t, "validate_enabled", False)
+                    or not box or not expected):
+                return _pp(t), _rects(t), _anchors(t)
+            text, _ = ocr.read_slip_rect(page, region, box, pp=_pp(t) or None)
+            if text and _norm_match(expected) in _norm_match(text):
+                return _pp(t), _rects(t), _anchors(t)
+            nxt = getattr(t, "fail_template_id", None)
+            t = db.session.get(OcrTemplate, nxt) if nxt else None
+        raise ValueError("No Match Template")
+
+    return resolve
 
 
 def _rc_anchor_patches(up, ref_slip, anchor_boxes) -> list[dict]:
