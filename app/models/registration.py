@@ -379,6 +379,13 @@ class MatchedRecord(db.Model):
     # authoritative for export/dedup/search/revoke.
     cr_fields = db.Column(db.Text, nullable=True)
     rc_fields = db.Column(db.Text, nullable=True)
+    # Verbatim copies of each source row's field_values / field_crops JSON so a
+    # revoke restores the record whole (custom fields such as R55/M17 and their
+    # value-region crops included), and a re-map snapshots them again.
+    cr_field_values = db.Column(db.Text, nullable=True)
+    cr_field_crops = db.Column(db.Text, nullable=True)
+    rc_field_values = db.Column(db.Text, nullable=True)
+    rc_field_crops = db.Column(db.Text, nullable=True)
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<MatchedRecord {self.id} reg={self.registration_no}>"

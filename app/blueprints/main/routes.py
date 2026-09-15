@@ -1226,8 +1226,6 @@ def _perform_mapping(user_id, omit_province: bool = False) -> int:
     rc_cat = _field_catalog("rc")
     matched = 0
     used_rc: set[int] = set()
-    cr_dec: dict[int, int] = {}
-    rc_dec: dict[int, int] = {}
     for cr in crs:
         key = _reg_match_key(cr.registration_no, omit_province)
         if not key:
@@ -1253,26 +1251,16 @@ def _perform_mapping(user_id, omit_province: bool = False) -> int:
             applicant_name=rc.applicant_name, total_amount=rc.total_amount,
             bank_charges=rc.bank_charges, bank_total=rc.bank_total,
             rc_segment_no=rc.segment_no, image_crop=rc.image_crop,
+            cr_field_values=cr.field_values, cr_field_crops=cr.field_crops,
+            rc_field_values=rc.field_values, rc_field_crops=rc.field_crops,
             cr_fields=json.dumps(_record_snapshot("cr", cr, cr_cat)),
             rc_fields=json.dumps(_record_snapshot("rc", rc, rc_cat))))
-        cr_dec[cr.upload_id] = cr_dec.get(cr.upload_id, 0) + 1
-        rc_dec[rc.upload_id] = rc_dec.get(rc.upload_id, 0) + 1
         db.session.delete(cr)
         db.session.delete(rc)
         matched += 1
-    # Reduce each source upload's captured count so the uploads list / records
-    # page no longer counts rows that have moved into matched_records.
-    _adjust_captured(CRBookUpload, cr_dec, -1)
-    _adjust_captured(ReceiptUpload, rc_dec, -1)
+    # captured_records is the immutable "total captured" count, so mapping does
+    # NOT decrement it; the uploads list shows live table counts separately.
     return matched
-
-
-def _adjust_captured(model, counts: dict, sign: int) -> None:
-    """Add ``sign * n`` to each listed upload's captured_records (clamped >= 0)."""
-    for uid, n in counts.items():
-        up = db.session.get(model, uid)
-        if up is not None:
-            up.captured_records = max(0, (up.captured_records or 0) + sign * n)
 
 
 def _revoke_mapping(ids) -> int:
@@ -1284,8 +1272,6 @@ def _revoke_mapping(ids) -> int:
         return 0
     rows = MatchedRecord.query.filter(MatchedRecord.id.in_(ids)).all()
     count = 0
-    cr_inc: dict[int, int] = {}
-    rc_inc: dict[int, int] = {}
     for m in rows:
         db.session.add(CRBookRecord(
             upload_id=m.cr_source_upload_id, page_no=m.cr_page_no,
@@ -1295,23 +1281,19 @@ def _revoke_mapping(ids) -> int:
             class_of_vehicle=m.class_of_vehicle, colour=m.colour,
             year_of_manufacture=m.year_of_manufacture,
             chassis_crop=m.chassis_crop, reg_crop=m.reg_crop,
-            engine_crop=m.engine_crop))
+            engine_crop=m.engine_crop,
+            field_values=m.cr_field_values, field_crops=m.cr_field_crops))
         db.session.add(ReceiptRecord(
             upload_id=m.rc_source_upload_id, segment_no=m.rc_segment_no,
             vehicle_no=m.vehicle_no, slip_no=m.slip_no,
             receipt_no=m.receipt_no, receipt_date=m.receipt_date,
             applicant_name=m.applicant_name, total_amount=m.total_amount,
             bank_charges=m.bank_charges, bank_total=m.bank_total,
-            image_crop=m.image_crop))
-        if m.cr_source_upload_id:
-            cr_inc[m.cr_source_upload_id] = cr_inc.get(m.cr_source_upload_id, 0) + 1
-        if m.rc_source_upload_id:
-            rc_inc[m.rc_source_upload_id] = rc_inc.get(m.rc_source_upload_id, 0) + 1
+            image_crop=m.image_crop,
+            field_values=m.rc_field_values, field_crops=m.rc_field_crops))
         db.session.delete(m)
         count += 1
-    # Restore each source upload's captured count for the returned rows.
-    _adjust_captured(CRBookUpload, cr_inc, +1)
-    _adjust_captured(ReceiptUpload, rc_inc, +1)
+    # captured_records is the immutable total, so revoke does not touch it.
     return count
 
 
