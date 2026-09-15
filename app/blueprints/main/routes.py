@@ -1618,6 +1618,18 @@ def _resolve_effective_template(kind, doc, base_tpl):
     exhausted without a match."""
     from app.utils import registration_ocr as ocr
     page = doc[0]
+    # Receipt boxes are normalized to a single deposit slip (not the whole roll),
+    # so read the validate box on the first detected slip's frame.  Segmentation
+    # is template-independent, so compute the slip region once.
+    region = ocr.first_slip_region(page) if kind == "rc" else None
+
+    def _read(box, pp):
+        if kind == "rc":
+            txt, _ = ocr.read_slip_rect(page, region, box, pp=pp or None)
+            return txt
+        txt, _ = ocr.read_rect(page, box, pp=pp or None)
+        return txt
+
     t = base_tpl
     seen: set[int] = set()
     while t is not None and t.id not in seen:
@@ -1635,11 +1647,13 @@ def _resolve_effective_template(kind, doc, base_tpl):
         expected = (t.validate_text or "").strip()
         if not box or not expected:
             return t  # validation enabled but unconfigured -> use as-is
+        if kind == "rc" and region is None:
+            return t  # no slip detected to validate against -> use as-is
         try:
             pp = ocr.clean_pp(json.loads(t.ocr_pp)) if t.ocr_pp else None
         except (ValueError, TypeError):
             pp = None
-        text, _ = ocr.read_rect(page, box, pp=pp or None)
+        text = _read(box, pp)
         if text and _norm_match(expected) in _norm_match(text):
             return t
         nxt_id = getattr(t, "fail_template_id", None)

@@ -2614,6 +2614,39 @@ def read_receipt_rects(page, region_pts, rects, pp=None,
     return values, crops
 
 
+def first_slip_region(page, zoom: float = 2.0):
+    """Return the PDF-point region ``(x0,y0,x1,y1)`` of the first real deposit
+    slip on ``page`` (using the same segmentation as extraction/preview), or
+    None when no slip is detected.  Used to read a slip-normalized box (e.g. a
+    Template-picker validate box) on a representative slip."""
+    lines = _ocr_page(page, zoom)
+    segs = _real_segments(lines)
+    if not segs:
+        return None
+    bounds = _seg_bounds_normalized(segs)
+    y0_px, y1_px = bounds[0]
+    return _slip_region_pts(page, y0_px, y1_px, zoom)
+
+
+def read_slip_rect(page, region_pts, box, pp=None) -> tuple[str | None, float]:
+    """OCR one normalized ``box`` relative to a slip ``region_pts`` (PDF points)
+    and return the best raw free-text read ``(text, confidence)`` -- like
+    read_rect but mapped into the slip frame, so a box drawn on a receipt slip
+    in the OCR-settings popup reads the same region here."""
+    import pymupdf
+    rx0, ry0, rx1, ry1 = region_pts
+    rw, rh = (rx1 - rx0), (ry1 - ry0)
+    x0, y0, x1, y1 = box
+    rect = pymupdf.Rect(rx0 + x0 * rw, ry0 + y0 * rh,
+                        rx0 + x1 * rw, ry0 + y1 * rh)
+    cands = [(_clean(t), s) for t, s in _rec_candidates(page, rect, pp=pp)
+             if _clean(t)]
+    if not cands:
+        return None, 0.0
+    text, conf = max(cands, key=lambda c: c[1])
+    return text, round(float(conf), 3)
+
+
 def test_receipt_slip(page, k: int, pp=None, zoom: float = 2.0,
                       rects=None, anchors=None) -> list[dict]:
     """Return the ``k``-th separated slip's fields (plus the page's slip count)
