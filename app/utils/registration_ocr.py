@@ -2059,7 +2059,8 @@ def extract_receipt_page(page, zoom: float = 2.0, pp=None,
     single-page roll can report live per-slip progress.  ``resolve`` (the RC
     Template picker) is called as ``resolve(page, region_pts)`` for each slip and
     must return that slip's ``(pp, rects, anchors)`` by walking the template
-    validation/fallback chain; it may raise to stop the whole document."""
+    validation/fallback chain (called as ``resolve(page, region_pts, idx,
+    total)``); it may raise to stop the whole document."""
     lines = _ocr_page(page, zoom)
     segs = _real_segments(lines)
     bounds = _seg_bounds_normalized(segs)
@@ -2073,7 +2074,7 @@ def extract_receipt_page(page, zoom: float = 2.0, pp=None,
                 pass
         if resolve is not None:
             region = _slip_region_pts(page, yb[0], yb[1], zoom)
-            pp_i, rects_i, anchors_i = resolve(page, region)
+            pp_i, rects_i, anchors_i = resolve(page, region, idx, n)
         else:
             pp_i, rects_i, anchors_i = pp, rects, anchors
         out.append(_process_receipt_segment(page, seg, zoom, rects=rects_i,

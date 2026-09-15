@@ -305,10 +305,14 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             # fallback chain), so build a per-slip resolver; CR resolves once for
             # the page.  Either path raises "No Match Template" when nothing
             # validates.
+            def _rc_report(msg: str) -> None:
+                up.progress_message = msg[:200]
+                db.session.commit()
+
             rc_resolver = None
             if tpl is not None:
                 if kind == "rc":
-                    rc_resolver = _make_rc_slip_resolver(tpl)
+                    rc_resolver = _make_rc_slip_resolver(tpl, report=_rc_report)
                 else:
                     tpl = _resolve_effective_template(kind, doc, tpl)
             if tpl and tpl.ocr_pp:
@@ -1661,21 +1665,23 @@ def _resolve_effective_template(kind, doc, base_tpl):
         except (ValueError, TypeError):
             pp = None
         text = _read(box, pp)
-        if text and _norm_match(expected) in _norm_match(text):
+        if _validate_contains(expected, text):
             return t
         nxt_id = getattr(t, "fail_template_id", None)
         t = db.session.get(OcrTemplate, nxt_id) if nxt_id else None
     raise ValueError("No Match Template")
 
 
-def _make_rc_slip_resolver(base_tpl):
+def _make_rc_slip_resolver(base_tpl, report=None):
     """Return a per-slip resolver for the RC Template picker.  For each slip the
     callback restarts from the assigned template and walks its validation/
     fallback chain: it applies a template's image settings and OCRs its validate
     box on that slip, and the first template whose read contains its validate
     text supplies the slip's ``(pp, rects, anchors)``.  Templates without
     validation are used as-is.  Raises ValueError("No Match Template") when a
-    slip matches nothing in the chain."""
+    slip matches nothing in the chain.  ``report`` (if given) is called with a
+    short status string as each template is validated so the progress bar can
+    show which template matched."""
     from app.utils import registration_ocr as ocr
 
     def _pp(t):
@@ -1710,7 +1716,10 @@ def _make_rc_slip_resolver(base_tpl):
         except (ValueError, TypeError):
             return None
 
-    def resolve(page, region):
+    def _slip(idx, total):
+        return f"slip {idx} of {total}" if idx and total else "slip"
+
+    def resolve(page, region, idx=0, total=0):
         t = base_tpl
         seen: set[int] = set()
         while t is not None and t.id not in seen:
@@ -1719,9 +1728,15 @@ def _make_rc_slip_resolver(base_tpl):
             expected = (t.validate_text or "").strip()
             if (not getattr(t, "validate_enabled", False)
                     or not box or not expected):
+                if report:
+                    report(f"Using {t.name} \u2014 {_slip(idx, total)}\u2026")
                 return _pp(t), _rects(t), _anchors(t)
+            if report:
+                report(f"Validating {t.name} \u2014 {_slip(idx, total)}\u2026")
             text, _ = ocr.read_slip_rect(page, region, box, pp=_pp(t) or None)
-            if text and _norm_match(expected) in _norm_match(text):
+            if _validate_contains(expected, text):
+                if report:
+                    report(f"Validated {t.name} \u2014 {_slip(idx, total)}")
                 return _pp(t), _rects(t), _anchors(t)
             nxt = getattr(t, "fail_template_id", None)
             t = db.session.get(OcrTemplate, nxt) if nxt else None
@@ -2112,6 +2127,46 @@ def rc_ocr_settings(upload_id: int):
 
 def _norm_match(s: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _lev(a: str, b: str) -> int:
+    """Levenshtein edit distance between two short strings."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1,
+                           prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _validate_contains(expected: str | None, text: str | None) -> bool:
+    """True when ``text`` contains ``expected`` after normalization, tolerating
+    minor OCR noise.  Validate labels are short, stable words (e.g. "Cash"), and
+    a single-character misread ('Cash' -> 'Cast') must not fail the batch, so an
+    exact substring test is backed by a small edit-distance search over same-
+    length (and +/-1) windows of the read text."""
+    e = _norm_match(expected)
+    t = _norm_match(text)
+    if not e or not t:
+        return False
+    if e in t:
+        return True
+    tol = max(1, len(e) // 4)
+    for le in (len(e), len(e) - 1, len(e) + 1):
+        if le <= 0:
+            continue
+        for i in range(0, len(t) - le + 1):
+            if _lev(t[i:i + le], e) <= tol:
+                return True
+    return False
 
 
 @main_bp.route("/operations/registration-updater/training/template/apply",
