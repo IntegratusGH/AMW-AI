@@ -508,9 +508,15 @@
       </fieldset>
 
       <fieldset class="exp-sec">
-        <legend>Preview (single record)</legend>
-        <label class="exp-inline">Sample record
-          <select data-export-sample></select></label>
+        <legend>Preview</legend>
+        <div class="exp-inline">Sample records
+          <div class="exp-msel" data-export-sample>
+            <button type="button" class="exp-msel-btn"
+                    data-export-sample-toggle aria-expanded="false">
+              Select records</button>
+            <div class="exp-msel-panel" data-export-sample-panel hidden></div>
+          </div>
+        </div>
         <div class="exp-preview-wrap">
           <table class="table exp-preview">
             <thead data-export-preview-head></thead>
@@ -544,7 +550,9 @@
   var constsBox = modal.querySelector('[data-export-consts]');
   var docsBox = modal.querySelector('[data-export-docs]');
   var linesBox = modal.querySelector('[data-export-lines]');
-  var sampleSel = modal.querySelector('[data-export-sample]');
+  var sampleWrap = modal.querySelector('[data-export-sample]');
+  var sampleToggle = modal.querySelector('[data-export-sample-toggle]');
+  var samplePanel = modal.querySelector('[data-export-sample-panel]');
   var previewHead = modal.querySelector('[data-export-preview-head]');
   var previewBody = modal.querySelector('[data-export-preview-body]');
   var statusEl = modal.querySelector('[data-export-status]');
@@ -709,9 +717,34 @@
     (cfg.lines || []).forEach(function (ln) { linesBox.appendChild(lineRow(ln)); });
   }
   function renderSamples() {
-    sampleSel.innerHTML = '';
-    if (!SAMPLES.length) sampleSel.appendChild(opt('', '(no matched records)', ''));
-    SAMPLES.forEach(function (s) { sampleSel.appendChild(opt(String(s.id), s.label, '')); });
+    samplePanel.innerHTML = '';
+    if (!SAMPLES.length) {
+      samplePanel.appendChild(el('div', 'exp-msel-empty', '(no matched records)'));
+      updateSampleSummary();
+      return;
+    }
+    SAMPLES.forEach(function (s, i) {
+      var lab = el('label', 'exp-msel-item');
+      var cb = el('input'); cb.type = 'checkbox'; cb.value = String(s.id);
+      cb.checked = (i === 0);  // preview the first record by default
+      cb.addEventListener('change', function () {
+        updateSampleSummary(); schedulePreview();
+      });
+      lab.appendChild(cb);
+      lab.appendChild(el('span', null, s.label));
+      samplePanel.appendChild(lab);
+    });
+    updateSampleSummary();
+  }
+  function selectedSampleIds() {
+    return Array.prototype.slice.call(
+      samplePanel.querySelectorAll('input[type=checkbox]:checked')
+    ).map(function (cb) { return cb.value; });
+  }
+  function updateSampleSummary() {
+    var n = selectedSampleIds().length;
+    sampleToggle.textContent = n ? (n + ' record' + (n > 1 ? 's' : '') +
+      ' selected') : 'Select records';
   }
 
   function collect() {
@@ -740,7 +773,7 @@
     fetch(PREVIEW_URL, {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ config: collect(), record_id: sampleSel.value || null })
+      body: JSON.stringify({ config: collect(), record_ids: selectedSampleIds() })
     }).then(function (r) { return r.json(); }).then(function (d) {
       previewHead.innerHTML = ''; previewBody.innerHTML = '';
       if (!d || !d.headers) return;
@@ -776,7 +809,18 @@
   modal.querySelector('[data-export-addline]').addEventListener('click', function () {
     linesBox.appendChild(lineRow(null)); schedulePreview();
   });
-  sampleSel.addEventListener('change', runPreview);
+  sampleToggle.addEventListener('click', function (e) {
+    e.stopPropagation();
+    var open = samplePanel.hidden;
+    samplePanel.hidden = !open;
+    sampleToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  document.addEventListener('click', function (e) {
+    if (!samplePanel.hidden && !sampleWrap.contains(e.target)) {
+      samplePanel.hidden = true;
+      sampleToggle.setAttribute('aria-expanded', 'false');
+    }
+  });
   modal.querySelector('[data-export-reset]').addEventListener('click', function () {
     cfg = JSON.parse(JSON.stringify(DEFAULT_CFG));
     renderConsts(); renderDocs(); renderLines(); schedulePreview();

@@ -1734,20 +1734,33 @@ def export_settings_preview():
     _require_trainer()
     body = request.get_json(silent=True) or {}
     cfg = _clean_export_config(body.get("config"))
-    rid = body.get("record_id")
-    m = None
-    if rid:
-        m = db.session.get(MatchedRecord, int(rid))
-    if m is None:
+    ids = body.get("record_ids")
+    if not isinstance(ids, list):
+        ids = [body["record_id"]] if body.get("record_id") else []
+    records = []
+    for rid in ids:
+        try:
+            m = db.session.get(MatchedRecord, int(rid))
+        except (ValueError, TypeError):
+            m = None
+        if m is not None:
+            records.append(m)
+    if not records:
         m = (MatchedRecord.query
              .filter(MatchedRecord.export_document_id == None)
              .order_by(MatchedRecord.matched_at.desc()).first())
-    if m is None:
+        if m is not None:
+            records.append(m)
+    if not records:
         return {"ok": True, "headers": _EXPORT_HDR1, "rows": [],
                 "label": "", "empty": True}
-    rows = _build_record_rows(m, 1, cfg)
-    label = m.registration_no or m.vehicle_no or f"#{m.id}"
-    return {"ok": True, "headers": _EXPORT_HDR1, "rows": rows, "label": label}
+    rows = []
+    for i, m in enumerate(records, start=1):
+        rows.extend(_build_record_rows(m, i, cfg))
+    label = ", ".join(m.registration_no or m.vehicle_no or f"#{m.id}"
+                       for m in records)
+    return {"ok": True, "headers": _EXPORT_HDR1, "rows": rows, "label": label,
+            "count": len(records)}
 
 
 @main_bp.route("/operations/registration-updater/<kind>/<int:upload_id>/process",

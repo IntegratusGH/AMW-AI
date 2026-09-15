@@ -711,6 +711,18 @@ select.input { appearance: auto; }
 .exp-lines th, .exp-lines td { padding: 5px 6px; vertical-align: top; }
 .exp-lineact { white-space: nowrap; }
 .exp-inline { font-size: .82rem; color: var(--text-muted); }
+.exp-msel { position: relative; display: inline-block; margin-left: 6px; }
+.exp-msel-btn { font-size: .8rem; padding: 4px 10px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+  color: var(--text); min-width: 150px; text-align: left; }
+.exp-msel-panel { position: absolute; z-index: 20; top: calc(100% + 4px);
+  left: 0; min-width: 220px; max-height: 240px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 6px; }
+.exp-msel-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+  border-radius: 6px; font-size: .82rem; color: var(--text); cursor: pointer; }
+.exp-msel-item:hover { background: var(--surface-alt, rgba(0,0,0,.04)); }
+.exp-msel-empty { padding: 8px; font-size: .8rem; color: var(--text-muted); }
 .exp-preview-wrap { overflow-x: auto; margin-top: 8px; }
 .exp-preview { width: 100%; border-collapse: collapse; font-size: .72rem;
   white-space: nowrap; }
