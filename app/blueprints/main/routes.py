@@ -1056,6 +1056,9 @@ def registration_updater():
     matched_records = (MatchedRecord.query
                        .filter(MatchedRecord.export_document_id == None)
                        .order_by(MatchedRecord.matched_at.desc()).all())
+    # Show every field both source tables carry, dropping columns that are empty
+    # for all matched rows (attaches cr_map/rc_map to each row).
+    map_cr_cols, map_rc_cols = _matched_view_columns(matched_records)
     export_documents = (ExportDocument.query
                         .order_by(ExportDocument.created_at.desc()).all())
     # Keep the user on the tab they acted from: an explicit ?tab= wins, else fall
@@ -1069,6 +1072,7 @@ def registration_updater():
         cr_uploads=cr_uploads, rc_uploads=rc_uploads,
         cr_counts=cr_counts, rc_counts=rc_counts,
         matched_records=matched_records, export_documents=export_documents,
+        map_cr_cols=map_cr_cols, map_rc_cols=map_rc_cols,
         active_tab=active_tab)
 
 
@@ -1101,6 +1105,103 @@ def _reg_match_key(value, omit_province: bool = False) -> str | None:
     return re.sub(r"[^A-Z0-9]", "", v) or None
 
 
+def _json_val(v):
+    """Coerce a record attribute to a JSON-serializable snapshot value."""
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    return str(v)  # Decimal / datetime / etc.
+
+
+def _nonempty(v) -> bool:
+    return v is not None and str(v).strip() != ""
+
+
+def _record_snapshot(kind: str, rec, catalog) -> list:
+    """Ordered full-field snapshot of a source record: every catalog field
+    (canonical data columns read from the ORM row, custom fields read from the
+    record's field_values JSON), as ``[{"k","l","v"}, ...]``.  Any extra keys
+    present in field_values but not in the catalog are appended."""
+    try:
+        fv = json.loads(rec.field_values) if rec.field_values else {}
+    except (ValueError, TypeError):
+        fv = {}
+    if not isinstance(fv, dict):
+        fv = {}
+    out, seen = [], set()
+    for d in catalog:
+        k = d["key"]
+        seen.add(k)
+        v = getattr(rec, k, None) if d.get("canonical") else fv.get(k)
+        out.append({"k": k, "l": d["label"], "v": _json_val(v)})
+    for k, v in fv.items():
+        if k not in seen:
+            out.append({"k": k, "l": k.replace("_", " ").title(),
+                        "v": _json_val(v)})
+    return out
+
+
+# Column order used to snapshot pre-0029 matched rows (no cr_fields/rc_fields)
+# for display, mirroring the typed snapshot columns on MatchedRecord.
+_MR_CR_FALLBACK = [
+    ("registration_no", "Reg No"), ("cr_number", "CR Number"),
+    ("chassis_no", "Chassis No"), ("engine_no", "Engine No"),
+    ("current_owner", "Owner"), ("make", "Make"), ("model", "Model"),
+    ("class_of_vehicle", "Class"), ("colour", "Colour"),
+    ("year_of_manufacture", "Year"),
+]
+_MR_RC_FALLBACK = [
+    ("vehicle_no", "Vehicle No"), ("slip_no", "Slip No"),
+    ("receipt_no", "Receipt No"), ("receipt_date", "Date"),
+    ("applicant_name", "Applicant"), ("total_amount", "Total"),
+    ("bank_charges", "Charges"), ("bank_total", "Bank Total"),
+]
+
+
+def _matched_view_columns(rows):
+    """Attach ``cr_map``/``rc_map`` (key->value) to each matched row and return
+    ``(cr_cols, rc_cols)``: ordered ``(key, label)`` lists limited to fields that
+    carry a value in at least one row.  Rows written before 0029 (no JSON
+    snapshot) fall back to the typed snapshot columns."""
+    def _parse(js, fallback):
+        try:
+            d = json.loads(js) if js else None
+        except (ValueError, TypeError):
+            d = None
+        return d if isinstance(d, list) else fallback
+
+    cr_order, cr_lab, cr_has = [], {}, set()
+    rc_order, rc_lab, rc_has = [], {}, set()
+    for m in rows:
+        cl = _parse(m.cr_fields, [{"k": k, "l": l, "v": _json_val(getattr(m, k, None))}
+                                  for k, l in _MR_CR_FALLBACK])
+        rl = _parse(m.rc_fields, [{"k": k, "l": l, "v": _json_val(getattr(m, k, None))}
+                                  for k, l in _MR_RC_FALLBACK])
+        m.cr_map, m.rc_map = {}, {}
+        for it in cl:
+            k = it.get("k")
+            if not k:
+                continue
+            if k not in cr_lab:
+                cr_lab[k] = it.get("l") or k
+                cr_order.append(k)
+            m.cr_map[k] = it.get("v")
+            if _nonempty(it.get("v")):
+                cr_has.add(k)
+        for it in rl:
+            k = it.get("k")
+            if not k:
+                continue
+            if k not in rc_lab:
+                rc_lab[k] = it.get("l") or k
+                rc_order.append(k)
+            m.rc_map[k] = it.get("v")
+            if _nonempty(it.get("v")):
+                rc_has.add(k)
+    cr_cols = [(k, cr_lab[k]) for k in cr_order if k in cr_has]
+    rc_cols = [(k, rc_lab[k]) for k in rc_order if k in rc_has]
+    return cr_cols, rc_cols
+
+
 def _perform_mapping(user_id, omit_province: bool = False) -> int:
     """Core of the mapping action (no request/auth deps, so it is unit-testable):
     greedy one-to-one match of CR books to receipts on the normalised key, snapshot
@@ -1119,6 +1220,10 @@ def _perform_mapping(user_id, omit_province: bool = False) -> int:
         if key:
             rc_by_key.setdefault(key, []).append(rc)
 
+    # Full field catalogs (canonical data columns + custom fields), computed
+    # once, so each snapshot carries every field both tables hold.
+    cr_cat = _field_catalog("cr")
+    rc_cat = _field_catalog("rc")
     matched = 0
     used_rc: set[int] = set()
     cr_dec: dict[int, int] = {}
@@ -1147,7 +1252,9 @@ def _perform_mapping(user_id, omit_province: bool = False) -> int:
             receipt_no=rc.receipt_no, receipt_date=rc.receipt_date,
             applicant_name=rc.applicant_name, total_amount=rc.total_amount,
             bank_charges=rc.bank_charges, bank_total=rc.bank_total,
-            rc_segment_no=rc.segment_no, image_crop=rc.image_crop))
+            rc_segment_no=rc.segment_no, image_crop=rc.image_crop,
+            cr_fields=json.dumps(_record_snapshot("cr", cr, cr_cat)),
+            rc_fields=json.dumps(_record_snapshot("rc", rc, rc_cat))))
         cr_dec[cr.upload_id] = cr_dec.get(cr.upload_id, 0) + 1
         rc_dec[rc.upload_id] = rc_dec.get(rc.upload_id, 0) + 1
         db.session.delete(cr)

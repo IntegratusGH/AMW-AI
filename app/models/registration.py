@@ -371,6 +371,15 @@ class MatchedRecord(db.Model):
     rc_segment_no = db.Column(db.Integer, nullable=True)
     image_crop = db.Column(db.String(255), nullable=True)
 
+    # Full field snapshot of each source record (every data column of
+    # cr_book_records / receipt_records plus template custom fields), stored as
+    # an ordered JSON list ``[{"k":key,"l":label,"v":value}, ...]`` so the
+    # Mapped-records view can show every field both tables carry and drop the
+    # columns that are empty for all matched rows.  The typed columns above stay
+    # authoritative for export/dedup/search/revoke.
+    cr_fields = db.Column(db.Text, nullable=True)
+    rc_fields = db.Column(db.Text, nullable=True)
+
     def __repr__(self) -> str:  # pragma: no cover
         return f"<MatchedRecord {self.id} reg={self.registration_no}>"
 

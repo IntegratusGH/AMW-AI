@@ -182,13 +182,20 @@
     </div>
 
     <div class="card table-card reg-uploads">
+      {% set map_span = 2 + map_cr_cols|length + map_rc_cols|length %}
       <table class="table">
         <thead>
-          <tr><th class="ta-center"><input type="checkbox" id="map-check-all"
+          <tr>
+            <th class="ta-center" rowspan="2"><input type="checkbox" id="map-check-all"
                 title="Select all" aria-label="Select all"></th>
-            <th>Matched</th><th>Reg No</th><th>Vehicle No</th><th>Chassis No</th>
-            <th>Engine No</th><th>Owner</th><th>Make</th><th>Receipt No</th>
-            <th>Date</th><th class="ta-right">Bank Total</th></tr>
+            <th rowspan="2">Matched</th>
+            {% if map_cr_cols %}<th colspan="{{ map_cr_cols|length }}" class="map-group">CR Book</th>{% endif %}
+            {% if map_rc_cols %}<th colspan="{{ map_rc_cols|length }}" class="map-group map-group-rc">Receipt</th>{% endif %}
+          </tr>
+          <tr>
+            {% for c in map_cr_cols %}<th>{{ c[1] }}</th>{% endfor %}
+            {% for c in map_rc_cols %}<th{% if loop.first %} class="map-group-rc"{% endif %}>{{ c[1] }}</th>{% endfor %}
+          </tr>
         </thead>
         <tbody>
           {% for m in matched_records %}
@@ -196,18 +203,11 @@
             <td class="ta-center"><input type="checkbox" class="map-row-check"
                   name="ids" value="{{ m.id }}" aria-label="Select record"></td>
             <td class="mono">{{ m.matched_at.strftime('%Y-%m-%d %H:%M') }}</td>
-            <td class="mono">{{ m.registration_no or '—' }}</td>
-            <td class="mono">{{ m.vehicle_no or '—' }}</td>
-            <td class="mono">{{ m.chassis_no or '—' }}</td>
-            <td class="mono">{{ m.engine_no or '—' }}</td>
-            <td>{{ m.current_owner or '—' }}</td>
-            <td>{{ m.make or '—' }}</td>
-            <td>{{ m.receipt_no or '—' }}</td>
-            <td>{{ m.receipt_date or '—' }}</td>
-            <td class="ta-right">{{ '%.2f'|format(m.bank_total) if m.bank_total is not none else '—' }}</td>
+            {% for c in map_cr_cols %}<td class="mono">{{ m.cr_map.get(c[0]) if m.cr_map.get(c[0]) not in (none, '') else '—' }}</td>{% endfor %}
+            {% for c in map_rc_cols %}<td class="mono{% if loop.first %} map-group-rc{% endif %}">{{ m.rc_map.get(c[0]) if m.rc_map.get(c[0]) not in (none, '') else '—' }}</td>{% endfor %}
           </tr>
           {% else %}
-          <tr><td colspan="11" class="muted ta-center">No matched records yet. Click “Process Mapping »” to match receipts to CR books by vehicle number.</td></tr>
+          <tr><td colspan="{{ map_span }}" class="muted ta-center">No matched records yet. Click “Process Mapping »” to match receipts to CR books by vehicle number.</td></tr>
           {% endfor %}
         </tbody>
       </table>
