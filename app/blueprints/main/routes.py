@@ -327,6 +327,38 @@ def _lists_json() -> list:
             for l in OcrList.query.order_by(OcrList.name).all()]
 
 
+def _slug_field(label: str) -> str:
+    """Derive a valid record-column key from a user field label."""
+    s = re.sub(r"[^a-z0-9]+", "_", (label or "").lower()).strip("_")[:63]
+    if not s:
+        s = "field"
+    if not re.match(r"^[a-z]", s):
+        s = "f_" + s
+    return s[:63]
+
+
+def _field_catalog(kind: str) -> list:
+    """Master field list for a kind's records table: the built-in (canonical)
+    value fields plus every user-added custom column.  This is the same for all
+    templates of the kind; a template's per-field capture/mask/value settings are
+    overlaid client-side from its own ``fields``."""
+    from app.utils import registration_ocr as ocr
+    cat = ocr.default_field_defs(kind)
+    for d in cat:
+        d["canonical"] = True
+    seen = {d["key"] for d in cat}
+    customs = (OcrCustomField.query.filter_by(kind=kind)
+               .order_by(OcrCustomField.label).all())
+    for c in customs:
+        if c.key in seen:
+            continue
+        seen.add(c.key)
+        cat.append({"key": c.key, "label": c.label or c.key, "type": "text",
+                    "role": c.key, "box": None, "pp": None, "capture": False,
+                    "mask": "none", "value": "", "canonical": False})
+    return cat
+
+
 def _tpl_pp(tpl):
     """Parsed image-settings dict for a template (empty when none)."""
     from app.utils import registration_ocr as ocr
@@ -1360,7 +1392,8 @@ def upload_records(kind: str, upload_id: int):
     defs = (ocr.template_field_defs(up.template)
             if getattr(up, "template_id", None) else [])
     label_by_key = {d["key"]: d["label"] for d in defs}
-    extra_keys = [d["key"] for d in defs if d["key"] not in canon]
+    extra_keys = [d["key"] for d in defs
+                  if d["key"] not in canon and d.get("capture")]
     for r in records:
         try:
             r.fv = json.loads(r.field_values) if r.field_values else {}
@@ -2072,7 +2105,7 @@ def cr_ocr_init(upload_id: int):
                  .order_by(OcrTemplate.updated_at.desc()).all()]
     return jsonify({"ok": True, "pages": total,
                     "template_id": up.template_id, "templates": templates,
-                    "lists": _lists_json()})
+                    "lists": _lists_json(), "field_catalog": _field_catalog("cr")})
 
 
 @main_bp.route("/operations/registration-updater/ocr-templates",
@@ -2183,6 +2216,68 @@ def ocr_list_delete(lid: int):
     db.session.commit()
     record_audit("ocr_list_delete", f"id={lid} name={name!r}")
     return jsonify({"ok": True, "lists": _lists_json()})
+
+
+@main_bp.route("/operations/registration-updater/ocr-fields", methods=["POST"])
+@login_required
+def ocr_fields():
+    """Add a custom field to a kind's records table (POST {kind, label}): create
+    a real NVARCHAR column shared by all templates of that kind.  Returns the
+    refreshed field catalog and the new field's key."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    data = request.get_json(silent=True) or {}
+    kind = data.get("kind")
+    if kind not in _RECORD_TABLE:
+        return jsonify({"ok": False, "error": "Unknown document kind."}), 400
+    label = (data.get("label") or "").strip()[:120]
+    if not label:
+        return jsonify({"ok": False, "error": "Field label is required."}), 400
+    base = _slug_field(label)
+    key, i = base, 2
+    canon = _canonical_keys(kind)
+    while key in canon or _column_exists(_RECORD_TABLE[kind], key):
+        key = f"{base}_{i}"[:63]
+        i += 1
+    if not ensure_record_column(kind, key, label):
+        return jsonify({"ok": False, "error": "Could not create field."}), 400
+    record_audit("ocr_field_add", f"kind={kind} key={key!r} label={label!r}")
+    return jsonify({"ok": True, "key": key, "catalog": _field_catalog(kind)})
+
+
+@main_bp.route("/operations/registration-updater/ocr-fields/<key>/delete",
+               methods=["POST"])
+@login_required
+def ocr_field_delete(key: str):
+    """Delete a custom field (POST {kind}): drop its column from the kind's
+    records table, unregister it, and strip it from every template's fields.
+    Built-in (canonical) fields cannot be deleted."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    data = request.get_json(silent=True) or {}
+    kind = data.get("kind")
+    skey = _safe_field_key(key)
+    if kind not in _RECORD_TABLE or not skey:
+        return jsonify({"ok": False, "error": "Invalid request."}), 400
+    if skey in _canonical_keys(kind):
+        return jsonify({"ok": False,
+                        "error": "Built-in fields cannot be deleted."}), 400
+    table = _RECORD_TABLE[kind]
+    if _column_exists(table, skey):
+        db.session.execute(sa_text(
+            f"ALTER TABLE [{table}] DROP COLUMN [{skey}]"))
+    OcrCustomField.query.filter_by(kind=kind, key=skey).delete()
+    for t in OcrTemplate.query.filter_by(kind=kind).all():
+        if not t.fields:
+            continue
+        try:
+            defs = json.loads(t.fields)
+        except (ValueError, TypeError):
+            continue
+        kept = [d for d in defs if d.get("key") != skey]
+        if len(kept) != len(defs):
+            t.fields = json.dumps(kept) if kept else None
+    db.session.commit()
+    record_audit("ocr_field_delete", f"kind={kind} key={skey!r}")
+    return jsonify({"ok": True, "catalog": _field_catalog(kind)})
 
 
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-settings",
@@ -2330,7 +2425,7 @@ def rc_ocr_init(upload_id: int):
                     "slip_count": len(slips),
                     "slips": [{"page": s["page"] + 1} for s in slips],
                     "template_id": up.template_id, "templates": templates,
-                    "lists": _lists_json()})
+                    "lists": _lists_json(), "field_catalog": _field_catalog("rc")})
 
 
 @main_bp.route("/operations/registration-updater/rc/<int:upload_id>/ocr-preview",

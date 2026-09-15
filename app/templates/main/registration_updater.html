@@ -269,6 +269,8 @@
      data-rc-valread-tpl="{{ url_for('main.rc_validate_read', upload_id=0) }}"
      data-lists-tpl="{{ url_for('main.ocr_lists') }}"
      data-listdel-tpl="{{ url_for('main.ocr_list_delete', lid=0) }}"
+     data-fields-tpl="{{ url_for('main.ocr_fields') }}"
+     data-fielddel-tpl="{{ url_for('main.ocr_field_delete', key='__KEY__') }}"
      data-tpls-tpl="{{ url_for('main.cr_ocr_templates') }}"
      data-tplupd-tpl="{{ url_for('main.cr_ocr_template_update', tid=0) }}"
      data-csrf="{{ csrf_token() }}">
@@ -516,6 +518,8 @@
   var listHint = modal.querySelector('[data-list-hint]');
   var LISTS_URL = modal.getAttribute('data-lists-tpl');
   var LISTDEL_TPL = modal.getAttribute('data-listdel-tpl');
+  var FIELDS_URL = modal.getAttribute('data-fields-tpl');
+  var FIELDDEL_TPL = modal.getAttribute('data-fielddel-tpl');
   var MASK_OPTS = [['none', 'None'], ['pattern', 'Pattern'],
     ['partial50', '50% Partial Match'], ['partial75', '75% Partial Match'],
     ['charcount', 'No of Characters']];
@@ -536,7 +540,7 @@
   var slipPages = [];
   var anchors = [], anchorMode = false, anchorRefSlip = 1;
   var validateBox = null, validateMode = false;
-  var fieldDefs = [], lists = [];
+  var fieldDefs = [], fieldCatalog = [], lists = [];
   var uid = null, timer = null;
   function url(tpl) { return tpl.replace(/\/0\//, '/' + uid + '/'); }
   function setKind(k) {
@@ -791,18 +795,35 @@
     for (var i = 0; i < fieldDefs.length; i++) { if (fieldDefs[i].key === key) return fieldDefs[i]; }
     return null;
   }
-  function slugify(s) {
-    var k = (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')
-      .replace(/^_+|_+$/g, '').slice(0, 63);
-    if (!k) k = 'field';
-    if (!/^[a-z]/.test(k)) k = 'f_' + k;
-    return k;
-  }
-  function uniqueKey(base) {
-    var used = {}; fieldDefs.forEach(function (d) { used[d.key] = 1; });
-    var k = base, i = 2; while (used[k]) { k = base + '_' + i; i++; } return k;
-  }
   function stackedBox(i) { var y = 0.06 + (i % 9) * 0.09; return clampRect([0.30, y, 0.92, y + 0.07]); }
+  function buildFieldDefs(t) {
+    // Start from the records-table catalog (canonical + custom columns), then
+    // overlay this template's per-field capture/mask/value/box settings.
+    var cat = (fieldCatalog || []).map(function (d) {
+      return { key: d.key, label: d.label, type: d.type, role: d.role,
+               canonical: !!d.canonical, box: null, pp: null,
+               capture: false, mask: 'none', value: '' };
+    });
+    var byKey = {}; cat.forEach(function (d) { byKey[d.key] = d; });
+    ((t && t.fields) || []).forEach(function (f) {
+      var d = byKey[f.key];
+      if (!d) {
+        d = { key: f.key, label: f.label || f.key, type: f.type || 'text',
+              role: f.role || f.key, canonical: false, box: null, pp: null,
+              capture: false, mask: 'none', value: '' };
+        byKey[f.key] = d; cat.push(d);
+      }
+      d.capture = !!f.capture || !!f.box;
+      d.mask = f.mask || 'none';
+      d.value = f.value || '';
+      if (f.box) d.box = f.box.slice();
+    });
+    var rc = (t && t.rects) || {};
+    Object.keys(rc).forEach(function (k) {
+      var d = byKey[k]; if (d) { d.capture = true; if (!d.box) d.box = rc[k].slice(); }
+    });
+    return cat;
+  }
   function maskSelectHtml(sel) {
     var o = MASK_OPTS.map(function (m) {
       return '<option value="' + m[0] + '"' + (m[0] === sel ? ' selected' : '') + '>' + m[1] + '</option>';
@@ -819,12 +840,15 @@
         '<td><input type="text" class="fld-label" data-fld-label value="' + esc(d.label || '') + '"></td>' +
         '<td>' + maskSelectHtml(d.mask || 'none') + '</td>' +
         '<td><input type="text" class="fld-value" data-fld-value value="' + esc(d.value || '') + '" placeholder="text or [List]"></td>' +
-        '<td class="ta-center"><button type="button" class="act-btn fld-del" data-fld-del title="Delete field">\u00d7</button></td>';
+        (d.canonical
+          ? '<td class="ta-center muted" title="Built-in field">\u2014</td>'
+          : '<td class="ta-center"><button type="button" class="act-btn fld-del" data-fld-del title="Delete field & column">\u00d7</button></td>');
       tr.querySelector('[data-fld-cap]').addEventListener('change', function () { toggleCapture(idx, this.checked); });
       tr.querySelector('[data-fld-label]').addEventListener('input', function () { fieldDefs[idx].label = this.value; renderRects(); });
       tr.querySelector('[data-fld-mask]').addEventListener('change', function () { fieldDefs[idx].mask = this.value; });
       tr.querySelector('[data-fld-value]').addEventListener('input', function () { fieldDefs[idx].value = this.value; });
-      tr.querySelector('[data-fld-del]').addEventListener('click', function () { deleteField(idx); });
+      var delBtn = tr.querySelector('[data-fld-del]');
+      if (delBtn) delBtn.addEventListener('click', function () { deleteField(idx); });
       fldBody.appendChild(tr);
     });
   }
@@ -837,20 +861,43 @@
   }
   function addField() {
     var label = (fldNew.value || '').trim(); if (!label) { fldNew.focus(); return; }
-    var key = uniqueKey(slugify(label));
-    var d = { key: key, label: label, type: 'text', role: key, box: null, pp: null, capture: true, mask: 'none', value: '' };
-    fieldDefs.push(d);
-    rects[key] = stackedBox(fieldDefs.length - 1); d.box = rects[key];
-    fldNew.value = '';
-    renderFieldSettings(); renderRects();
-    setStatus('Field added — drag its box into place, then Save.');
+    fldAddBtn.disabled = true; setStatus('Adding field\u2026');
+    fetch(FIELDS_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ kind: kind, label: label })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      fldAddBtn.disabled = false;
+      if (!d || !d.ok) { setStatus((d && d.error) || 'Add field failed.'); return; }
+      fieldCatalog = d.catalog || fieldCatalog;
+      fldNew.value = '';
+      if (!findFieldDef(d.key)) {
+        var c = fieldCatalog.filter(function (x) { return x.key === d.key; })[0] || {};
+        var def = { key: d.key, label: c.label || label, type: c.type || 'text',
+                    role: c.role || d.key, canonical: false, box: null, pp: null,
+                    capture: true, mask: 'none', value: '' };
+        fieldDefs.push(def);
+        rects[def.key] = stackedBox(fieldDefs.length - 1); def.box = rects[def.key];
+      }
+      renderFieldSettings(); renderRects();
+      setStatus('Field added — drag its box into place, then Save.');
+    }).catch(function () { fldAddBtn.disabled = false; setStatus('Network error.'); });
   }
   function deleteField(idx) {
     var d = fieldDefs[idx]; if (!d) return;
-    if (!confirm('Delete field \u201c' + (d.label || d.key) + '\u201d? Its column stays on the records table.')) return;
-    delete rects[d.key];
-    fieldDefs.splice(idx, 1);
-    renderFieldSettings(); renderRects();
+    if (d.canonical) { setStatus('Built-in fields cannot be deleted.'); return; }
+    if (!confirm('Delete field \u201c' + (d.label || d.key) + '\u201d and its column from the '
+        + (kind === 'rc' ? 'receipt' : 'CR book') + ' records table? This removes it from ALL templates.')) return;
+    fetch(FIELDDEL_TPL.replace('__KEY__', encodeURIComponent(d.key)), {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ kind: kind })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (!res || !res.ok) { setStatus((res && res.error) || 'Delete failed.'); return; }
+      fieldCatalog = res.catalog || fieldCatalog;
+      delete rects[d.key];
+      fieldDefs.splice(idx, 1);
+      renderFieldSettings(); renderRects();
+      setStatus('Field deleted.');
+    }).catch(function () { setStatus('Network error.'); });
   }
   function collectFields() {
     fieldDefs.forEach(function (d) { if (d.capture && rects[d.key]) d.box = rects[d.key].map(round4); });
@@ -1034,7 +1081,7 @@
   function loadTemplateIntoEditor(t) {
     var pp = (t && t.pp) || {};
     setControls(pp);
-    fieldDefs = (t && t.fields) ? JSON.parse(JSON.stringify(t.fields)) : [];
+    fieldDefs = buildFieldDefs(t);
     rects = {};
     fieldDefs.forEach(function (d) { if (d.capture && d.box) rects[d.key] = d.box.slice(); });
     if (kind === 'rc' && !Object.keys(rects).length) {
@@ -1116,7 +1163,7 @@
     setZoom(1); overlay.innerHTML = ''; rects = {}; slipPages = [];
     anchors = []; anchorMode = false; anchorRefSlip = 1;
     validateBox = null; validateMode = false;
-    fieldDefs = []; lists = [];
+    fieldDefs = []; fieldCatalog = []; lists = [];
     if (fldBody) fldBody.innerHTML = '';
     if (valEnabled) valEnabled.checked = false;
     if (valText) valText.value = '';
@@ -1136,6 +1183,7 @@
         }
         setPageLabel();
         lists = d.lists || []; renderLists();
+        fieldCatalog = d.field_catalog || [];
         templates = d.templates || [];
         var chosen = (d.template_id && findTpl(d.template_id)) ? d.template_id
           : (templates.length ? templates[0].id : null);
@@ -1143,8 +1191,8 @@
         populateTplSelect();
         var t = selectedId ? findTpl(selectedId) : null;
         if (t) loadTemplateIntoEditor(t);
-        else if (kind === 'cr') { loadPreview(); loadBoxes(); }
-        else { rects = defaultRects(); renderRects(); loadPreview(); }
+        else if (kind === 'cr') { fieldDefs = buildFieldDefs(null); renderFieldSettings(); loadPreview(); loadBoxes(); }
+        else { fieldDefs = buildFieldDefs(null); renderFieldSettings(); rects = defaultRects(); syncDefsFromRects(); renderRects(); loadPreview(); }
       }).catch(function () { setStatus('Load failed.'); });
   }
   function closeModal() { modal.hidden = true; uid = null; }
