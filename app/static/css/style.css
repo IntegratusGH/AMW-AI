@@ -150,6 +150,12 @@ h1, h2, h3 { margin: 0 0 .4em; font-weight: 650; }
 .map-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .map-group { text-align: center; font-weight: 600; }
 .map-group-rc { border-left: 2px solid var(--border); }
+/* Mapped records can have many dynamic columns: keep cells on one line so the
+   table overflows its .reg-uploads wrapper and shows a horizontal scrollbar. */
+#tab-map .reg-uploads { overflow-x: auto; }
+#tab-map .reg-uploads .table { min-width: max-content; }
+#tab-map .reg-uploads .table th,
+#tab-map .reg-uploads .table td { white-space: nowrap; }
 .map-search { position: relative; display: inline-block; margin: 0 0 12px; }
 .map-search input {
   padding: 8px 30px 8px 12px; min-width: 260px; font-size: 14px;
