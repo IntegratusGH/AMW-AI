@@ -1672,9 +1672,29 @@ def _resolve_effective_template(kind, doc, base_tpl):
     raise ValueError("No Match Template")
 
 
+def _rc_chain_head(base_tpl):
+    """Return the head of ``base_tpl``'s validation/fallback chain by following
+    predecessors (receipt templates whose ``fail_template_id`` points at the
+    current template) back to the root, so every slip starts from the FIRST
+    template in the chain regardless of which template the upload was assigned.
+    Cycle-safe."""
+    head = base_tpl
+    seen: set[int] = {head.id}
+    while True:
+        pred = (OcrTemplate.query
+                .filter_by(kind="rc", fail_template_id=head.id)
+                .first())
+        if pred is None or pred.id in seen:
+            break
+        head = pred
+        seen.add(head.id)
+    return head
+
+
 def _make_rc_slip_resolver(base_tpl, report=None):
     """Return a per-slip resolver for the RC Template picker.  For each slip the
-    callback restarts from the assigned template and walks its validation/
+    callback restarts from the FIRST template in the chain (the head, found by
+    walking the assigned template's predecessors) and walks its validation/
     fallback chain: it applies a template's image settings and OCRs its validate
     box on that slip, and the first template whose read contains its validate
     text supplies the slip's ``(pp, rects, anchors)``.  Templates without
@@ -1683,6 +1703,7 @@ def _make_rc_slip_resolver(base_tpl, report=None):
     short status string as each template is validated so the progress bar can
     show which template matched."""
     from app.utils import registration_ocr as ocr
+    base_tpl = _rc_chain_head(base_tpl)
 
     def _pp(t):
         try:
