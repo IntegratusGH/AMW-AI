@@ -337,19 +337,36 @@ def _slug_field(label: str) -> str:
     return s[:63]
 
 
+# Record columns that are internal plumbing, not user-facing OCR value fields.
+_INTERNAL_RECORD_COLS = {
+    "id", "upload_id", "page_no", "segment_no", "created_at",
+    "is_duplicate", "needs_review", "confidence", "raw_text",
+    "field_values", "field_crops", "field_confidence",
+}
+
+
 def _field_catalog(kind: str) -> list:
-    """Master field list for a kind's records table: the built-in (canonical)
-    value fields plus every user-added custom column.  This is the same for all
-    templates of the kind; a template's per-field capture/mask/value settings are
-    overlaid client-side from its own ``fields``."""
+    """Master field list for a kind's records table: every real data column on
+    the table (curated value fields first, then the remaining data columns) plus
+    every user-added custom column.  Internal plumbing (ids, crops, confidence,
+    JSON blobs, flags) is excluded.  The list is the same for all templates of
+    the kind; a template's per-field capture/mask/value settings are overlaid
+    client-side from its own ``fields``."""
     from app.utils import registration_ocr as ocr
-    cat = ocr.default_field_defs(kind)
-    for d in cat:
-        d["canonical"] = True
-    seen = {d["key"] for d in cat}
-    customs = (OcrCustomField.query.filter_by(kind=kind)
-               .order_by(OcrCustomField.label).all())
-    for c in customs:
+    cols = [c.key for c in sqla_inspect(_RECORD_MODEL[kind]).columns]
+    data_keys = [k for k in cols
+                 if k not in _INTERNAL_RECORD_COLS
+                 and not k.endswith("_crop") and not k.endswith("_confidence")]
+    order = [k for k in (d["key"] for d in ocr.default_field_defs(kind))
+             if k in data_keys]
+    ordered = order + [k for k in data_keys if k not in order]
+    cat = [{"key": k, "label": ocr.field_label(kind, k),
+            "type": ocr.field_type(k), "role": k, "box": None, "pp": None,
+            "capture": False, "mask": "none", "value": "", "canonical": True}
+           for k in ordered]
+    seen = set(ordered)
+    for c in (OcrCustomField.query.filter_by(kind=kind)
+              .order_by(OcrCustomField.label).all()):
         if c.key in seen:
             continue
         seen.add(c.key)
@@ -368,6 +385,44 @@ def _tpl_pp(tpl):
         return ocr.clean_pp(json.loads(tpl.ocr_pp)) or None
     except (ValueError, TypeError):
         return None
+
+
+def _apply_test_masks(kind, defs, fields, page, region, pp):
+    """Apply the Field-setting Apply-mask rules to a Test-OCR result: refine each
+    result field whose def carries a mask, and read+mask any custom capture
+    field (non-canonical, boxed) so the test mirrors real processing.  Mutates
+    and returns ``fields``."""
+    from app.utils import registration_ocr as ocr
+    by_key = {d["key"]: d for d in defs}
+    for f in fields:
+        d = by_key.get(f["key"])
+        if d and (d.get("mask") or "none") != "none":
+            val, ok = ocr.apply_field_mask(
+                d["mask"], d.get("value"), f.get("value"), _list_lookup)
+            f["value"] = val or ""
+            f["mask_ok"] = ok
+    if kind == "rc" and not region:
+        return fields
+    canon = _canonical_keys(kind)
+    shown = {f["key"] for f in fields}
+    for d in defs:
+        if d["key"] in canon or d["key"] in shown:
+            continue
+        if not d.get("capture") or not d.get("box"):
+            continue
+        fpp = d.get("pp") or pp
+        if kind == "cr":
+            raw, conf = ocr.read_rect(page, d["box"], pp=fpp)
+        else:
+            raw, conf = ocr.read_slip_rect(page, region, d["box"], pp=fpp)
+        val, ok = raw, True
+        if (d.get("mask") or "none") != "none":
+            val, ok = ocr.apply_field_mask(
+                d["mask"], d.get("value"), raw, _list_lookup)
+        fields.append({"key": d["key"], "label": d["label"], "value": val or "",
+                       "confidence": round(float(conf), 3) if conf else None,
+                       "mask_ok": ok})
+    return fields
 
 
 def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
@@ -1773,6 +1828,8 @@ def cr_ocr_test(upload_id: int):
     try:
         idx = max(1, min(total, int(data.get("page") or 1))) - 1
         fields = ocr.test_cr_page(doc[idx], pp=pp, rects=rects, anchors=anchors)
+        _apply_test_masks("cr", ocr.clean_fields(data.get("fields"), "cr"),
+                          fields, doc[idx], None, pp)
     finally:
         doc.close()
     return jsonify({"ok": True, "fields": fields})
@@ -2481,10 +2538,16 @@ def rc_ocr_test(upload_id: int):
     try:
         if 0 <= idx < len(slips):
             s = slips[idx]
-            fields = ocr.test_receipt_slip(doc[s["page"]], s["k"],
+            page = doc[s["page"]]
+            fields = ocr.test_receipt_slip(page, s["k"],
                                            pp=pp, rects=rects, anchors=anchors)
+            region = ocr._slip_region_pts(page, s["y0"], s["y1"], s["zoom"])
         else:
-            fields = ocr.test_receipt_page(doc[0], pp=pp)
+            page = doc[0]
+            fields = ocr.test_receipt_page(page, pp=pp)
+            region = ocr.first_slip_region(page)
+        _apply_test_masks("rc", ocr.clean_fields(data.get("fields"), "rc"),
+                          fields, page, region, pp)
     finally:
         doc.close()
     return jsonify({"ok": True, "fields": fields})

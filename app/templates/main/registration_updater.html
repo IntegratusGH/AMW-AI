@@ -626,8 +626,10 @@
   function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
   function renderResults(fields) {
     var rows = (fields || []).map(function (f) {
+      var flag = (f.mask_ok === false)
+        ? ' <span class="badge badge-warning" title="Fails Apply-mask \u2014 flagged for review">review</span>' : '';
       return '<tr><th>' + esc(f.label) + '</th><td class="val">' +
-        (f.value ? esc(f.value) : '<span class="muted">\u2014</span>') +
+        (f.value ? esc(f.value) : '<span class="muted">\u2014</span>') + flag +
         '</td><td class="conf">' + confBadge(f.confidence) + '</td></tr>';
     }).join('');
     results.innerHTML = '<table><tbody>' + rows + '</tbody></table>';
@@ -639,7 +641,7 @@
     fetch(url(TEST_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), page: currentPage, slip: currentPage, anchors: collectAnchors(), ref_slip: anchorRefSlip })
+      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), fields: collectFields(), page: currentPage, slip: currentPage, anchors: collectAnchors(), ref_slip: anchorRefSlip })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         testBtn.disabled = false;
