@@ -28,7 +28,7 @@
     <thead>
       <tr><th>Pg</th><th>Review</th><th>Reg No</th><th>Chassis No</th><th>Engine No</th>
         <th>Absolute Owner</th><th>Class</th><th>Fuel</th><th>CC</th><th>Year</th>
-        <th>Colour</th><th>Save</th><th>Image</th></tr>
+        <th>Colour</th>{% for f in extra_fields %}<th>{{ f[1] }}</th>{% endfor %}<th>Save</th><th>Image</th></tr>
     </thead>
     <tbody>
       {% for r in records %}
@@ -56,6 +56,7 @@
         <td>{{ r.cylinder_capacity or '—' }}</td>
         <td>{{ r.year_of_manufacture or '—' }}</td>
         <td>{{ r.colour or '—' }}</td>
+        {% for f in extra_fields %}<td>{{ r.fv.get(f[0]) or '—' }}</td>{% endfor %}
         <td class="actions">
           <form id="rec{{ r.id }}" method="post" class="inline"
                 action="{{ url_for('main.cr_edit_record', upload_id=upload.id, record_id=r.id) }}">
@@ -73,7 +74,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="13" class="muted ta-center">No records.</td></tr>
+      <tr><td colspan="{{ 13 + extra_fields|length }}" class="muted ta-center">No records.</td></tr>
       {% endfor %}
     </tbody>
     {% else %}
@@ -81,7 +82,7 @@
       <tr><th>Review</th><th>Slip No</th><th>Receipt No</th><th>Date</th><th>Time</th>
         <th>Vehicle No</th><th>Application No</th><th class="ta-right">Total</th>
         <th class="ta-right">Charges</th><th class="ta-right">Bank Total</th>
-        <th>Dup?</th><th>Conf</th><th class="ta-right">Image</th></tr>
+        <th>Dup?</th><th>Conf</th>{% for f in extra_fields %}<th>{{ f[1] }}</th>{% endfor %}<th class="ta-right">Image</th></tr>
     </thead>
     <tbody>
       {% for r in records %}
@@ -105,6 +106,7 @@
           src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='banktotal') }}">{% endif %}{{ '%.2f'|format(r.bank_total) if r.bank_total is not none else '—' }}</td>
         <td>{% if r.is_duplicate %}<span class="badge badge-warning">Dup</span>{% else %}—{% endif %}</td>
         <td>{{ '%.2f'|format(r.confidence) if r.confidence is not none else '' }}</td>
+        {% for f in extra_fields %}<td>{{ r.fv.get(f[0]) or '—' }}</td>{% endfor %}
         <td class="ta-right">
           {% if r.image_crop %}
           <button type="button" class="act-btn view-img" title="View receipt image"
@@ -115,7 +117,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="13" class="muted ta-center">No records.</td></tr>
+      <tr><td colspan="{{ 13 + extra_fields|length }}" class="muted ta-center">No records.</td></tr>
       {% endfor %}
     </tbody>
     {% endif %}

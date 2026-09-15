@@ -447,3 +447,49 @@ class OcrTemplate(db.Model):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<OcrTemplate {self.id} {self.name!r}>"
+
+
+class OcrList(db.Model):
+    """A named, global lookup list referenced from a field's Value as
+    ``[name]``.  ``items`` is newline-separated; each non-empty line is one
+    entry.  Consumed by the field "Apply mask" rules (pattern / partial match /
+    number-of-characters) to refine an OCR capture."""
+
+    __tablename__ = "ocr_lists"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False, unique=True)
+    items = db.Column(db.Text, nullable=True)
+    created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow,
+                           onupdate=datetime.utcnow, nullable=False)
+
+    def item_lines(self) -> list[str]:
+        return [ln.strip() for ln in (self.items or "").splitlines() if ln.strip()]
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<OcrList {self.name!r}>"
+
+
+class OcrCustomField(db.Model):
+    """Registry of user-added (non-canonical) record fields.  Each row means a
+    real ``NVARCHAR`` column named ``key`` exists on the ``kind`` records table
+    (``cr_book_records`` for 'cr', ``receipt_records`` for 'rc'), added on demand
+    when the field is first defined in a template's Field-setting tab."""
+
+    __tablename__ = "ocr_custom_fields"
+
+    id = db.Column(db.Integer, primary_key=True)
+    kind = db.Column(db.String(4), nullable=False, default="cr")
+    key = db.Column(db.String(64), nullable=False)
+    label = db.Column(db.String(120), nullable=True)
+    created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("kind", "key", name="uq_ocr_custom_kind_key"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<OcrCustomField {self.kind}:{self.key}>"

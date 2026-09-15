@@ -267,6 +267,8 @@
      data-rc-test-tpl="{{ url_for('main.rc_ocr_test', upload_id=0) }}"
      data-rc-init-tpl="{{ url_for('main.rc_ocr_init', upload_id=0) }}"
      data-rc-valread-tpl="{{ url_for('main.rc_validate_read', upload_id=0) }}"
+     data-lists-tpl="{{ url_for('main.ocr_lists') }}"
+     data-listdel-tpl="{{ url_for('main.ocr_list_delete', lid=0) }}"
      data-tpls-tpl="{{ url_for('main.cr_ocr_templates') }}"
      data-tplupd-tpl="{{ url_for('main.cr_ocr_template_update', tid=0) }}"
      data-csrf="{{ csrf_token() }}">
@@ -379,7 +381,33 @@
           <input type="range" data-thval min="0" max="255" step="1" value="128"></label>
           </section>
           <section class="tab-panel" id="ocr-tab-field" role="tabpanel">
-            <p class="muted ocr-tab-placeholder">Field settings will appear here.</p>
+            <p class="muted ocr-tab-help">Tick a field to capture it with a box in
+              this template (drag it into place on the image). “Apply mask”
+              refines the OCR read using “Value” — a fixed text or a
+              <code>[List name]</code>.</p>
+            <div class="fld-wrap">
+              <table class="fld-table" data-fld-table>
+                <thead><tr><th title="Capture with a box"></th><th>Field</th>
+                  <th>Apply mask</th><th>Value</th><th></th></tr></thead>
+                <tbody data-fld-body></tbody>
+              </table>
+            </div>
+            <div class="fld-add">
+              <input type="text" data-fld-new placeholder="New field label" maxlength="60">
+              <button type="button" class="btn btn-sm" data-fld-add>+ Add field</button>
+            </div>
+            <div class="fld-lists">
+              <h5 class="fld-lists__title">Lists
+                <span class="muted">— referenced as [name] in Value</span></h5>
+              <div class="fld-lists__row">
+                <select data-list-picker><option value="">(new list)</option></select>
+                <input type="text" data-list-name placeholder="List name" maxlength="120">
+                <button type="button" class="btn btn-sm" data-list-save>Save list</button>
+                <button type="button" class="btn btn-sm btn-danger" data-list-del>Delete</button>
+              </div>
+              <textarea data-list-items rows="5" placeholder="One item per line"></textarea>
+              <p class="muted fld-lists__hint" data-list-hint></p>
+            </div>
           </section>
           <section class="tab-panel" id="ocr-tab-position" role="tabpanel">
             <p class="muted ocr-tab-placeholder">Position settings will appear here.</p>
@@ -477,6 +505,20 @@
   var valFail = modal.querySelector('[data-val-fail]');
   var valReadBtn = modal.querySelector('[data-val-read]');
   var valCaptured = modal.querySelector('[data-val-captured]');
+  var fldBody = modal.querySelector('[data-fld-body]');
+  var fldNew = modal.querySelector('[data-fld-new]');
+  var fldAddBtn = modal.querySelector('[data-fld-add]');
+  var listPicker = modal.querySelector('[data-list-picker]');
+  var listName = modal.querySelector('[data-list-name]');
+  var listItems = modal.querySelector('[data-list-items]');
+  var listSaveBtn = modal.querySelector('[data-list-save]');
+  var listDelBtn = modal.querySelector('[data-list-del]');
+  var listHint = modal.querySelector('[data-list-hint]');
+  var LISTS_URL = modal.getAttribute('data-lists-tpl');
+  var LISTDEL_TPL = modal.getAttribute('data-listdel-tpl');
+  var MASK_OPTS = [['none', 'None'], ['pattern', 'Pattern'],
+    ['partial50', '50% Partial Match'], ['partial75', '75% Partial Match'],
+    ['charcount', 'No of Characters']];
   var TPLS_URL = modal.getAttribute('data-tpls-tpl');
   var TPLUPD_TPL = modal.getAttribute('data-tplupd-tpl');
   var FIELDS_CR = [['registration_no', 'Reg No'], ['chassis_no', 'Chassis No'],
@@ -494,6 +536,7 @@
   var slipPages = [];
   var anchors = [], anchorMode = false, anchorRefSlip = 1;
   var validateBox = null, validateMode = false;
+  var fieldDefs = [], lists = [];
   var uid = null, timer = null;
   function url(tpl) { return tpl.replace(/\/0\//, '/' + uid + '/'); }
   function setKind(k) {
@@ -625,6 +668,43 @@
       }).catch(function () { valReadBtn.disabled = false; if (valCaptured) { valCaptured.textContent = 'Network error.'; valCaptured.className = 'val-captured bad'; } });
   }
   valReadBtn && valReadBtn.addEventListener('click', readValidateBox);
+  function saveList() {
+    var name = (listName.value || '').trim();
+    if (!name) { setStatus('Enter a list name.'); listName.focus(); return; }
+    listSaveBtn.disabled = true; setStatus('Saving list\u2026');
+    fetch(LISTS_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ name: name, items: listItems.value })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      listSaveBtn.disabled = false;
+      if (!d || !d.ok) { setStatus((d && d.error) || 'List save failed.'); return; }
+      lists = d.lists || []; renderLists();
+      var saved = lists.filter(function (l) { return l.name === name; })[0];
+      if (saved) listPicker.value = String(saved.id);
+      setStatus('List saved.');
+    }).catch(function () { listSaveBtn.disabled = false; setStatus('Network error.'); });
+  }
+  function deleteList() {
+    var l = findList(listPicker.value);
+    if (!l) { setStatus('Pick a list to delete.'); return; }
+    if (!confirm('Delete list \u201c' + l.name + '\u201d?')) return;
+    fetch(LISTDEL_TPL.replace(/\/0\//, '/' + l.id + '/'), {
+      method: 'POST', headers: { 'X-CSRFToken': CSRF }
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || !d.ok) { setStatus('Delete failed.'); return; }
+      lists = d.lists || []; renderLists();
+      listName.value = ''; listItems.value = ''; setStatus('List deleted.');
+    }).catch(function () { setStatus('Network error.'); });
+  }
+  listPicker && listPicker.addEventListener('change', function () {
+    var l = findList(listPicker.value);
+    if (l) { listName.value = l.name; listItems.value = l.items || ''; }
+    else { listName.value = ''; listItems.value = ''; }
+  });
+  listSaveBtn && listSaveBtn.addEventListener('click', saveList);
+  listDelBtn && listDelBtn.addEventListener('click', deleteList);
+  fldAddBtn && fldAddBtn.addEventListener('click', addField);
+  fldNew && fldNew.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addField(); } });
   function round4(n) { return Math.round(n * 1e4) / 1e4; }
   function collectRects() {
     var out = {};
@@ -707,8 +787,96 @@
       box.appendChild(hd);
     });
   }
+  function findFieldDef(key) {
+    for (var i = 0; i < fieldDefs.length; i++) { if (fieldDefs[i].key === key) return fieldDefs[i]; }
+    return null;
+  }
+  function slugify(s) {
+    var k = (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '').slice(0, 63);
+    if (!k) k = 'field';
+    if (!/^[a-z]/.test(k)) k = 'f_' + k;
+    return k;
+  }
+  function uniqueKey(base) {
+    var used = {}; fieldDefs.forEach(function (d) { used[d.key] = 1; });
+    var k = base, i = 2; while (used[k]) { k = base + '_' + i; i++; } return k;
+  }
+  function stackedBox(i) { var y = 0.06 + (i % 9) * 0.09; return clampRect([0.30, y, 0.92, y + 0.07]); }
+  function maskSelectHtml(sel) {
+    var o = MASK_OPTS.map(function (m) {
+      return '<option value="' + m[0] + '"' + (m[0] === sel ? ' selected' : '') + '>' + m[1] + '</option>';
+    });
+    return '<select class="fld-mask" data-fld-mask>' + o.join('') + '</select>';
+  }
+  function renderFieldSettings() {
+    if (!fldBody) return;
+    fldBody.innerHTML = '';
+    fieldDefs.forEach(function (d, idx) {
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td class="ta-center"><input type="checkbox" data-fld-cap ' + (d.capture ? 'checked' : '') + '></td>' +
+        '<td><input type="text" class="fld-label" data-fld-label value="' + esc(d.label || '') + '"></td>' +
+        '<td>' + maskSelectHtml(d.mask || 'none') + '</td>' +
+        '<td><input type="text" class="fld-value" data-fld-value value="' + esc(d.value || '') + '" placeholder="text or [List]"></td>' +
+        '<td class="ta-center"><button type="button" class="act-btn fld-del" data-fld-del title="Delete field">\u00d7</button></td>';
+      tr.querySelector('[data-fld-cap]').addEventListener('change', function () { toggleCapture(idx, this.checked); });
+      tr.querySelector('[data-fld-label]').addEventListener('input', function () { fieldDefs[idx].label = this.value; renderRects(); });
+      tr.querySelector('[data-fld-mask]').addEventListener('change', function () { fieldDefs[idx].mask = this.value; });
+      tr.querySelector('[data-fld-value]').addEventListener('input', function () { fieldDefs[idx].value = this.value; });
+      tr.querySelector('[data-fld-del]').addEventListener('click', function () { deleteField(idx); });
+      fldBody.appendChild(tr);
+    });
+  }
+  function toggleCapture(idx, checked) {
+    var d = fieldDefs[idx]; if (!d) return;
+    d.capture = checked;
+    if (checked) { if (!rects[d.key]) rects[d.key] = (d.box && d.box.slice()) || stackedBox(idx); d.box = rects[d.key]; }
+    else { delete rects[d.key]; }
+    renderRects();
+  }
+  function addField() {
+    var label = (fldNew.value || '').trim(); if (!label) { fldNew.focus(); return; }
+    var key = uniqueKey(slugify(label));
+    var d = { key: key, label: label, type: 'text', role: key, box: null, pp: null, capture: true, mask: 'none', value: '' };
+    fieldDefs.push(d);
+    rects[key] = stackedBox(fieldDefs.length - 1); d.box = rects[key];
+    fldNew.value = '';
+    renderFieldSettings(); renderRects();
+    setStatus('Field added — drag its box into place, then Save.');
+  }
+  function deleteField(idx) {
+    var d = fieldDefs[idx]; if (!d) return;
+    if (!confirm('Delete field \u201c' + (d.label || d.key) + '\u201d? Its column stays on the records table.')) return;
+    delete rects[d.key];
+    fieldDefs.splice(idx, 1);
+    renderFieldSettings(); renderRects();
+  }
+  function collectFields() {
+    fieldDefs.forEach(function (d) { if (d.capture && rects[d.key]) d.box = rects[d.key].map(round4); });
+    return fieldDefs;
+  }
+  function syncDefsFromRects() {
+    Object.keys(rects).forEach(function (key) {
+      var d = findFieldDef(key); if (d) { d.capture = true; d.box = rects[key].slice(); }
+    });
+    renderFieldSettings();
+  }
+  function renderLists() {
+    if (!listPicker) return;
+    var opts = ['<option value="">(new list)</option>'];
+    lists.forEach(function (l) { opts.push('<option value="' + l.id + '">' + esc(l.name) + '</option>'); });
+    listPicker.innerHTML = opts.join('');
+    if (listHint) listHint.textContent = lists.length
+      ? ('Available: ' + lists.map(function (l) { return '[' + l.name + ']'; }).join(', '))
+      : 'No lists yet — create one below.';
+  }
+  function findList(id) { for (var i = 0; i < lists.length; i++) { if (String(lists[i].id) === String(id)) return lists[i]; } return null; }
   function renderFields() {
-    FIELDS.forEach(function (f) {
+    var defs = fieldDefs.length
+      ? fieldDefs.filter(function (d) { return d.capture; }).map(function (d) { return [d.key, d.label]; })
+      : FIELDS;
+    defs.forEach(function (f) {
       var key = f[0], r = rects[key];
       if (!r) return;
       var box = document.createElement('div');
@@ -802,7 +970,7 @@
   function loadBoxes() {
     if (uid === null) return;
     if (kind === 'rc') {
-      rects = defaultRects(); renderRects();
+      rects = defaultRects(); syncDefsFromRects(); renderRects();
       setStatus('Default boxes added \u2014 drag to position, then Save.');
       return;
     }
@@ -813,7 +981,7 @@
       body: JSON.stringify({ pp: collectPp(), page: currentPage })
     }).then(function (r) { return r.json(); }).then(function (d) {
       if (d && d.ok && d.boxes) rects = d.boxes;
-      renderRects(); setStatus('');
+      syncDefsFromRects(); renderRects(); setStatus('');
     }).catch(function () { setStatus('Detect failed.'); });
   }
   modal.querySelectorAll('[data-ocr-zoom]').forEach(function (b) {
@@ -866,8 +1034,14 @@
   function loadTemplateIntoEditor(t) {
     var pp = (t && t.pp) || {};
     setControls(pp);
-    rects = (t && t.rects) ? JSON.parse(JSON.stringify(t.rects)) : {};
-    if (kind === 'rc' && !Object.keys(rects).length) rects = defaultRects();
+    fieldDefs = (t && t.fields) ? JSON.parse(JSON.stringify(t.fields)) : [];
+    rects = {};
+    fieldDefs.forEach(function (d) { if (d.capture && d.box) rects[d.key] = d.box.slice(); });
+    if (kind === 'rc' && !Object.keys(rects).length) {
+      rects = defaultRects();
+      Object.keys(rects).forEach(function (k) { var d = findFieldDef(k); if (d) { d.capture = true; d.box = rects[k].slice(); } });
+    }
+    renderFieldSettings();
     anchors = (t && t.anchors)
       ? JSON.parse(JSON.stringify(t.anchors)) : [];
     anchorRefSlip = 1;
@@ -899,7 +1073,7 @@
     tplSaveBtn.disabled = true; setStatus('Saving template\u2026');
     fetch(tplUpdUrl(selectedId), {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ pp: collectPp(), rects: collectRects(),
+      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), fields: collectFields(),
         validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
         validate_text: valText ? valText.value : '', fail_template_id: valFail ? valFail.value : '' })
     }).then(function (r) { return r.json(); }).then(function (d) {
@@ -921,7 +1095,7 @@
     tplCreateBtn.disabled = true; setStatus('Creating template\u2026');
     fetch(TPLS_URL, {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ name: name, kind: kind, pp: collectPp(), rects: collectRects(),
+      body: JSON.stringify({ name: name, kind: kind, pp: collectPp(), rects: collectRects(), fields: collectFields(),
         validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
         validate_text: valText ? valText.value : '', fail_template_id: valFail ? valFail.value : '' })
     }).then(function (r) { return r.json(); }).then(function (d) {
@@ -942,6 +1116,8 @@
     setZoom(1); overlay.innerHTML = ''; rects = {}; slipPages = [];
     anchors = []; anchorMode = false; anchorRefSlip = 1;
     validateBox = null; validateMode = false;
+    fieldDefs = []; lists = [];
+    if (fldBody) fldBody.innerHTML = '';
     if (valEnabled) valEnabled.checked = false;
     if (valText) valText.value = '';
     if (valFail) valFail.value = '';
@@ -959,6 +1135,7 @@
           totalPages = d.pages || 1;
         }
         setPageLabel();
+        lists = d.lists || []; renderLists();
         templates = d.templates || [];
         var chosen = (d.template_id && findTpl(d.template_id)) ? d.template_id
           : (templates.length ? templates[0].id : null);
@@ -989,7 +1166,7 @@
     fetch(url(SAVE_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ template_id: selectedId, pp: collectPp(), rects: collectRects(), reprocess: !!(reproc && reproc.checked), anchors: collectAnchors(), ref_slip: anchorRefSlip,
+      body: JSON.stringify({ template_id: selectedId, pp: collectPp(), rects: collectRects(), fields: collectFields(), reprocess: !!(reproc && reproc.checked), anchors: collectAnchors(), ref_slip: anchorRefSlip,
         validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
         validate_text: valText ? valText.value : '', fail_template_id: valFail ? valFail.value : '' })
     }).then(function (r) { return r.json(); })

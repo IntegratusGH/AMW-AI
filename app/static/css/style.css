@@ -641,6 +641,29 @@ select.input { appearance: auto; }
 .val-captured { font-size: 12.5px; word-break: break-word; }
 .val-captured.ok { color: var(--success); font-weight: 600; }
 .val-captured.bad { color: var(--danger); }
+.ocr-tab-help { margin: 0 0 10px; font-size: 12.5px; }
+.fld-wrap { max-height: 300px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.fld-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.fld-table th, .fld-table td { padding: 5px 6px; border-bottom: 1px solid var(--border); text-align: left; }
+.fld-table thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.fld-table input[type=text], .fld-table select { width: 100%; box-sizing: border-box;
+  padding: 4px 6px; border: 1px solid var(--border); border-radius: 5px;
+  background: var(--surface); color: var(--text); }
+.fld-table .fld-label { min-width: 90px; }
+.fld-add { display: flex; gap: 8px; margin: 8px 0; }
+.fld-add input { flex: 1 1 auto; padding: 6px 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--surface); color: var(--text); }
+.fld-del { color: var(--danger); font-size: 16px; line-height: 1; }
+.fld-lists { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+.fld-lists__title { margin: 0 0 6px; font-size: 13px; }
+.fld-lists__row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.fld-lists__row select, .fld-lists__row input { padding: 6px 8px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--surface); color: var(--text); }
+.fld-lists__row input { flex: 1 1 auto; }
+.fld-lists textarea { width: 100%; box-sizing: border-box; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+  color: var(--text); font-family: inherit; resize: vertical; }
+.fld-lists__hint { margin: 6px 0 0; font-size: 12px; }
 .ocr-anchor__del { position: absolute; top: -15px; right: -2px; width: 15px;
   height: 14px; line-height: 13px; text-align: center; font-size: 12px;
   background: #b91c1c; color: #fff; border-radius: 3px; cursor: pointer;

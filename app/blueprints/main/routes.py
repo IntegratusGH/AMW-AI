@@ -25,6 +25,7 @@ from flask import (
 from flask_login import current_user, login_required
 from sqlalchemy import case, func
 from sqlalchemy import inspect as sqla_inspect
+from sqlalchemy import text as sa_text
 from werkzeug.utils import secure_filename
 
 from app.blueprints.main import main_bp
@@ -58,6 +59,8 @@ from app.models import (
     MatchedRecord,
     Module,
     OcrCorrection,
+    OcrCustomField,
+    OcrList,
     OcrTemplate,
     ReceiptRecord,
     ReceiptUpload,
@@ -240,6 +243,185 @@ def _delete_cr_crops(app, rec) -> None:
                 os.remove(os.path.join(crop_dir, fn))
             except OSError:
                 pass
+
+
+# ===== User-added (custom) record columns ================================
+# Non-canonical fields defined in the Field-setting tab get a real NVARCHAR
+# column on the kind's records table, created on demand and tracked in
+# ocr_custom_fields.  Canonical (ORM-mapped) fields keep their typed columns.
+_RECORD_TABLE = {"cr": "cr_book_records", "rc": "receipt_records"}
+_RECORD_MODEL = {"cr": CRBookRecord, "rc": ReceiptRecord}
+_VALID_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+
+
+def _canonical_keys(kind: str) -> set:
+    """Names of the real, ORM-mapped columns on a kind's records table."""
+    return {c.key for c in sqla_inspect(_RECORD_MODEL[kind]).columns}
+
+
+def _safe_field_key(key) -> str | None:
+    key = (key or "").strip().lower()
+    return key if _VALID_KEY_RE.match(key) else None
+
+
+def _column_exists(table: str, col: str) -> bool:
+    row = db.session.execute(sa_text(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS "
+        "WHERE TABLE_NAME=:t AND COLUMN_NAME=:c"),
+        {"t": table, "c": col}).first()
+    return row is not None
+
+
+def ensure_record_column(kind: str, key: str, label: str | None = None) -> bool:
+    """Ensure a real ``NVARCHAR(255)`` column ``key`` exists on the kind's
+    records table for a user-added field, registering it in ocr_custom_fields.
+    Canonical fields are left untouched.  Returns True when ``key`` is a managed
+    custom column (new or existing), False when it is canonical or invalid.
+    Idempotent; safe to call on every save."""
+    skey = _safe_field_key(key)
+    if not skey or skey in _canonical_keys(kind):
+        return False
+    table = _RECORD_TABLE.get(kind)
+    if not table:
+        return False
+    if not _column_exists(table, skey):
+        # skey is validated by _VALID_KEY_RE, so inlining the identifier is safe.
+        db.session.execute(sa_text(
+            f"ALTER TABLE [{table}] ADD [{skey}] NVARCHAR(255) NULL"))
+    reg = OcrCustomField.query.filter_by(kind=kind, key=skey).first()
+    if reg is None:
+        db.session.add(OcrCustomField(
+            kind=kind, key=skey, label=(label or skey),
+            created_by=getattr(current_user, "id", None)))
+    elif label and reg.label != label:
+        reg.label = label
+    db.session.commit()
+    return True
+
+
+def _persist_fields(tpl, data: dict, kind: str) -> None:
+    """Clean + persist a template's field defs (mask/value/capture/box) from a
+    request payload, creating any new custom record columns.  No-op when the
+    payload carries no 'fields' key (so old clients that only send rects keep
+    working)."""
+    from app.utils import registration_ocr as ocr
+    if "fields" not in data:
+        return
+    defs = ocr.clean_fields(data.get("fields"), kind)
+    for d in defs:
+        if d.get("capture") and d["key"] not in _canonical_keys(kind):
+            ensure_record_column(kind, d["key"], d.get("label"))
+    tpl.fields = json.dumps(defs) if defs else None
+
+
+def _list_lookup(name: str):
+    """Resolve a global list name to its item lines (for [List name] masks)."""
+    lst = OcrList.query.filter_by(name=(name or "").strip()).first()
+    return lst.item_lines() if lst else None
+
+
+def _lists_json() -> list:
+    """All global lookup lists (name + raw items text) for the Field-setting
+    tab's list manager and the Value [List name] picker."""
+    return [{"id": l.id, "name": l.name, "items": l.items or ""}
+            for l in OcrList.query.order_by(OcrList.name).all()]
+
+
+def _tpl_pp(tpl):
+    """Parsed image-settings dict for a template (empty when none)."""
+    from app.utils import registration_ocr as ocr
+    if not tpl or not tpl.ocr_pp:
+        return None
+    try:
+        return ocr.clean_pp(json.loads(tpl.ocr_pp)) or None
+    except (ValueError, TypeError):
+        return None
+
+
+def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
+    """Post-extraction pass over every record of an upload: read each template
+    capture-field box and apply its Apply-mask rule.  Custom (non-canonical)
+    fields take their value from the box read + mask and are written to their
+    real record column; canonical fields keep their tuned value but have the
+    mask applied to validate/snap it.  A mask reporting 'not ok' flags the
+    record for review (the correct-or-flagged guarantee).  Returns
+    ``{record_id: {custom_key: value}}`` so the field_values mirror can include
+    the custom fields."""
+    from app.utils import registration_ocr as ocr
+    out: dict = {}
+    if tpl is None:
+        return out
+    defs = ocr.template_field_defs(tpl)
+    canon = _canonical_keys(kind)
+    str_cols = {c.key for c in sqla_inspect(_RECORD_MODEL[kind]).columns
+                if isinstance(c.type, db.String)}
+    cap_defs = [d for d in defs if d.get("box") and d.get("capture")
+                and _safe_field_key(d["key"]) and d["key"] not in canon]
+    mask_defs = [d for d in defs
+                 if (d.get("mask") or "none") != "none" and d.get("value")]
+    if not cap_defs and not mask_defs:
+        return out
+    for d in cap_defs:
+        ensure_record_column(kind, d["key"], d.get("label"))
+    recs = RecordModel.query.filter_by(upload_id=upload_id).all()
+    if not recs:
+        return out
+    tpp = _tpl_pp(tpl)
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        slips = _rc_slip_index(up) if kind == "rc" else None
+        for rec in recs:
+            if kind == "cr":
+                pno = getattr(rec, "page_no", None) or 1
+                page = doc[min(max(1, pno), total) - 1]
+                region = None
+            else:
+                idx = (getattr(rec, "segment_no", None) or 1) - 1
+                if not slips or not (0 <= idx < len(slips)):
+                    continue
+                s = slips[idx]
+                page = doc[s["page"]]
+                region = ocr._slip_region_pts(page, s["y0"], s["y1"], s["zoom"])
+            flagged = False
+            for d in cap_defs:
+                fpp = d.get("pp") or tpp
+                if kind == "cr":
+                    raw, _c = ocr.read_rect(page, d["box"], pp=fpp)
+                else:
+                    raw, _c = ocr.read_slip_rect(page, region, d["box"], pp=fpp)
+                val, ok = ocr.apply_field_mask(
+                    d.get("mask"), d.get("value"), raw, _list_lookup)
+                out.setdefault(rec.id, {})[d["key"]] = val or ""
+                if not ok:
+                    flagged = True
+            for d in mask_defs:
+                role = d.get("role") or d["key"]
+                if role not in canon:
+                    continue
+                cur = getattr(rec, role, None)
+                val, ok = ocr.apply_field_mask(
+                    d.get("mask"), d.get("value"),
+                    None if cur is None else str(cur), _list_lookup)
+                if role in str_cols and val is not None \
+                        and val != (None if cur is None else str(cur)):
+                    setattr(rec, role, val[:255])
+                if not ok:
+                    flagged = True
+            if flagged and hasattr(rec, "needs_review"):
+                rec.needs_review = True
+            cvals = {k: v for k, v in (out.get(rec.id) or {}).items()
+                     if _safe_field_key(k)}
+            if cvals:
+                table = _RECORD_TABLE[kind]
+                sets = ", ".join(f"[{k}]=:v_{k}" for k in cvals)
+                params = {f"v_{k}": (v or None) for k, v in cvals.items()}
+                params["rid"] = rec.id
+                db.session.execute(sa_text(
+                    f"UPDATE [{table}] SET {sets} WHERE id=:rid"), params)
+        db.session.commit()
+    finally:
+        doc.close()
+    return out
 
 
 def _run_processing(app, kind: str, upload_id: int) -> None:
@@ -545,11 +727,21 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         setattr(rec_obj, attr, fn)
                 db.session.commit()
 
+            # Custom (user-added) field capture + Apply-mask refinement.  Reads
+            # each template capture box per record, applies the field's mask,
+            # writes custom values to their real columns and flags uncertain
+            # reads for review.  Returns the custom values for the JSON mirror.
+            up.progress_message = "Applying field masks…"
+            db.session.commit()
+            custom_vals = _capture_custom_and_masks(
+                kind, up, tpl, RecordModel, upload_id)
+
             # Hybrid field storage: mirror each record's final (batch-corrected)
             # canonical values, crops and confidences into the template-driven
             # field_values/field_crops/field_confidence JSON.  Driven by the
             # upload's template field defs (or the kind's built-in defaults),
-            # keyed by field key, values read via each field's role.
+            # keyed by field key, values read via each field's role.  Custom
+            # field values (from the mask pass) are merged in on top.
             defs = (ocr.template_field_defs(tpl) if tpl
                     else ocr.default_field_defs(kind))
             crop_attr = cfg.get("crop_attr", {})
@@ -558,6 +750,9 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                     upload_id=upload_id).all():
                 fv, fc, fk = ocr.build_field_data(
                     defs, rec_obj, crop_attr, conf_attr)
+                for k, v in (custom_vals.get(rec_obj.id) or {}).items():
+                    if v not in (None, ""):
+                        fv[k] = v
                 rec_obj.field_values = json.dumps(fv) if fv else None
                 rec_obj.field_crops = json.dumps(fc) if fc else None
                 rec_obj.field_confidence = json.dumps(fk) if fk else None
@@ -1158,8 +1353,27 @@ def upload_records(kind: str, upload_id: int):
         RecordModel.query.filter_by(upload_id=upload_id)
         .order_by(RecordModel.id).all()
     )
+    # Template-defined custom fields (non-canonical) associated with this
+    # upload, shown as extra columns from each record's field_values JSON.
+    from app.utils import registration_ocr as ocr
+    canon = _canonical_keys(kind)
+    defs = (ocr.template_field_defs(up.template)
+            if getattr(up, "template_id", None) else [])
+    label_by_key = {d["key"]: d["label"] for d in defs}
+    extra_keys = [d["key"] for d in defs if d["key"] not in canon]
+    for r in records:
+        try:
+            r.fv = json.loads(r.field_values) if r.field_values else {}
+        except (ValueError, TypeError):
+            r.fv = {}
+        for k in r.fv:
+            if k not in canon and k not in extra_keys:
+                extra_keys.append(k)
+                label_by_key.setdefault(k, k.replace("_", " ").title())
+    extra_fields = [(k, label_by_key.get(k, k)) for k in extra_keys]
     return render_template(
-        "main/registration_records.html", kind=kind, upload=up, records=records)
+        "main/registration_records.html", kind=kind, upload=up,
+        records=records, extra_fields=extra_fields)
 
 
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>"
@@ -1602,6 +1816,7 @@ def _tpl_json(t: "OcrTemplate") -> dict:
         vbox = None
     return {"id": t.id, "name": t.name, "kind": t.kind or "cr",
             "pp": pp, "rects": rects,
+            "fields": ocr.template_field_defs(t),
             "anchors": [a["box"] for a in anchors],
             "validate_enabled": bool(getattr(t, "validate_enabled", False)),
             "validate_box": [float(n) for n in vbox] if vbox else None,
@@ -1856,7 +2071,8 @@ def cr_ocr_init(upload_id: int):
                  .filter_by(kind="cr")
                  .order_by(OcrTemplate.updated_at.desc()).all()]
     return jsonify({"ok": True, "pages": total,
-                    "template_id": up.template_id, "templates": templates})
+                    "template_id": up.template_id, "templates": templates,
+                    "lists": _lists_json()})
 
 
 @main_bp.route("/operations/registration-updater/ocr-templates",
@@ -1892,6 +2108,8 @@ def cr_ocr_templates():
                     validate_text=v_text, fail_template_id=v_fail)
     db.session.add(t)
     db.session.commit()
+    _persist_fields(t, data, kind)
+    db.session.commit()
     record_audit("ocr_template_create", f"id={t.id} name={name!r}")
     return jsonify({"ok": True, "template": _tpl_json(t)})
 
@@ -1917,10 +2135,54 @@ def cr_ocr_template_update(tid: int):
     t.ocr_pp = json.dumps(pp) if pp else None
     t.ocr_rects = json.dumps(rects) if rects else None
     _apply_validation(t, data)
+    _persist_fields(t, data, t.kind or "cr")
     db.session.commit()
     record_audit("ocr_template_update",
                  f"id={t.id} pp={sorted(pp)} rects={sorted(rects)}")
     return jsonify({"ok": True, "template": _tpl_json(t)})
+
+
+@main_bp.route("/operations/registration-updater/ocr-lists",
+               methods=["GET", "POST"])
+@login_required
+def ocr_lists():
+    """List global lookup lists (GET) or upsert one by name (POST {name,
+    items}).  ``items`` is stored verbatim (newline-separated entries)."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    if request.method == "GET":
+        return jsonify({"ok": True, "lists": _lists_json()})
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()[:120]
+    if not name:
+        return jsonify({"ok": False, "error": "List name is required."}), 400
+    items = data.get("items")
+    if isinstance(items, list):
+        items = "\n".join(str(x) for x in items)
+    items = (items or "").strip() or None
+    lst = OcrList.query.filter_by(name=name).first()
+    if lst is None:
+        lst = OcrList(name=name, items=items,
+                      created_by=getattr(current_user, "id", None))
+        db.session.add(lst)
+    else:
+        lst.items = items
+    db.session.commit()
+    record_audit("ocr_list_save", f"id={lst.id} name={name!r}")
+    return jsonify({"ok": True, "lists": _lists_json()})
+
+
+@main_bp.route("/operations/registration-updater/ocr-lists/<int:lid>/delete",
+               methods=["POST"])
+@login_required
+def ocr_list_delete(lid: int):
+    """Delete a global lookup list."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    lst = db.session.get(OcrList, lid) or abort(404)
+    name = lst.name
+    db.session.delete(lst)
+    db.session.commit()
+    record_audit("ocr_list_delete", f"id={lid} name={name!r}")
+    return jsonify({"ok": True, "lists": _lists_json()})
 
 
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-settings",
@@ -1949,6 +2211,7 @@ def cr_ocr_settings(upload_id: int):
     tpl.ocr_rects = json.dumps(rects) if rects else None
     tpl.ocr_anchors = json.dumps(anchors) if anchors else None
     _apply_validation(tpl, data)
+    _persist_fields(tpl, data, "cr")
     up.template_id = tpl.id
     db.session.commit()
     record_audit("cr_ocr_settings",
@@ -2066,7 +2329,8 @@ def rc_ocr_init(upload_id: int):
     return jsonify({"ok": True, "pages": total,
                     "slip_count": len(slips),
                     "slips": [{"page": s["page"] + 1} for s in slips],
-                    "template_id": up.template_id, "templates": templates})
+                    "template_id": up.template_id, "templates": templates,
+                    "lists": _lists_json()})
 
 
 @main_bp.route("/operations/registration-updater/rc/<int:upload_id>/ocr-preview",
@@ -2192,6 +2456,7 @@ def rc_ocr_settings(upload_id: int):
     tpl.ocr_rects = json.dumps(rects) if rects else None
     tpl.ocr_anchors = json.dumps(anchors) if anchors else None
     _apply_validation(tpl, data)
+    _persist_fields(tpl, data, "rc")
     up.template_id = tpl.id
     db.session.commit()
     record_audit("rc_ocr_settings",

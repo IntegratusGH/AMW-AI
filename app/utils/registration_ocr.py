@@ -2155,8 +2155,13 @@ def field_type(key: str) -> str:
 def default_field_defs(kind: str) -> list[dict]:
     """Built-in field definitions for a doc kind (no boxes / pp yet)."""
     return [{"key": k, "label": field_label(kind, k), "type": field_type(k),
-             "role": k, "box": None, "pp": None}
+             "role": k, "box": None, "pp": None,
+             "capture": False, "mask": "none", "value": ""}
             for k in _DEFAULT_FIELD_KEYS.get(kind, [])]
+
+
+# Apply-mask rule identifiers stored on each field def.
+_MASK_TYPES = {"none", "pattern", "partial50", "partial75", "charcount"}
 
 
 def clean_fields(fields, kind: str = "cr") -> list[dict]:
@@ -2184,6 +2189,9 @@ def clean_fields(fields, kind: str = "cr") -> list[dict]:
                             round(x1, 4), round(y1, 4)]
             except (TypeError, ValueError):
                 cbox = None
+        mask = str(f.get("mask") or "none").strip()
+        if mask not in _MASK_TYPES:
+            mask = "none"
         out.append({
             "key": key,
             "label": str(f.get("label") or field_label(kind, key)),
@@ -2191,6 +2199,9 @@ def clean_fields(fields, kind: str = "cr") -> list[dict]:
             "role": str(f.get("role") or key),
             "box": cbox,
             "pp": (clean_pp(f.get("pp")) or None),
+            "capture": bool(f.get("capture", cbox is not None)),
+            "mask": mask,
+            "value": str(f.get("value") or "").strip(),
         })
     return out
 
@@ -2206,10 +2217,12 @@ def fields_from_rects(kind: str, rects, pp=None) -> list[dict]:
         d = by_key.get(key)
         if d is None:
             d = {"key": key, "label": field_label(kind, key),
-                 "type": field_type(key), "role": key, "box": None, "pp": None}
+                 "type": field_type(key), "role": key, "box": None, "pp": None,
+                 "capture": True, "mask": "none", "value": ""}
             defs.append(d)
             by_key[key] = d
         d["box"] = box
+        d["capture"] = True
     return clean_fields(defs, kind)
 
 
@@ -2233,6 +2246,158 @@ def template_field_defs(template) -> list[dict]:
         except (ValueError, TypeError):
             rects = {}
     return fields_from_rects(kind, rects)
+
+
+# ===== Apply-mask refinement =============================================
+# Each field def carries a ``mask`` + ``value``; after a field's box is OCR'd
+# these refine/validate the read.  ``value`` is either a literal or ``[List
+# name]`` (expanded via a caller-supplied lookup to the global list's lines).
+
+def _mask_entries(value, list_lookup) -> list[str]:
+    """Resolve a field Value into candidate entries: ``[List name]`` expands to
+    that global list's non-empty lines; anything else is a single literal."""
+    v = (value or "").strip()
+    if not v:
+        return []
+    m = re.fullmatch(r"\[(.+)\]", v)
+    if m:
+        items = list_lookup(m.group(1).strip()) if list_lookup else None
+        return [s.strip() for s in (items or []) if s and s.strip()]
+    return [v]
+
+
+def _mask_like_re(pattern: str) -> str:
+    """Access-style ``Like`` pattern -> anchored regex (mirrors the Template
+    picker's validate-text matcher): ``*``=run, ``?``=letter, ``#``=digit,
+    ``[abc]``/``[a-c]`` class, ``[!abc]`` negated class."""
+    out = ["^"]
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            out.append(".*")
+        elif c == "?":
+            out.append("[A-Za-z]")
+        elif c == "#":
+            out.append("[0-9]")
+        elif c == "[":
+            j = pattern.find("]", i + 1)
+            if j == -1:
+                out.append(re.escape(c))
+            else:
+                inner = pattern[i + 1:j]
+                neg = inner.startswith("!")
+                if neg:
+                    inner = inner[1:]
+                inner = inner.replace("\\", "\\\\").replace("^", "\\^")
+                out.append("[" + ("^" if neg else "") + inner + "]")
+                i = j
+        else:
+            out.append(re.escape(c))
+        i += 1
+    out.append("$")
+    return "".join(out)
+
+
+def _mask_like_ok(pattern: str, text: str) -> bool:
+    toks = pattern.split()
+    if any(t.lower() in ("and", "or", "not") for t in toks):
+        return _mask_like_eval(toks, text)
+    try:
+        return re.match(_mask_like_re(pattern), text or "",
+                        re.IGNORECASE) is not None
+    except re.error:
+        return False
+
+
+def _mask_like_eval(tokens: list[str], text: str) -> bool:
+    """Boolean expression of Like-patterns joined by and/or/not (not>and>or)."""
+    pos = 0
+
+    def one(tok):
+        try:
+            return re.match(_mask_like_re(tok), text or "",
+                            re.IGNORECASE) is not None
+        except re.error:
+            return False
+
+    def p_or():
+        nonlocal pos
+        val = p_and()
+        while pos < len(tokens) and tokens[pos].lower() == "or":
+            pos += 1
+            rhs = p_and()
+            val = val or rhs
+        return val
+
+    def p_and():
+        nonlocal pos
+        val = p_not()
+        while pos < len(tokens) and tokens[pos].lower() == "and":
+            pos += 1
+            rhs = p_not()
+            val = val and rhs
+        return val
+
+    def p_not():
+        nonlocal pos
+        if pos < len(tokens) and tokens[pos].lower() == "not":
+            pos += 1
+            return not p_not()
+        if pos >= len(tokens):
+            return False
+        tok = tokens[pos]
+        pos += 1
+        return one(tok)
+
+    return p_or()
+
+
+def _mask_ratio(a: str, b: str) -> float:
+    from difflib import SequenceMatcher
+    a = (a or "").strip().lower()
+    b = (b or "").strip().lower()
+    if not a and not b:
+        return 1.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def apply_field_mask(mask, value, text, list_lookup=None):
+    """Refine an OCR ``text`` for a field per its ``mask`` + ``value``.  Returns
+    ``(new_text, ok)``; ``ok`` False means the value is uncertain and the record
+    should be flagged for review (the app's correct-or-flagged guarantee):
+      none        -> keep raw text.
+      pattern     -> keep text; ok if it matches any Value pattern.
+      partial50/75-> snap to the closest Value entry when similarity >= .50/.75,
+                     else keep raw + not ok.
+      charcount   -> Value is a number N; ok iff len(text) == N (never trims)."""
+    mask = (mask or "none").strip()
+    text = "" if text is None else str(text).strip()
+    if mask in ("", "none"):
+        return (text or None), True
+    if mask == "charcount":
+        entries = _mask_entries(value, list_lookup)
+        cand = entries[0] if entries else (value or "")
+        m = re.search(r"\d+", cand or "")
+        if not m:
+            return (text or None), True
+        return (text or None), (len(text) == int(m.group(0)))
+    entries = _mask_entries(value, list_lookup)
+    if not entries:
+        return (text or None), True
+    if mask == "pattern":
+        return (text or None), any(_mask_like_ok(p, text) for p in entries)
+    if mask in ("partial50", "partial75"):
+        thr = 0.5 if mask == "partial50" else 0.75
+        best, score = None, 0.0
+        for e in entries:
+            r = _mask_ratio(text, e)
+            if r > score:
+                best, score = e, r
+        if best is not None and score >= thr:
+            return best, True
+        return (text or None), False
+    return (text or None), True
 
 
 def extract_page(kind: str, page, *, rule_set: str = "oldcrbook",
