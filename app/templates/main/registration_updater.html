@@ -820,9 +820,14 @@
       d.value = f.value || '';
       if (f.box) d.box = f.box.slice();
     });
+    // ocr_rects is authoritative for the built-in value boxes (it is what the
+    // extraction pipeline reads); overlay it LAST so the editor always shows
+    // the positions that will actually be used, even if a template's stored
+    // fields[].box copy has drifted out of sync.  Custom fields are not in
+    // ocr_rects (clean_rects drops them), so their fields[].box is kept.
     var rc = (t && t.rects) || {};
     Object.keys(rc).forEach(function (k) {
-      var d = byKey[k]; if (d) { d.capture = true; if (!d.box) d.box = rc[k].slice(); }
+      var d = byKey[k]; if (d) { d.capture = true; d.box = rc[k].slice(); }
     });
     return cat;
   }

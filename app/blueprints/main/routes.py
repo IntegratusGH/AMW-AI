@@ -308,7 +308,14 @@ def _persist_fields(tpl, data: dict, kind: str) -> None:
     if "fields" not in data:
         return
     defs = ocr.clean_fields(data.get("fields"), kind)
+    # Keep fields[].box in lockstep with ocr_rects for the built-in value
+    # boxes (ocr_rects is what extraction reads), so the two stores can never
+    # drift apart and mislead the editor.
+    rects = ocr.clean_rects(data.get("rects"), kind)
     for d in defs:
+        if d["key"] in rects:
+            d["box"] = list(rects[d["key"]])
+            d["capture"] = True
         if d.get("capture") and d["key"] not in _canonical_keys(kind):
             ensure_record_column(kind, d["key"], d.get("label"))
     tpl.fields = json.dumps(defs) if defs else None
