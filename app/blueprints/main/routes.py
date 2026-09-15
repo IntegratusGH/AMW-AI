@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
 import re
 import threading
 import uuid
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 from flask import (
     Response,
@@ -56,6 +58,7 @@ from app.models import (
     CRFormat,
     CRUploadPage,
     ExportDocument,
+    ExportTemplate,
     MatchedRecord,
     Module,
     OcrCorrection,
@@ -1061,6 +1064,10 @@ def registration_updater():
     map_cr_cols, map_rc_cols = _matched_view_columns(matched_records)
     export_documents = (ExportDocument.query
                         .order_by(ExportDocument.created_at.desc()).all())
+    can_edit_export = current_user.is_ai_trainer or current_user.is_administrator
+    export_samples = [{"id": m.id,
+                       "label": m.registration_no or m.vehicle_no or f"#{m.id}"}
+                      for m in matched_records[:50]]
     # Keep the user on the tab they acted from: an explicit ?tab= wins, else fall
     # back to whichever form reported validation errors (default CR).
     active_tab = request.args.get("tab")
@@ -1073,7 +1080,10 @@ def registration_updater():
         cr_counts=cr_counts, rc_counts=rc_counts,
         matched_records=matched_records, export_documents=export_documents,
         map_cr_cols=map_cr_cols, map_rc_cols=map_rc_cols,
-        active_tab=active_tab)
+        can_edit_export=can_edit_export,
+        export_config=_get_export_config(), export_fields=_export_catalog(),
+        export_default=_DEFAULT_EXPORT_CONFIG,
+        export_samples=export_samples, active_tab=active_tab)
 
 
 # Two-letter province prefixes used on some Sri Lankan registration numbers,
@@ -1355,15 +1365,42 @@ _EXPORT_HDR2 = ["TRNID", "Transaction Code", "Date (batch input)",
                 "Amount in Document Currency (Batch Input Field)",
                 "Assignment Number", "Item Text",
                 "Account or Matchcode for the Next Line Item", "Profit Center"]
-# (NEWBS, WRBTR, SGTXT, NEWKO) for the four line items of every document.
-_EXPORT_LINES = [
-    ("40", "11010", "Vehicle Registration", "177205"),
-    ("40", "25000", "Special No Fees", "177205"),
-    ("40", "4500", "Number Plate Fees", "177205"),
-    ("50", "40510", "Slip Value", "119682"),
-]
-_EXPORT_CONST = {"TCODE": "FB01", "BLART": "SA", "BUKRS": "2501",
-                 "WAERS": "LKR", "PRCTR": "W111D1"}
+# Built-in default template config: reproduces the previous fixed four-line RMV
+# UPLOAD layout, so exports are unchanged until the template is edited.
+_DEFAULT_EXPORT_CONFIG = {
+    "constants": {"TCODE": "FB01", "BLART": "SA", "BUKRS": "2501",
+                  "WAERS": "LKR", "PRCTR": "W111D1"},
+    "doc_fields": {
+        "BLDAT": {"src": "field", "key": "receipt_date", "fmt": "ddmmyyyy"},
+        "BUDAT": {"src": "field", "key": "receipt_date", "fmt": "ddmmyyyy"},
+        "XBLNR": {"src": "field", "key": "slip_no"},
+        "BKTXT": {"src": "field", "key": "receipt_no"},
+        "ZUONR": {"src": "field", "key": "chassis_no"},
+    },
+    "lines": [
+        {"newbs": "40", "newko": "177205",
+         "sgtxt": {"src": "const", "value": "Vehicle Registration"},
+         "amount": {"src": "const", "value": "11010"},
+         "when": {"type": "always"}},
+        {"newbs": "40", "newko": "177205",
+         "sgtxt": {"src": "const", "value": "Special No Fees"},
+         "amount": {"src": "const", "value": "25000"},
+         "when": {"type": "always"}},
+        {"newbs": "40", "newko": "177205",
+         "sgtxt": {"src": "const", "value": "Number Plate Fees"},
+         "amount": {"src": "const", "value": "4500"},
+         "when": {"type": "always"}},
+        {"newbs": "50", "newko": "119682",
+         "sgtxt": {"src": "const", "value": "Slip Value"},
+         "amount": {"src": "sum_debits"},
+         "when": {"type": "always"}},
+    ],
+}
+# Fixed 15-column output layout; per-column source resolved from the config's
+# constants / doc_fields / per-line values (TRNID and the line-level
+# NEWBS/WRBTR/SGTXT/NEWKO are filled per row).
+_EXPORT_CONST_COLS = ("TCODE", "BLART", "BUKRS", "WAERS", "PRCTR")
+_EXPORT_DOC_COLS = ("BLDAT", "BUDAT", "XBLNR", "BKTXT", "ZUONR")
 
 
 def _to_ddmmyyyy(value) -> str:
@@ -1383,18 +1420,162 @@ def _to_ddmmyyyy(value) -> str:
     return re.sub(r"\D", "", str(value))
 
 
+def _export_catalog() -> list:
+    """Merged field list offered in the Export-setting popup: every CR-book and
+    receipt field (canonical + custom) as ``{key,label,group}``."""
+    out, seen = [], set()
+    for kind, group in (("cr", "CR Book"), ("rc", "Receipt")):
+        for d in _field_catalog(kind):
+            if d["key"] in seen:
+                continue
+            seen.add(d["key"])
+            out.append({"key": d["key"], "label": d["label"], "group": group})
+    return out
+
+
+def _get_export_config() -> dict:
+    """Load the saved export template config, falling back to the built-in
+    default; missing sections are backfilled from the default."""
+    tpl = ExportTemplate.query.order_by(ExportTemplate.id).first()
+    cfg = None
+    if tpl and tpl.config:
+        try:
+            parsed = json.loads(tpl.config)
+            if isinstance(parsed, dict):
+                cfg = parsed
+        except (ValueError, TypeError):
+            cfg = None
+    if cfg is None:
+        return copy.deepcopy(_DEFAULT_EXPORT_CONFIG)
+    cfg.setdefault("constants", {})
+    cfg.setdefault("doc_fields", {})
+    if not isinstance(cfg.get("lines"), list):
+        cfg["lines"] = []
+    for col, val in _DEFAULT_EXPORT_CONFIG["constants"].items():
+        cfg["constants"].setdefault(col, val)
+    return cfg
+
+
+def _export_values(m) -> dict:
+    """Flat ``key -> value`` view of a matched record for export: every field
+    from the CR and receipt snapshots (custom fields included), with typed
+    columns as a fallback for pre-snapshot rows."""
+    vals: dict = {}
+    for js in (m.cr_fields, m.rc_fields):
+        try:
+            arr = json.loads(js) if js else []
+        except (ValueError, TypeError):
+            arr = []
+        if isinstance(arr, list):
+            for it in arr:
+                k = it.get("k")
+                if k and vals.get(k) in (None, ""):
+                    vals[k] = it.get("v")
+    for k in ("registration_no", "chassis_no", "engine_no", "vehicle_no",
+              "slip_no", "receipt_no", "receipt_date", "total_amount",
+              "bank_charges", "bank_total"):
+        if vals.get(k) in (None, ""):
+            vals[k] = _json_val(getattr(m, k, None))
+    return vals
+
+
+def _amount_dec(value) -> Decimal:
+    """Parse a captured/constant amount into a Decimal (0 on failure)."""
+    try:
+        return Decimal(re.sub(r"[^0-9.\-]", "", str(value)) or "0")
+    except (InvalidOperation, ValueError):
+        return Decimal(0)
+
+
+def _fmt_amount(dec: Decimal) -> str:
+    """Format an amount: no decimals when whole, else two decimals."""
+    dec = dec or Decimal(0)
+    if dec == dec.to_integral_value():
+        return str(int(dec))
+    return f"{dec:.2f}"
+
+
+def _resolve_source(spec, vals) -> str:
+    """Resolve a value-source spec (constant / field, with optional date format)
+    to a string.  ``sum_debits`` is handled by the caller, not here."""
+    if not isinstance(spec, dict):
+        return ""
+    src = spec.get("src")
+    if src == "const":
+        return str(spec.get("value") or "")
+    if src == "field":
+        v = vals.get(spec.get("key"))
+        s = "" if v is None else str(v)
+        if spec.get("fmt") == "ddmmyyyy":
+            return _to_ddmmyyyy(s)
+        return s
+    return ""
+
+
+def _eval_when(when, vals) -> bool:
+    """Evaluate a line's include condition against a record's values."""
+    t = (when or {}).get("type", "always")
+    if t == "always":
+        return True
+    v = vals.get((when or {}).get("key"))
+    if t == "has_value":
+        return _nonempty(v)
+    if t == "empty":
+        return not _nonempty(v)
+    if t == "compare":
+        if not _nonempty(v):
+            return False
+        try:
+            a = float(re.sub(r"[^0-9.\-]", "", str(v)) or "nan")
+            b = float(when.get("value"))
+        except (ValueError, TypeError):
+            return False
+        op = when.get("op")
+        return {">": a > b, ">=": a >= b, "=": a == b,
+                "!=": a != b}.get(op, False)
+    return True
+
+
+def _build_record_rows(m, trnid: int, cfg: dict) -> list:
+    """Expand one matched record into its output rows per the template config."""
+    vals = _export_values(m)
+    consts = cfg.get("constants", {})
+    doc = {col: _resolve_source(cfg.get("doc_fields", {}).get(col, {}), vals)
+           for col in _EXPORT_DOC_COLS}
+    included, debit_sum = [], Decimal(0)
+    for ln in cfg.get("lines", []):
+        if not _eval_when(ln.get("when"), vals):
+            continue
+        amt_spec = ln.get("amount", {})
+        if amt_spec.get("src") == "sum_debits":
+            amt = None
+        else:
+            amt = _amount_dec(_resolve_source(amt_spec, vals))
+            if str(ln.get("newbs", "")) == "40":
+                debit_sum += amt
+        included.append((ln, amt))
+    rows = []
+    for ln, amt in included:
+        if amt is None:  # sum_debits placeholder
+            amt = debit_sum
+        rows.append([
+            str(trnid), consts.get("TCODE", ""), doc["BLDAT"],
+            consts.get("BLART", ""), consts.get("BUKRS", ""), doc["BUDAT"],
+            consts.get("WAERS", ""), doc["XBLNR"], doc["BKTXT"],
+            str(ln.get("newbs", "")), _fmt_amount(amt), doc["ZUONR"],
+            _resolve_source(ln.get("sgtxt", {}), vals),
+            str(ln.get("newko", "")), consts.get("PRCTR", "")])
+    return rows
+
+
 def _write_rmv_export(path: str, records) -> None:
     """Write the matched ``records`` as a tab-separated RMV UPLOAD file: two
-    header rows then, per record, four line items (TRNID increments per record)."""
+    header rows then, per record, the template's line items (TRNID increments
+    per record)."""
+    cfg = _get_export_config()
     rows = [_EXPORT_HDR1, _EXPORT_HDR2]
     for i, m in enumerate(records, start=1):
-        date = _to_ddmmyyyy(m.receipt_date)
-        for newbs, wrbtr, sgtxt, newko in _EXPORT_LINES:
-            rows.append([
-                str(i), _EXPORT_CONST["TCODE"], date, _EXPORT_CONST["BLART"],
-                _EXPORT_CONST["BUKRS"], date, _EXPORT_CONST["WAERS"],
-                m.slip_no or "", m.receipt_no or "", newbs, wrbtr,
-                m.chassis_no or "", sgtxt, newko, _EXPORT_CONST["PRCTR"]])
+        rows.extend(_build_record_rows(m, i, cfg))
     with open(path, "w", encoding="utf-8", newline="") as fh:
         fh.write("".join("\t".join(r) + "\r\n" for r in rows))
 
@@ -1476,6 +1657,97 @@ def download_export(export_id: int):
     return send_file(doc.stored_path, as_attachment=True,
                      download_name=doc.filename,
                      mimetype="application/vnd.ms-excel")
+
+
+def _clean_source_spec(spec, allow_sum=False) -> dict:
+    """Sanitise a value-source spec posted from the Export-setting popup."""
+    spec = spec if isinstance(spec, dict) else {}
+    src = spec.get("src")
+    if src == "field":
+        out = {"src": "field", "key": str(spec.get("key") or "")}
+        if spec.get("fmt") == "ddmmyyyy":
+            out["fmt"] = "ddmmyyyy"
+        return out
+    if allow_sum and src == "sum_debits":
+        return {"src": "sum_debits"}
+    return {"src": "const", "value": str(spec.get("value") or "")}
+
+
+def _clean_export_config(raw) -> dict:
+    """Validate/normalise a posted export config into the stored shape."""
+    raw = raw if isinstance(raw, dict) else {}
+    constants = {}
+    for col in _EXPORT_CONST_COLS:
+        constants[col] = str((raw.get("constants") or {}).get(col, ""))
+    doc_fields = {}
+    for col in _EXPORT_DOC_COLS:
+        doc_fields[col] = _clean_source_spec((raw.get("doc_fields") or {}).get(col))
+    lines = []
+    for ln in (raw.get("lines") or []):
+        ln = ln if isinstance(ln, dict) else {}
+        when = ln.get("when") if isinstance(ln.get("when"), dict) else {}
+        wtype = when.get("type") if when.get("type") in (
+            "always", "has_value", "empty", "compare") else "always"
+        clean_when = {"type": wtype}
+        if wtype in ("has_value", "empty", "compare"):
+            clean_when["key"] = str(when.get("key") or "")
+        if wtype == "compare":
+            clean_when["op"] = when.get("op") if when.get("op") in (
+                ">", ">=", "=", "!=") else ">"
+            clean_when["value"] = str(when.get("value") or "")
+        lines.append({
+            "newbs": "50" if str(ln.get("newbs")) == "50" else "40",
+            "newko": str(ln.get("newko") or ""),
+            "sgtxt": _clean_source_spec(ln.get("sgtxt")),
+            "amount": _clean_source_spec(ln.get("amount"), allow_sum=True),
+            "when": clean_when,
+        })
+    return {"constants": constants, "doc_fields": doc_fields, "lines": lines}
+
+
+@main_bp.route("/operations/registration-updater/export/settings",
+               methods=["POST"])
+@login_required
+def export_settings_save():
+    """Persist the single export template config (AI Trainers / admins only)."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    _require_trainer()
+    cfg = _clean_export_config(request.get_json(silent=True))
+    tpl = ExportTemplate.query.order_by(ExportTemplate.id).first()
+    if tpl is None:
+        tpl = ExportTemplate(name="Default")
+        db.session.add(tpl)
+    tpl.config = json.dumps(cfg)
+    tpl.updated_by = current_user.id
+    record_audit("registration_export_settings", f"lines={len(cfg['lines'])}")
+    db.session.commit()
+    return {"ok": True}
+
+
+@main_bp.route("/operations/registration-updater/export/settings/preview",
+               methods=["POST"])
+@login_required
+def export_settings_preview():
+    """Render one matched record through a (possibly unsaved) config so the popup
+    can show a live single-record preview."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    _require_trainer()
+    body = request.get_json(silent=True) or {}
+    cfg = _clean_export_config(body.get("config"))
+    rid = body.get("record_id")
+    m = None
+    if rid:
+        m = db.session.get(MatchedRecord, int(rid))
+    if m is None:
+        m = (MatchedRecord.query
+             .filter(MatchedRecord.export_document_id == None)
+             .order_by(MatchedRecord.matched_at.desc()).first())
+    if m is None:
+        return {"ok": True, "headers": _EXPORT_HDR1, "rows": [],
+                "label": "", "empty": True}
+    rows = _build_record_rows(m, 1, cfg)
+    label = m.registration_no or m.vehicle_no or f"#{m.id}"
+    return {"ok": True, "headers": _EXPORT_HDR1, "rows": rows, "label": label}
 
 
 @main_bp.route("/operations/registration-updater/<kind>/<int:upload_id>/process",

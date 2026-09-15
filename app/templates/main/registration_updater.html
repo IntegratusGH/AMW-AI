@@ -167,6 +167,9 @@
                   formaction="{{ url_for('main.revoke_mapping') }}">&laquo; Revoke Mapping</button>
           <button class="btn btn-export" type="submit"
                   formaction="{{ url_for('main.generate_export') }}">{{ icon('spreadsheet', 16) }} Generate Export</button>
+          {% if can_edit_export %}
+          <button class="btn" type="button" data-export-open>{{ icon('cog', 16) }} Export setting</button>
+          {% endif %}
         </div>
         <label class="checkbox" style="margin-top:8px;">
           <input type="checkbox" name="omit_province" value="on">
@@ -458,6 +461,339 @@
     </div>
   </div>
 </div>
+
+{% if can_edit_export %}
+{# Export-setting popup: configure the SAP export template (single record model). #}
+<div class="tmpl-modal" data-export-modal hidden
+     data-csrf="{{ csrf_token() }}"
+     data-save-url="{{ url_for('main.export_settings_save') }}"
+     data-preview-url="{{ url_for('main.export_settings_preview') }}"
+     data-config='{{ export_config|tojson }}'
+     data-default='{{ export_default|tojson }}'
+     data-fields='{{ export_fields|tojson }}'
+     data-samples='{{ export_samples|tojson }}'>
+  <div class="tmpl-modal__backdrop" data-export-close></div>
+  <div class="tmpl-modal__panel tmpl-modal__panel--wide" role="dialog"
+       aria-modal="true" aria-label="Export setting">
+    <div class="tmpl-modal__head">
+      <h3>Export setting</h3>
+      <button type="button" class="tmpl-modal__x" data-export-close
+              aria-label="Close">{{ icon('x', 18) }}</button>
+    </div>
+    <div class="tmpl-modal__body">
+      <p class="muted">Define how one matched record expands into SAP FB01 line
+        rows. Map each output column to a captured field or a constant, and add
+        conditional lines (e.g. only when R61 has a value).</p>
+
+      <fieldset class="exp-sec">
+        <legend>Constants (same on every line)</legend>
+        <div class="exp-consts" data-export-consts></div>
+      </fieldset>
+
+      <fieldset class="exp-sec">
+        <legend>Document fields (per record)</legend>
+        <div class="exp-docs" data-export-docs></div>
+      </fieldset>
+
+      <fieldset class="exp-sec">
+        <legend>Line items (one record &rarr; these rows)</legend>
+        <table class="table exp-lines">
+          <thead>
+            <tr><th>Include when</th><th>Key</th><th>GL account</th>
+              <th>Item text</th><th>Amount</th><th></th></tr>
+          </thead>
+          <tbody data-export-lines></tbody>
+        </table>
+        <button type="button" class="btn" data-export-addline>{{ icon('plus', 14) }} Add line</button>
+      </fieldset>
+
+      <fieldset class="exp-sec">
+        <legend>Preview (single record)</legend>
+        <label class="exp-inline">Sample record
+          <select data-export-sample></select></label>
+        <div class="exp-preview-wrap">
+          <table class="table exp-preview">
+            <thead data-export-preview-head></thead>
+            <tbody data-export-preview-body></tbody>
+          </table>
+        </div>
+      </fieldset>
+    </div>
+    <div class="tmpl-modal__foot">
+      <span class="exp-status" data-export-status></span>
+      <button type="button" class="btn" data-export-reset>Reset to default</button>
+      <button type="button" class="btn btn-primary" data-export-save>{{ icon('save', 16) }} Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var modal = document.querySelector('[data-export-modal]');
+  if (!modal) return;
+  var CSRF = modal.getAttribute('data-csrf') || '';
+  var SAVE_URL = modal.getAttribute('data-save-url');
+  var PREVIEW_URL = modal.getAttribute('data-preview-url');
+  var FIELDS = JSON.parse(modal.getAttribute('data-fields') || '[]');
+  var SAMPLES = JSON.parse(modal.getAttribute('data-samples') || '[]');
+  var DEFAULT_CFG = JSON.parse(modal.getAttribute('data-default') || '{}');
+  var cfg = JSON.parse(modal.getAttribute('data-config') || '{}');
+  var CONST_COLS = ['TCODE', 'BLART', 'BUKRS', 'WAERS', 'PRCTR'];
+  var DOC_COLS = ['BLDAT', 'BUDAT', 'XBLNR', 'BKTXT', 'ZUONR'];
+  var DATE_COLS = { BLDAT: 1, BUDAT: 1 };
+  var constsBox = modal.querySelector('[data-export-consts]');
+  var docsBox = modal.querySelector('[data-export-docs]');
+  var linesBox = modal.querySelector('[data-export-lines]');
+  var sampleSel = modal.querySelector('[data-export-sample]');
+  var previewHead = modal.querySelector('[data-export-preview-head]');
+  var previewBody = modal.querySelector('[data-export-preview-body]');
+  var statusEl = modal.querySelector('[data-export-status]');
+
+  function el(tag, cls, txt) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (txt != null) e.textContent = txt;
+    return e;
+  }
+  function opt(val, label, sel) {
+    var o = document.createElement('option');
+    o.value = val; o.textContent = label;
+    if (val === sel) o.selected = true;
+    return o;
+  }
+  function fieldSelect(selKey) {
+    var s = el('select', 'exp-field');
+    s.appendChild(opt('', '— field —', selKey || ''));
+    FIELDS.forEach(function (f) {
+      s.appendChild(opt(f.key, f.label + ' (' + f.group + ')', selKey));
+    });
+    return s;
+  }
+
+  // Reusable value-source editor -> node with .read()
+  function sourceEditor(spec, allowSum, allowFmt) {
+    spec = spec || { src: 'const', value: '' };
+    var wrap = el('span', 'exp-src');
+    var type = el('select', 'exp-src-type');
+    type.appendChild(opt('field', 'Field', spec.src));
+    type.appendChild(opt('const', 'Constant', spec.src));
+    if (allowSum) type.appendChild(opt('sum_debits', 'Σ debit lines', spec.src));
+    var fsel = fieldSelect(spec.key);
+    var cin = el('input', 'exp-src-val'); cin.type = 'text';
+    cin.value = spec.src === 'const' ? (spec.value || '') : '';
+    var fmt = el('select', 'exp-src-fmt');
+    fmt.appendChild(opt('', 'Text', spec.fmt || ''));
+    fmt.appendChild(opt('ddmmyyyy', 'DDMMYYYY', spec.fmt || ''));
+    function sync() {
+      var t = type.value;
+      fsel.style.display = t === 'field' ? '' : 'none';
+      cin.style.display = t === 'const' ? '' : 'none';
+      fmt.style.display = (t === 'field' && allowFmt) ? '' : 'none';
+    }
+    type.addEventListener('change', function () { sync(); schedulePreview(); });
+    [fsel, cin, fmt].forEach(function (n) {
+      n.addEventListener('change', schedulePreview);
+      n.addEventListener('input', schedulePreview);
+    });
+    wrap.appendChild(type); wrap.appendChild(fsel);
+    if (allowFmt) wrap.appendChild(fmt);
+    wrap.appendChild(cin);
+    sync();
+    wrap.read = function () {
+      var t = type.value;
+      if (t === 'sum_debits') return { src: 'sum_debits' };
+      if (t === 'field') {
+        var o = { src: 'field', key: fsel.value };
+        if (allowFmt && fmt.value) o.fmt = fmt.value;
+        return o;
+      }
+      return { src: 'const', value: cin.value };
+    };
+    return wrap;
+  }
+
+  function whenEditor(when) {
+    when = when || { type: 'always' };
+    var wrap = el('span', 'exp-when');
+    var type = el('select', 'exp-when-type');
+    [['always', 'Always'], ['has_value', 'If has value'],
+     ['empty', 'If empty'], ['compare', 'If compare']].forEach(function (p) {
+      type.appendChild(opt(p[0], p[1], when.type));
+    });
+    var fsel = fieldSelect(when.key);
+    var op = el('select', 'exp-when-op');
+    [['>', '>'], ['>=', '≥'], ['=', '='], ['!=', '≠']].forEach(function (p) {
+      op.appendChild(opt(p[0], p[1], when.op || '>'));
+    });
+    var val = el('input', 'exp-when-val'); val.type = 'text';
+    val.value = when.value || '';
+    function sync() {
+      var t = type.value;
+      fsel.style.display = t === 'always' ? 'none' : '';
+      op.style.display = t === 'compare' ? '' : 'none';
+      val.style.display = t === 'compare' ? '' : 'none';
+    }
+    type.addEventListener('change', function () { sync(); schedulePreview(); });
+    [fsel, op, val].forEach(function (n) {
+      n.addEventListener('change', schedulePreview);
+      n.addEventListener('input', schedulePreview);
+    });
+    wrap.appendChild(type); wrap.appendChild(fsel);
+    wrap.appendChild(op); wrap.appendChild(val);
+    sync();
+    wrap.read = function () {
+      var t = type.value, o = { type: t };
+      if (t !== 'always') o.key = fsel.value;
+      if (t === 'compare') { o.op = op.value; o.value = val.value; }
+      return o;
+    };
+    return wrap;
+  }
+
+  function renderConsts() {
+    constsBox.innerHTML = '';
+    (CONST_COLS).forEach(function (c) {
+      var lab = el('label', 'exp-const', c + ' ');
+      var inp = el('input'); inp.type = 'text'; inp.dataset.col = c;
+      inp.value = (cfg.constants && cfg.constants[c]) || '';
+      inp.addEventListener('input', schedulePreview);
+      lab.appendChild(inp); constsBox.appendChild(lab);
+    });
+  }
+  function renderDocs() {
+    docsBox.innerHTML = '';
+    DOC_COLS.forEach(function (c) {
+      var row = el('div', 'exp-docrow');
+      row.appendChild(el('span', 'exp-doclab', c));
+      var ed = sourceEditor((cfg.doc_fields || {})[c], false, !!DATE_COLS[c]);
+      ed.dataset.col = c; row.appendChild(ed); docsBox.appendChild(row);
+    });
+  }
+  function lineRow(ln) {
+    ln = ln || { newbs: '40', newko: '', sgtxt: { src: 'const', value: '' },
+                 amount: { src: 'field', key: '' }, when: { type: 'always' } };
+    var tr = el('tr', 'exp-line');
+    var tdWhen = el('td'); var wed = whenEditor(ln.when); tdWhen.appendChild(wed);
+    var tdKey = el('td'); var ksel = el('select', 'exp-newbs');
+    ksel.appendChild(opt('40', '40 (debit)', String(ln.newbs)));
+    ksel.appendChild(opt('50', '50 (credit)', String(ln.newbs)));
+    ksel.addEventListener('change', schedulePreview); tdKey.appendChild(ksel);
+    var tdAcc = el('td'); var acc = el('input', 'exp-newko'); acc.type = 'text';
+    acc.value = ln.newko || ''; acc.addEventListener('input', schedulePreview);
+    tdAcc.appendChild(acc);
+    var tdTxt = el('td'); var sed = sourceEditor(ln.sgtxt, false, false);
+    tdTxt.appendChild(sed);
+    var tdAmt = el('td'); var aed = sourceEditor(ln.amount, true, false);
+    tdAmt.appendChild(aed);
+    var tdAct = el('td', 'exp-lineact');
+    var up = el('button', 'act-btn', '↑'); up.type = 'button';
+    var dn = el('button', 'act-btn', '↓'); dn.type = 'button';
+    var rm = el('button', 'act-btn act-danger', '✕'); rm.type = 'button';
+    up.addEventListener('click', function () {
+      if (tr.previousElementSibling) tr.parentNode.insertBefore(tr, tr.previousElementSibling);
+      schedulePreview();
+    });
+    dn.addEventListener('click', function () {
+      if (tr.nextElementSibling) tr.parentNode.insertBefore(tr.nextElementSibling, tr);
+      schedulePreview();
+    });
+    rm.addEventListener('click', function () { tr.remove(); schedulePreview(); });
+    tdAct.appendChild(up); tdAct.appendChild(dn); tdAct.appendChild(rm);
+    tr._when = wed; tr._newbs = ksel; tr._newko = acc; tr._sgtxt = sed; tr._amount = aed;
+    tr.appendChild(tdWhen); tr.appendChild(tdKey); tr.appendChild(tdAcc);
+    tr.appendChild(tdTxt); tr.appendChild(tdAmt); tr.appendChild(tdAct);
+    return tr;
+  }
+  function renderLines() {
+    linesBox.innerHTML = '';
+    (cfg.lines || []).forEach(function (ln) { linesBox.appendChild(lineRow(ln)); });
+  }
+  function renderSamples() {
+    sampleSel.innerHTML = '';
+    if (!SAMPLES.length) sampleSel.appendChild(opt('', '(no matched records)', ''));
+    SAMPLES.forEach(function (s) { sampleSel.appendChild(opt(String(s.id), s.label, '')); });
+  }
+
+  function collect() {
+    var out = { constants: {}, doc_fields: {}, lines: [] };
+    constsBox.querySelectorAll('input[data-col]').forEach(function (i) {
+      out.constants[i.dataset.col] = i.value;
+    });
+    docsBox.querySelectorAll('.exp-src').forEach(function (ed) {
+      out.doc_fields[ed.dataset.col] = ed.read();
+    });
+    linesBox.querySelectorAll('tr.exp-line').forEach(function (tr) {
+      out.lines.push({
+        when: tr._when.read(), newbs: tr._newbs.value, newko: tr._newko.value,
+        sgtxt: tr._sgtxt.read(), amount: tr._amount.read()
+      });
+    });
+    return out;
+  }
+
+  var pvTimer = null;
+  function schedulePreview() {
+    clearTimeout(pvTimer);
+    pvTimer = setTimeout(runPreview, 250);
+  }
+  function runPreview() {
+    fetch(PREVIEW_URL, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ config: collect(), record_id: sampleSel.value || null })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      previewHead.innerHTML = ''; previewBody.innerHTML = '';
+      if (!d || !d.headers) return;
+      var htr = el('tr');
+      d.headers.forEach(function (h) { htr.appendChild(el('th', null, h)); });
+      previewHead.appendChild(htr);
+      (d.rows || []).forEach(function (row) {
+        var tr = el('tr');
+        row.forEach(function (c) { tr.appendChild(el('td', 'mono', c)); });
+        previewBody.appendChild(tr);
+      });
+      if (!(d.rows || []).length) {
+        var tr = el('tr');
+        tr.appendChild(el('td', 'muted', d.empty ? 'No matched records to preview.' : 'No lines produced for this record.'));
+        previewBody.appendChild(tr);
+      }
+    }).catch(function () {});
+  }
+
+  function open() {
+    modal.hidden = false;
+    renderConsts(); renderDocs(); renderLines(); renderSamples();
+    runPreview();
+  }
+  function close() { modal.hidden = true; }
+
+  document.querySelectorAll('[data-export-open]').forEach(function (b) {
+    b.addEventListener('click', open);
+  });
+  modal.querySelectorAll('[data-export-close]').forEach(function (b) {
+    b.addEventListener('click', close);
+  });
+  modal.querySelector('[data-export-addline]').addEventListener('click', function () {
+    linesBox.appendChild(lineRow(null)); schedulePreview();
+  });
+  sampleSel.addEventListener('change', runPreview);
+  modal.querySelector('[data-export-reset]').addEventListener('click', function () {
+    cfg = JSON.parse(JSON.stringify(DEFAULT_CFG));
+    renderConsts(); renderDocs(); renderLines(); schedulePreview();
+  });
+  modal.querySelector('[data-export-save]').addEventListener('click', function () {
+    statusEl.textContent = 'Saving…';
+    fetch(SAVE_URL, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify(collect())
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      statusEl.textContent = (d && d.ok) ? 'Saved.' : 'Save failed.';
+    }).catch(function () { statusEl.textContent = 'Save failed.'; });
+  });
+})();
+</script>
+{% endif %}
 
 <script>
 (function () {

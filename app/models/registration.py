@@ -414,6 +414,30 @@ class ExportDocument(db.Model):
         return f"<ExportDocument {self.id} n={self.records_count}>"
 
 
+class ExportTemplate(db.Model):
+    """The (single) configurable SAP export template used by Generate Export.
+
+    ``config`` is a JSON document describing how one matched record expands into
+    output rows: fixed ``constants``, per-document field mappings (``doc_fields``)
+    and an ordered list of ``lines`` (each with a posting key, account, item-text
+    source, an amount source and an include ``when`` condition).  Only one row is
+    kept and edited via the Export-setting popup; a missing/blank config falls
+    back to the built-in default (today's fixed four-line layout)."""
+
+    __tablename__ = "export_templates"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False, default="Default",
+                     server_default="Default")
+    config = db.Column(db.Text, nullable=True)
+    updated_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow,
+                           onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<ExportTemplate {self.id} {self.name!r}>"
+
+
 class OcrTemplate(db.Model):
     """A reusable OCR template: named image-preprocessing settings plus (for CR
     books) per-field value-region rectangles.  An upload references one template

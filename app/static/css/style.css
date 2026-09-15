@@ -688,3 +688,33 @@ select.input { appearance: auto; }
 @media (max-width: 560px) {
   .tmpl-modal__body { grid-template-columns: 1fr; }
 }
+
+/* Export-setting popup */
+[data-export-modal] .tmpl-modal__body { display: block; }
+.exp-sec { border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; margin: 0 0 14px; }
+.exp-sec > legend { font-weight: 600; padding: 0 6px; font-size: .85rem; }
+.exp-consts { display: flex; flex-wrap: wrap; gap: 10px; }
+.exp-const { display: inline-flex; align-items: center; gap: 4px;
+  font-size: .8rem; color: var(--text-muted); }
+.exp-const input { width: 90px; }
+.exp-docrow { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.exp-doclab { width: 60px; font-weight: 600; font-size: .82rem; }
+.exp-src, .exp-when { display: inline-flex; flex-wrap: wrap; gap: 4px;
+  align-items: center; }
+.exp-src input, .exp-src select, .exp-when input, .exp-when select,
+.exp-newko, .exp-newbs { font-size: .8rem; padding: 3px 5px; }
+.exp-src-val, .exp-when-val { width: 130px; }
+.exp-when-val { width: 70px; }
+.exp-newko { width: 90px; }
+.exp-lines { width: 100%; font-size: .8rem; }
+.exp-lines th, .exp-lines td { padding: 5px 6px; vertical-align: top; }
+.exp-lineact { white-space: nowrap; }
+.exp-inline { font-size: .82rem; color: var(--text-muted); }
+.exp-preview-wrap { overflow-x: auto; margin-top: 8px; }
+.exp-preview { width: 100%; border-collapse: collapse; font-size: .72rem;
+  white-space: nowrap; }
+.exp-preview th, .exp-preview td { border: 1px solid var(--border);
+  padding: 3px 6px; text-align: left; }
+.exp-preview th { color: var(--text-muted); font-weight: 600; }
+.exp-status { margin-right: auto; font-size: .82rem; color: var(--text-muted); }
