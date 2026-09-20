@@ -1703,6 +1703,29 @@ def revoke_export(export_id: int):
     return redirect(url_for("main.registration_updater", tab="export"))
 
 
+@main_bp.route("/operations/registration-updater/export/<int:export_id>/delete",
+               methods=["POST"])
+@login_required
+def delete_export(export_id: int):
+    """Permanently delete an export and its matched records (crops included);
+    unlike revoke, the records are NOT returned to the Mapped-records tab."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    doc = db.session.get(ExportDocument, export_id) or abort(404)
+    n = _delete_matched_records([m.id for m in list(doc.records)])
+    try:
+        if doc.stored_path and os.path.exists(doc.stored_path):
+            os.remove(doc.stored_path)
+    except OSError:
+        pass
+    db.session.delete(doc)
+    record_audit("registration_export_delete",
+                 f"export={export_id} records={n}")
+    db.session.commit()
+    flash(f"Export #{export_id} deleted: {n} record(s) permanently removed.",
+          "success")
+    return redirect(url_for("main.registration_updater", tab="export"))
+
+
 @main_bp.route("/operations/registration-updater/export/<int:export_id>/download")
 @login_required
 def download_export(export_id: int):

@@ -97,6 +97,20 @@
       </main>
     </div>
   </div>
+
+  {# App-wide confirmation dialog (replaces the browser's native confirm/alert). #}
+  <div class="confirm-dialog" data-confirm-dialog hidden>
+    <div class="confirm-dialog__backdrop" data-confirm-cancel></div>
+    <div class="confirm-dialog__panel" role="alertdialog" aria-modal="true"
+         aria-labelledby="confirm-dialog-msg">
+      <p class="confirm-dialog__msg" id="confirm-dialog-msg" data-confirm-msg></p>
+      <div class="confirm-dialog__actions">
+        <button type="button" class="btn" data-confirm-cancel>Cancel</button>
+        <button type="button" class="btn btn-primary" data-confirm-ok>OK</button>
+      </div>
+    </div>
+  </div>
+
   <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>

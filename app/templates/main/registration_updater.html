@@ -231,7 +231,8 @@
         <thead>
           <tr><th>Export ID</th><th>Records count</th><th>Size</th>
             <th>Created</th><th class="ta-center">Revoke</th>
-            <th class="ta-center">Download</th></tr>
+            <th class="ta-center">Download</th>
+            <th class="ta-center">Delete</th></tr>
         </thead>
         <tbody>
           {% for d in export_documents %}
@@ -251,9 +252,18 @@
               <a class="act-btn" title="Download XLS" aria-label="Download XLS"
                  href="{{ url_for('main.download_export', export_id=d.id) }}">{{ icon('spreadsheet', 16) }}</a>
             </td>
+            <td class="ta-center">
+              <form method="post" class="inline"
+                    action="{{ url_for('main.delete_export', export_id=d.id) }}"
+                    data-confirm="Permanently delete Export #{{ d.id }} and its {{ d.records_count }} record(s)? This cannot be undone — the records are NOT returned to Mapped records."
+                    data-confirm-ok="Delete">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="act-btn act-danger" type="submit" title="Delete export" aria-label="Delete export">{{ icon('trash', 16) }}</button>
+              </form>
+            </td>
           </tr>
           {% else %}
-          <tr><td colspan="6" class="muted ta-center">No exports yet. Select matched records on the Mapped records tab and click “Generate Export”.</td></tr>
+          <tr><td colspan="7" class="muted ta-center">No exports yet. Select matched records on the Mapped records tab and click “Generate Export”.</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -1083,14 +1093,17 @@
   function deleteList() {
     var l = findList(listPicker.value);
     if (!l) { setStatus('Pick a list to delete.'); return; }
-    if (!confirm('Delete list \u201c' + l.name + '\u201d?')) return;
-    fetch(LISTDEL_TPL.replace(/\/0\//, '/' + l.id + '/'), {
-      method: 'POST', headers: { 'X-CSRFToken': CSRF }
-    }).then(function (r) { return r.json(); }).then(function (d) {
-      if (!d || !d.ok) { setStatus('Delete failed.'); return; }
-      lists = d.lists || []; renderLists();
-      listName.value = ''; listItems.value = ''; setStatus('List deleted.');
-    }).catch(function () { setStatus('Network error.'); });
+    appConfirm('Delete list \u201c' + l.name + '\u201d?',
+               { danger: true, okText: 'Delete' }).then(function (ok) {
+      if (!ok) return;
+      fetch(LISTDEL_TPL.replace(/\/0\//, '/' + l.id + '/'), {
+        method: 'POST', headers: { 'X-CSRFToken': CSRF }
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (!d || !d.ok) { setStatus('Delete failed.'); return; }
+        lists = d.lists || []; renderLists();
+        listName.value = ''; listItems.value = ''; setStatus('List deleted.');
+      }).catch(function () { setStatus('Network error.'); });
+    });
   }
   listPicker && listPicker.addEventListener('change', function () {
     var l = findList(listPicker.value);
@@ -1282,19 +1295,22 @@
   function deleteField(idx) {
     var d = fieldDefs[idx]; if (!d) return;
     if (d.canonical) { setStatus('Built-in fields cannot be deleted.'); return; }
-    if (!confirm('Delete field \u201c' + (d.label || d.key) + '\u201d and its column from the '
-        + (kind === 'rc' ? 'receipt' : 'CR book') + ' records table? This removes it from ALL templates.')) return;
-    fetch(FIELDDEL_TPL.replace('__KEY__', encodeURIComponent(d.key)), {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ kind: kind })
-    }).then(function (r) { return r.json(); }).then(function (res) {
-      if (!res || !res.ok) { setStatus((res && res.error) || 'Delete failed.'); return; }
-      fieldCatalog = res.catalog || fieldCatalog;
-      delete rects[d.key];
-      fieldDefs.splice(idx, 1);
-      renderFieldSettings(); renderRects();
-      setStatus('Field deleted.');
-    }).catch(function () { setStatus('Network error.'); });
+    appConfirm('Delete field \u201c' + (d.label || d.key) + '\u201d and its column from the '
+        + (kind === 'rc' ? 'receipt' : 'CR book') + ' records table? This removes it from ALL templates.',
+        { danger: true, okText: 'Delete' }).then(function (ok) {
+      if (!ok) return;
+      fetch(FIELDDEL_TPL.replace('__KEY__', encodeURIComponent(d.key)), {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify({ kind: kind })
+      }).then(function (r) { return r.json(); }).then(function (res) {
+        if (!res || !res.ok) { setStatus((res && res.error) || 'Delete failed.'); return; }
+        fieldCatalog = res.catalog || fieldCatalog;
+        delete rects[d.key];
+        fieldDefs.splice(idx, 1);
+        renderFieldSettings(); renderRects();
+        setStatus('Field deleted.');
+      }).catch(function () { setStatus('Network error.'); });
+    });
   }
   function collectFields() {
     fieldDefs.forEach(function (d) { if (d.capture && rects[d.key]) d.box = rects[d.key].map(round4); });
@@ -1701,17 +1717,21 @@
   var delBtn = document.querySelector('[data-map-delete]');
   if (delBtn) {
     delBtn.addEventListener('click', function (e) {
+      e.preventDefault();
       var n = rows().filter(function (c) { return c.checked; }).length;
       if (!n) {
-        e.preventDefault();
-        alert('Select at least one mapped record to delete.');
+        appNotify('Select at least one mapped record to delete.');
         return;
       }
-      if (!confirm('Permanently delete ' + n + ' selected mapped record(s)? '
+      appConfirm('Permanently delete ' + n + ' selected mapped record(s)? '
           + 'This cannot be undone — the records are NOT returned to CR '
-          + 'books / receipts.')) {
-        e.preventDefault();
-      }
+          + 'books / receipts.',
+          { danger: true, okText: 'Delete' }).then(function (ok) {
+        if (!ok) return;
+        var form = document.getElementById('map-form');
+        form.action = delBtn.getAttribute('formaction');
+        form.submit();
+      });
     });
   }
   var sInput = document.getElementById('map-search-input');
