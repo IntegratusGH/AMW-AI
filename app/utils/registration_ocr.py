@@ -2192,6 +2192,11 @@ def clean_fields(fields, kind: str = "cr") -> list[dict]:
         mask = str(f.get("mask") or "none").strip()
         if mask not in _MASK_TYPES:
             mask = "none"
+        capture = bool(f.get("capture", cbox is not None))
+        # An unselected field keeps no box, so a later reload cannot resurrect
+        # its "capture" flag from a stale box (unchecking now truly sticks).
+        if not capture:
+            cbox = None
         out.append({
             "key": key,
             "label": str(f.get("label") or field_label(kind, key)),
@@ -2199,7 +2204,7 @@ def clean_fields(fields, kind: str = "cr") -> list[dict]:
             "role": str(f.get("role") or key),
             "box": cbox,
             "pp": (clean_pp(f.get("pp")) or None),
-            "capture": bool(f.get("capture", cbox is not None)),
+            "capture": capture,
             "mask": mask,
             "value": str(f.get("value") or "").strip(),
         })

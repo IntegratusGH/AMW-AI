@@ -26,36 +26,44 @@
   <table class="table">
     {% if kind == 'cr' %}
     <thead>
-      <tr><th>Pg</th><th>Review</th><th>Reg No</th><th>Chassis No</th><th>Engine No</th>
-        <th>Absolute Owner</th><th>Class</th><th>Fuel</th><th>CC</th><th>Year</th>
-        <th>Colour</th>{% for f in extra_fields %}<th>{{ f[1] }}</th>{% endfor %}<th>Save</th><th>Image</th></tr>
+      <tr><th>Pg</th><th>Review</th>
+        {% if 'registration_no' in visible %}<th>Reg No</th>{% endif %}
+        {% if 'chassis_no' in visible %}<th>Chassis No</th>{% endif %}
+        {% if 'engine_no' in visible %}<th>Engine No</th>{% endif %}
+        {% if 'absolute_owner' in visible %}<th>Absolute Owner</th>{% endif %}
+        {% if 'class_of_vehicle' in visible %}<th>Class</th>{% endif %}
+        {% if 'fuel_type' in visible %}<th>Fuel</th>{% endif %}
+        {% if 'cylinder_capacity' in visible %}<th>CC</th>{% endif %}
+        {% if 'year_of_manufacture' in visible %}<th>Year</th>{% endif %}
+        {% if 'colour' in visible %}<th>Colour</th>{% endif %}
+        {% for f in extra_fields %}<th>{{ f[1] }}</th>{% endfor %}<th>Save</th><th>Image</th></tr>
     </thead>
     <tbody>
       {% for r in records %}
       <tr class="{{ 'row-review' if r.needs_review else '' }}" data-search="{{ r.registration_no or '' }}">
         <td>{{ r.page_no or '' }}</td>
         <td>{% if r.needs_review %}<span class="badge badge-warning">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
-        <td title="confidence {{ '%.2f'|format(r.registration_no_confidence) if r.registration_no_confidence is not none else 'n/a' }}">
+        {% if 'registration_no' in visible %}<td title="confidence {{ '%.2f'|format(r.registration_no_confidence) if r.registration_no_confidence is not none else 'n/a' }}">
           {% if r.reg_crop %}<img class="val-crop" loading="lazy" alt="Reg No scan"
             src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field='reg') }}">{% endif %}
           <input class="val-edit mono" form="rec{{ r.id }}" name="registration_no" value="{{ r.registration_no or '' }}">
-        </td>
-        <td title="confidence {{ '%.2f'|format(r.chassis_no_confidence) if r.chassis_no_confidence is not none else 'n/a' }}">
+        </td>{% endif %}
+        {% if 'chassis_no' in visible %}<td title="confidence {{ '%.2f'|format(r.chassis_no_confidence) if r.chassis_no_confidence is not none else 'n/a' }}">
           {% if r.chassis_crop %}<img class="val-crop" loading="lazy" alt="Chassis No scan"
             src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field='chassis') }}">{% endif %}
           <input class="val-edit mono" form="rec{{ r.id }}" name="chassis_no" value="{{ r.chassis_no or '' }}">
-        </td>
-        <td title="confidence {{ '%.2f'|format(r.engine_no_confidence) if r.engine_no_confidence is not none else 'n/a' }}">
+        </td>{% endif %}
+        {% if 'engine_no' in visible %}<td title="confidence {{ '%.2f'|format(r.engine_no_confidence) if r.engine_no_confidence is not none else 'n/a' }}">
           {% if r.engine_crop %}<img class="val-crop" loading="lazy" alt="Engine No scan"
             src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field='engine') }}">{% endif %}
           <input class="val-edit mono" form="rec{{ r.id }}" name="engine_no" value="{{ r.engine_no or '' }}">
-        </td>
-        <td>{{ r.absolute_owner or '—' }}</td>
-        <td>{{ r.class_of_vehicle or '—' }}</td>
-        <td>{{ r.fuel_type or '—' }}</td>
-        <td>{{ r.cylinder_capacity or '—' }}</td>
-        <td>{{ r.year_of_manufacture or '—' }}</td>
-        <td>{{ r.colour or '—' }}</td>
+        </td>{% endif %}
+        {% if 'absolute_owner' in visible %}<td>{{ r.absolute_owner or '—' }}</td>{% endif %}
+        {% if 'class_of_vehicle' in visible %}<td>{{ r.class_of_vehicle or '—' }}</td>{% endif %}
+        {% if 'fuel_type' in visible %}<td>{{ r.fuel_type or '—' }}</td>{% endif %}
+        {% if 'cylinder_capacity' in visible %}<td>{{ r.cylinder_capacity or '—' }}</td>{% endif %}
+        {% if 'year_of_manufacture' in visible %}<td>{{ r.year_of_manufacture or '—' }}</td>{% endif %}
+        {% if 'colour' in visible %}<td>{{ r.colour or '—' }}</td>{% endif %}
         {% for f in extra_fields %}<td>{{ r.fv.get(f[0]) or '—' }}</td>{% endfor %}
         <td class="actions">
           <form id="rec{{ r.id }}" method="post" class="inline"
@@ -74,36 +82,43 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="{{ 13 + extra_fields|length }}" class="muted ta-center">No records.</td></tr>
+      <tr><td colspan="{{ col_count }}" class="muted ta-center">No records.</td></tr>
       {% endfor %}
     </tbody>
     {% else %}
     <thead>
-      <tr><th>Review</th><th>Slip No</th><th>Receipt No</th><th>Date</th><th>Time</th>
-        <th>Vehicle No</th><th>Application No</th><th class="ta-right">Total</th>
-        <th class="ta-right">Charges</th><th class="ta-right">Bank Total</th>
+      <tr><th>Review</th>
+        {% if 'slip_no' in visible %}<th>Slip No</th>{% endif %}
+        {% if 'receipt_no' in visible %}<th>Receipt No</th>{% endif %}
+        {% if 'receipt_date' in visible %}<th>Date</th>{% endif %}
+        {% if 'receipt_time' in visible %}<th>Time</th>{% endif %}
+        {% if 'vehicle_no' in visible %}<th>Vehicle No</th>{% endif %}
+        {% if 'application_no' in visible %}<th>Application No</th>{% endif %}
+        {% if 'total_amount' in visible %}<th class="ta-right">Total</th>{% endif %}
+        {% if 'bank_charges' in visible %}<th class="ta-right">Charges</th>{% endif %}
+        {% if 'bank_total' in visible %}<th class="ta-right">Bank Total</th>{% endif %}
         <th>Dup?</th><th>Conf</th>{% for f in extra_fields %}<th>{{ f[1] }}</th>{% endfor %}<th class="ta-right">Image</th></tr>
     </thead>
     <tbody>
       {% for r in records %}
       <tr class="{{ 'row-review' if r.needs_review else '' }}" data-search="{{ r.vehicle_no or '' }}">
         <td>{% if r.needs_review %}<span class="badge badge-warning">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
-        <td class="mono">{% if r.slip_crop %}<img class="val-crop" loading="lazy" alt="Slip No scan"
-          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='slip') }}">{% endif %}{{ r.slip_no or '—' }}</td>
-        <td>{% if r.receipt_no_crop %}<img class="val-crop" loading="lazy" alt="Receipt No scan"
-          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='receipt') }}">{% endif %}{{ r.receipt_no or '—' }}</td>
-        <td>{% if r.date_crop %}<img class="val-crop" loading="lazy" alt="Date scan"
-          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='date') }}">{% endif %}{{ r.receipt_date or '—' }}</td>
-        <td>{{ r.receipt_time or '—' }}</td>
-        <td class="mono">{% if r.vehicle_crop %}<img class="val-crop" loading="lazy" alt="Vehicle No scan"
-          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='vehicle') }}">{% endif %}{{ r.vehicle_no or '—' }}</td>
-        <td class="mono">{{ r.application_no or '—' }}</td>
-        <td class="ta-right">{% if r.total_crop %}<img class="val-crop" loading="lazy" alt="Total scan"
-          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='total') }}">{% endif %}{{ '%.2f'|format(r.total_amount) if r.total_amount is not none else '—' }}</td>
-        <td class="ta-right">{% if r.charges_crop %}<img class="val-crop" loading="lazy" alt="Charges scan"
-          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='charges') }}">{% endif %}{{ '%.2f'|format(r.bank_charges) if r.bank_charges is not none else '—' }}</td>
-        <td class="ta-right">{% if r.bank_total_crop %}<img class="val-crop" loading="lazy" alt="Bank Total scan"
-          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='banktotal') }}">{% endif %}{{ '%.2f'|format(r.bank_total) if r.bank_total is not none else '—' }}</td>
+        {% if 'slip_no' in visible %}<td class="mono">{% if r.slip_crop %}<img class="val-crop" loading="lazy" alt="Slip No scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='slip') }}">{% endif %}{{ r.slip_no or '—' }}</td>{% endif %}
+        {% if 'receipt_no' in visible %}<td>{% if r.receipt_no_crop %}<img class="val-crop" loading="lazy" alt="Receipt No scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='receipt') }}">{% endif %}{{ r.receipt_no or '—' }}</td>{% endif %}
+        {% if 'receipt_date' in visible %}<td>{% if r.date_crop %}<img class="val-crop" loading="lazy" alt="Date scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='date') }}">{% endif %}{{ r.receipt_date or '—' }}</td>{% endif %}
+        {% if 'receipt_time' in visible %}<td>{{ r.receipt_time or '—' }}</td>{% endif %}
+        {% if 'vehicle_no' in visible %}<td class="mono">{% if r.vehicle_crop %}<img class="val-crop" loading="lazy" alt="Vehicle No scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='vehicle') }}">{% endif %}{{ r.vehicle_no or '—' }}</td>{% endif %}
+        {% if 'application_no' in visible %}<td class="mono">{{ r.application_no or '—' }}</td>{% endif %}
+        {% if 'total_amount' in visible %}<td class="ta-right">{% if r.total_crop %}<img class="val-crop" loading="lazy" alt="Total scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='total') }}">{% endif %}{{ '%.2f'|format(r.total_amount) if r.total_amount is not none else '—' }}</td>{% endif %}
+        {% if 'bank_charges' in visible %}<td class="ta-right">{% if r.charges_crop %}<img class="val-crop" loading="lazy" alt="Charges scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='charges') }}">{% endif %}{{ '%.2f'|format(r.bank_charges) if r.bank_charges is not none else '—' }}</td>{% endif %}
+        {% if 'bank_total' in visible %}<td class="ta-right">{% if r.bank_total_crop %}<img class="val-crop" loading="lazy" alt="Bank Total scan"
+          src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='banktotal') }}">{% endif %}{{ '%.2f'|format(r.bank_total) if r.bank_total is not none else '—' }}</td>{% endif %}
         <td>{% if r.is_duplicate %}<span class="badge badge-warning">Dup</span>{% else %}—{% endif %}</td>
         <td>{{ '%.2f'|format(r.confidence) if r.confidence is not none else '' }}</td>
         {% for f in extra_fields %}<td>{{ r.fv.get(f[0]) or '—' }}</td>{% endfor %}
@@ -117,7 +132,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="{{ 13 + extra_fields|length }}" class="muted ta-center">No records.</td></tr>
+      <tr><td colspan="{{ col_count }}" class="muted ta-center">No records.</td></tr>
       {% endfor %}
     </tbody>
     {% endif %}

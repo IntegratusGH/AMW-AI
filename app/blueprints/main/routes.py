@@ -1905,8 +1905,8 @@ def upload_records(kind: str, upload_id: int):
     # upload, shown as extra columns from each record's field_values JSON.
     from app.utils import registration_ocr as ocr
     canon = _canonical_keys(kind)
-    defs = (ocr.template_field_defs(up.template)
-            if getattr(up, "template_id", None) else [])
+    tpl = up.template if getattr(up, "template_id", None) else None
+    defs = ocr.template_field_defs(tpl) if tpl is not None else []
     label_by_key = {d["key"]: d["label"] for d in defs}
     extra_keys = [d["key"] for d in defs
                   if d["key"] not in canon and d.get("capture")]
@@ -1920,9 +1920,28 @@ def upload_records(kind: str, upload_id: int):
                 extra_keys.append(k)
                 label_by_key.setdefault(k, k.replace("_", " ").title())
     extra_fields = [(k, label_by_key.get(k, k)) for k in extra_keys]
+    # Canonical value columns shown in the view: only those the upload's
+    # template selected (captured).  Uploads whose template has no explicit
+    # field model (legacy templates / no template) show all columns, as before.
+    canon_cols = (["registration_no", "chassis_no", "engine_no",
+                   "absolute_owner", "class_of_vehicle", "fuel_type",
+                   "cylinder_capacity", "year_of_manufacture", "colour"]
+                  if kind == "cr" else
+                  ["slip_no", "receipt_no", "receipt_date", "receipt_time",
+                   "vehicle_no", "application_no", "total_amount",
+                   "bank_charges", "bank_total"])
+    if getattr(tpl, "fields", None):
+        visible = {d["key"] for d in defs
+                   if d.get("capture") and d["key"] in canon_cols}
+    else:
+        visible = set(canon_cols)
+    # thead has 4 structural columns per kind (cr: Pg/Review/Save/Image,
+    # rc: Review/Dup/Conf/Image) plus the visible canonical + extra columns.
+    col_count = 4 + len(visible) + len(extra_fields)
     return render_template(
         "main/registration_records.html", kind=kind, upload=up,
-        records=records, extra_fields=extra_fields)
+        records=records, extra_fields=extra_fields,
+        visible=visible, col_count=col_count)
 
 
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>"
