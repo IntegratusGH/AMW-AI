@@ -165,6 +165,8 @@
                   formaction="{{ url_for('main.process_mapping') }}">Process Mapping &raquo;</button>
           <button class="btn btn-revoke" type="submit"
                   formaction="{{ url_for('main.revoke_mapping') }}">&laquo; Revoke Mapping</button>
+          <button class="btn btn-danger" type="submit" data-map-delete
+                  formaction="{{ url_for('main.delete_mapped_records') }}">{{ icon('trash', 16) }} Delete Mapped records</button>
           <button class="btn btn-export" type="submit"
                   formaction="{{ url_for('main.generate_export') }}">{{ icon('spreadsheet', 16) }} Generate Export</button>
           {% if can_edit_export %}
@@ -1695,6 +1697,22 @@
       if (e.target && e.target.classList && e.target.classList.contains('map-row-check')) syncHeader();
     });
     syncHeader();
+  }
+  var delBtn = document.querySelector('[data-map-delete]');
+  if (delBtn) {
+    delBtn.addEventListener('click', function (e) {
+      var n = rows().filter(function (c) { return c.checked; }).length;
+      if (!n) {
+        e.preventDefault();
+        alert('Select at least one mapped record to delete.');
+        return;
+      }
+      if (!confirm('Permanently delete ' + n + ' selected mapped record(s)? '
+          + 'This cannot be undone — the records are NOT returned to CR '
+          + 'books / receipts.')) {
+        e.preventDefault();
+      }
+    });
   }
   var sInput = document.getElementById('map-search-input');
   var sClear = document.getElementById('map-search-clear');

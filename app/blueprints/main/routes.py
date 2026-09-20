@@ -1307,6 +1307,45 @@ def _revoke_mapping(ids) -> int:
     return count
 
 
+def _remove_crop_files(crop_dir: str, names, field_crops_json) -> None:
+    """Best-effort delete the given crop filenames (typed columns + a field_crops
+    JSON map of key->filename) from ``crop_dir``; missing files are ignored."""
+    fns = [n for n in (names or []) if n]
+    try:
+        extra = json.loads(field_crops_json) if field_crops_json else {}
+        if isinstance(extra, dict):
+            fns.extend(v for v in extra.values() if v)
+    except (ValueError, TypeError):
+        pass
+    for fn in fns:
+        try:
+            os.remove(os.path.join(crop_dir, os.path.basename(str(fn))))
+        except OSError:
+            pass
+
+
+def _delete_matched_records(ids) -> int:
+    """Permanently delete the selected ``matched_records`` (and their crop image
+    files).  Unlike revoke, the source CR-book / receipt rows are NOT restored.
+    Adds the deletes to the session and returns the count; the caller commits."""
+    if not ids:
+        return 0
+    rows = MatchedRecord.query.filter(MatchedRecord.id.in_(ids)).all()
+    cr_dir = current_app.config["CR_BOOK_CROP_DIR"]
+    rc_dir = current_app.config["RECEIPT_CROP_DIR"]
+    count = 0
+    for m in rows:
+        _remove_crop_files(
+            os.path.join(cr_dir, str(m.cr_source_upload_id)),
+            [m.chassis_crop, m.reg_crop, m.engine_crop], m.cr_field_crops)
+        _remove_crop_files(
+            os.path.join(rc_dir, str(m.rc_source_upload_id)),
+            [m.image_crop], m.rc_field_crops)
+        db.session.delete(m)
+        count += 1
+    return count
+
+
 @main_bp.route("/operations/registration-updater/mapping/process",
                methods=["POST"])
 @login_required
@@ -1348,6 +1387,24 @@ def revoke_mapping():
               f"receipts.", "success")
     else:
         flash("No matched records selected to revoke.", "info")
+    return redirect(url_for("main.registration_updater", tab="map"))
+
+
+@main_bp.route("/operations/registration-updater/mapping/delete",
+               methods=["POST"])
+@login_required
+def delete_mapped_records():
+    """Permanently delete the selected matched records (crops included) without
+    restoring them to the CR-book / receipt source tables."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    ids = [int(x) for x in request.form.getlist("ids") if x.isdigit()]
+    deleted = _delete_matched_records(ids)
+    record_audit("registration_mapping_delete", f"deleted={deleted}")
+    db.session.commit()
+    if deleted:
+        flash(f"Deleted {deleted} matched record(s).", "success")
+    else:
+        flash("No matched records selected to delete.", "info")
     return redirect(url_for("main.registration_updater", tab="map"))
 
 
