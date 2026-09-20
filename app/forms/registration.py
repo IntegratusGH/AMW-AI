@@ -5,14 +5,18 @@ from flask_wtf import FlaskForm
 from flask_wtf.file import FileAllowed, FileField, FileRequired, FileSize
 from wtforms import BooleanField, SubmitField
 
-# Accepted document types and the per-file size cap (matches the app's global
-# MAX_CONTENT_LENGTH ceiling; see Config.MAX_DOC_UPLOAD_MB).
+from app.config import Config
+
+# Accepted document types and the per-file size cap (single source of truth:
+# Config.MAX_DOC_UPLOAD_MB, which also sizes the global MAX_CONTENT_LENGTH).
 _ALLOWED = ["pdf", "png", "jpg", "jpeg", "tif", "tiff"]
-_MAX_BYTES = 30 * 1024 * 1024
+_MAX_MB = Config.MAX_DOC_UPLOAD_MB
+_MAX_BYTES = _MAX_MB * 1024 * 1024
 _VALIDATORS = [
     FileRequired(),
     FileAllowed(_ALLOWED, "Upload a PDF or scanned image (pdf, png, jpg, tiff)."),
-    FileSize(max_size=_MAX_BYTES, message="File must be 30 MB or smaller."),
+    FileSize(max_size=_MAX_BYTES,
+             message=f"File must be {_MAX_MB} MB or smaller."),
 ]
 
 

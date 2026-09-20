@@ -105,14 +105,16 @@ class Config:
     # Generated SAP batch-input export files (RMV UPLOAD), one per export action.
     EXPORT_DIR = str(Path(UPLOAD_DIR) / "exports")
     ALLOWED_DOC_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "tif", "tiff"}
-    MAX_DOC_UPLOAD_MB = int(os.getenv("MAX_DOC_UPLOAD_MB", "30"))
+    MAX_DOC_UPLOAD_MB = int(os.getenv("MAX_DOC_UPLOAD_MB", "100"))
 
     # Global request-body cap (also bounds uploads); icons are further limited
     # per-field in the form.  Sized to the larger document uploads so scanned
-    # CR-book batches are accepted.
+    # CR-book batches are accepted.  A small margin over the per-file cap covers
+    # multipart boundaries + other form fields, so an at-limit file trips the
+    # friendly FileSize message instead of a hard 413.
     MAX_CONTENT_LENGTH = max(
         int(os.getenv("MAX_UPLOAD_KB", "1024")) * 1024,
-        MAX_DOC_UPLOAD_MB * 1024 * 1024,
+        MAX_DOC_UPLOAD_MB * 1024 * 1024 + 5 * 1024 * 1024,
     )
 
     # Default admin bootstrap (used by scripts/init_db.py)
