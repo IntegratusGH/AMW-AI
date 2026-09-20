@@ -290,6 +290,7 @@
      data-fielddel-tpl="{{ url_for('main.ocr_field_delete', key='__KEY__') }}"
      data-tpls-tpl="{{ url_for('main.cr_ocr_templates') }}"
      data-tplupd-tpl="{{ url_for('main.cr_ocr_template_update', tid=0) }}"
+     data-tpldel-tpl="{{ url_for('main.cr_ocr_template_delete', tid=0) }}"
      data-csrf="{{ csrf_token() }}">
   <div class="tmpl-modal__backdrop" data-ocr-close></div>
   <div class="tmpl-modal__panel tmpl-modal__panel--wide" role="dialog"
@@ -304,6 +305,8 @@
                 title="Save to selected template">{{ icon('save', 16) }}</button>
         <button type="button" class="btn btn-icon" data-ocr-tpl-add
                 title="Save as new template">{{ icon('plus', 16) }}</button>
+        <button type="button" class="btn btn-icon" data-ocr-tpl-del
+                title="Delete selected template">{{ icon('trash', 16) }}</button>
         <span class="ocr-tpl-new" data-ocr-tpl-newwrap hidden>
           <input type="text" data-ocr-tpl-name placeholder="New template name"
                  maxlength="120">
@@ -893,6 +896,7 @@
   var tplSelect = modal.querySelector('[data-ocr-tpl]');
   var tplSaveBtn = modal.querySelector('[data-ocr-tpl-save]');
   var tplAddBtn = modal.querySelector('[data-ocr-tpl-add]');
+  var tplDelBtn = modal.querySelector('[data-ocr-tpl-del]');
   var tplNewWrap = modal.querySelector('[data-ocr-tpl-newwrap]');
   var tplNameInput = modal.querySelector('[data-ocr-tpl-name]');
   var tplCreateBtn = modal.querySelector('[data-ocr-tpl-create]');
@@ -925,6 +929,7 @@
     ['charcount', 'No of Characters']];
   var TPLS_URL = modal.getAttribute('data-tpls-tpl');
   var TPLUPD_TPL = modal.getAttribute('data-tplupd-tpl');
+  var TPLDEL_TPL = modal.getAttribute('data-tpldel-tpl');
   var FIELDS_CR = [['registration_no', 'Reg No'], ['chassis_no', 'Chassis No'],
     ['engine_no', 'Engine No'], ['absolute_owner', 'Absolute Owner'],
     ['class_of_vehicle', 'Class'], ['fuel_type', 'Fuel'],
@@ -1568,6 +1573,29 @@
   }
   tplCreateBtn && tplCreateBtn.addEventListener('click', createTemplate);
   tplNameInput && tplNameInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); createTemplate(); } });
+  function tplDelUrl(id) { return TPLDEL_TPL.replace('/0/delete', '/' + id + '/delete'); }
+  tplDelBtn && tplDelBtn.addEventListener('click', function () {
+    if (!selectedId) { setStatus('Pick a template to delete.'); return; }
+    var t = findTpl(selectedId);
+    appConfirm('Delete template “' + (t ? t.name : '') + '”? Uploads using '
+        + 'it will fall back to no template.',
+        { danger: true, okText: 'Delete' }).then(function (ok) {
+      if (!ok) return;
+      tplDelBtn.disabled = true; setStatus('Deleting template…');
+      fetch(tplDelUrl(selectedId), {
+        method: 'POST', headers: { 'X-CSRFToken': CSRF }
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        tplDelBtn.disabled = false;
+        if (!d || !d.ok) { setStatus((d && d.error) || 'Delete failed.'); return; }
+        templates = d.templates || [];
+        selectedId = templates.length ? templates[0].id : null;
+        populateTplSelect();
+        var nt = selectedId ? findTpl(selectedId) : null;
+        if (nt) loadTemplateIntoEditor(nt);
+        setStatus('Template deleted.');
+      }).catch(function () { tplDelBtn.disabled = false; setStatus('Network error.'); });
+    });
+  });
   function openModal(u, k) {
     setKind(k);
     uid = u; currentPage = 1; totalPages = 1; setPageLabel();

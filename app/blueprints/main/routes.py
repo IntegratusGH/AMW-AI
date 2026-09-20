@@ -2693,6 +2693,32 @@ def cr_ocr_template_update(tid: int):
     return jsonify({"ok": True, "template": _tpl_json(t)})
 
 
+@main_bp.route("/operations/registration-updater/ocr-templates/<int:tid>/delete",
+               methods=["POST"])
+@login_required
+def cr_ocr_template_delete(tid: int):
+    """Delete an OCR template.  Detaches it from any uploads using it and clears
+    it as a fail-template on other templates first (so no FK is orphaned), then
+    returns the remaining templates for the same kind."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    t = db.session.get(OcrTemplate, tid) or abort(404)
+    kind = t.kind or "cr"
+    name = t.name
+    CRBookUpload.query.filter_by(template_id=tid).update(
+        {"template_id": None}, synchronize_session=False)
+    ReceiptUpload.query.filter_by(template_id=tid).update(
+        {"template_id": None}, synchronize_session=False)
+    OcrTemplate.query.filter_by(fail_template_id=tid).update(
+        {"fail_template_id": None}, synchronize_session=False)
+    db.session.delete(t)
+    db.session.commit()
+    record_audit("ocr_template_delete", f"id={tid} name={name!r}")
+    templates = [_tpl_json(x) for x in OcrTemplate.query
+                 .filter_by(kind=kind)
+                 .order_by(OcrTemplate.updated_at.desc()).all()]
+    return jsonify({"ok": True, "templates": templates})
+
+
 @main_bp.route("/operations/registration-updater/ocr-lists",
                methods=["GET", "POST"])
 @login_required
