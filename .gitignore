@@ -1,6 +1,9 @@
 # Environment / secrets
 .env
 
+# Calibration crop sheets (large generated artifacts)
+calibration/
+
 # Python
 __pycache__/
 *.py[cod]
