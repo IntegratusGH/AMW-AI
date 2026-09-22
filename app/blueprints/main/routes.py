@@ -409,6 +409,15 @@ def _apply_test_masks(kind, defs, fields, page, region, pp):
         if d and (d.get("mask") or "none") != "none":
             val, ok = ocr.apply_field_mask(
                 d["mask"], d.get("value"), f.get("value"), _list_lookup)
+            if not ok and d.get("mask") == "pattern" and d.get("box"):
+                rv, rc, rok = ocr.refine_to_pattern(
+                    page, d["box"], d.get("value"), _list_lookup,
+                    base_pp=(d.get("pp") or pp),
+                    region_pts=(region if kind == "rc" else None))
+                if rok and rv:
+                    val, ok = rv, True
+                    if rc:
+                        f["confidence"] = rc
             f["value"] = val or ""
             f["mask_ok"] = ok
     if kind == "rc" and not region:
@@ -429,6 +438,15 @@ def _apply_test_masks(kind, defs, fields, page, region, pp):
         if (d.get("mask") or "none") != "none":
             val, ok = ocr.apply_field_mask(
                 d["mask"], d.get("value"), raw, _list_lookup)
+            if not ok and d.get("mask") == "pattern":
+                rv, rc, rok = ocr.refine_to_pattern(
+                    page, d["box"], d.get("value"), _list_lookup,
+                    base_pp=fpp,
+                    region_pts=(region if kind == "rc" else None))
+                if rok and rv:
+                    val, ok = rv, True
+                    if rc:
+                        conf = rc
         fields.append({"key": d["key"], "label": d["label"], "value": val or "",
                        "confidence": round(float(conf), 3) if conf else None,
                        "mask_ok": ok})
@@ -488,6 +506,13 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
                     raw, _c = ocr.read_slip_rect(page, region, d["box"], pp=fpp)
                 val, ok = ocr.apply_field_mask(
                     d.get("mask"), d.get("value"), raw, _list_lookup)
+                if not ok and d.get("mask") == "pattern":
+                    rv, _rc, rok = ocr.refine_to_pattern(
+                        page, d["box"], d.get("value"), _list_lookup,
+                        base_pp=fpp,
+                        region_pts=(region if kind == "rc" else None))
+                    if rok and rv:
+                        val, ok = rv, True
                 out.setdefault(rec.id, {})[d["key"]] = val or ""
                 if not ok:
                     flagged = True
@@ -499,6 +524,13 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
                 val, ok = ocr.apply_field_mask(
                     d.get("mask"), d.get("value"),
                     None if cur is None else str(cur), _list_lookup)
+                if not ok and d.get("mask") == "pattern" and d.get("box"):
+                    rv, _rc, rok = ocr.refine_to_pattern(
+                        page, d["box"], d.get("value"), _list_lookup,
+                        base_pp=(d.get("pp") or tpp),
+                        region_pts=(region if kind == "rc" else None))
+                    if rok and rv:
+                        val, ok = rv, True
                 if role in str_cols and val is not None \
                         and val != (None if cur is None else str(cur)):
                     setattr(rec, role, val[:255])

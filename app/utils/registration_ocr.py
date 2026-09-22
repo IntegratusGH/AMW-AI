@@ -1594,6 +1594,78 @@ def read_rect(page, box, pp=None) -> tuple[str | None, float]:
     return text, round(float(conf), 3)
 
 
+# Curated preprocessing sweep, layered over a box's own adjustments, tried when
+# a pattern read fails - each entry optimises the crop a different way so a
+# faint / low-contrast / coloured value can still be recovered.
+_PATTERN_PP_SWEEP = (
+    {},
+    {"contrast": 30},
+    {"contrast": 30, "gamma": 0.8},
+    {"clahe": True, "contrast": 20},
+    {"colorkeep": True, "colorkeep_v": 130},
+    {"colorkeep": True, "colorkeep_v": 100},
+    {"threshold": "auto"},
+    {"threshold": "adaptive"},
+    {"morph": 1, "contrast": 20},
+    {"invert": True, "contrast": 20},
+)
+
+
+def _rect_for_box(page, box, region_pts=None):
+    """PDF-point rect for a normalized ``box``; relative to ``region_pts`` (a
+    receipt slip frame) when given, else to the whole page."""
+    import pymupdf
+    x0, y0, x1, y1 = box
+    if region_pts is not None:
+        rx0, ry0, rx1, ry1 = region_pts
+        rw, rh = (rx1 - rx0), (ry1 - ry0)
+        return pymupdf.Rect(rx0 + x0 * rw, ry0 + y0 * rh,
+                            rx0 + x1 * rw, ry0 + y1 * rh)
+    W, H = page.rect.width, page.rect.height
+    return pymupdf.Rect(x0 * W, y0 * H, x1 * W, y1 * H)
+
+
+def refine_to_pattern(page, box, mask_value, list_lookup=None, base_pp=None,
+                      region_pts=None):
+    """Pattern-driven crop optimisation: re-OCR a boxed value across a sweep of
+    image-preprocessing variants (and higher zooms), returning the first reading
+    whose letter/digit structure satisfies one of the Value Like-patterns (so a
+    read the plain pass got wrong is corrected rather than only flagged).
+    Returns ``(value, confidence, matched)``; when nothing matches, ``value`` is
+    the strongest raw reading and ``matched`` is False so the caller still flags
+    it.  Boolean (and/or/not) patterns are validated but not extracted."""
+    entries = _mask_entries(mask_value, list_lookup)
+    if page is None or box is None or not entries:
+        return None, 0.0, False
+    rect = _rect_for_box(page, box, region_pts)
+    base = clean_pp(base_pp) if base_pp else {}
+    best_text, best_w = None, -1.0
+    for delta in _PATTERN_PP_SWEEP:
+        variant = clean_pp({**base, **delta}) if delta else dict(base)
+        try:
+            raw = _rec_candidates(page, rect, zooms=(6, 9, 12), pp=variant)
+        except Exception:
+            continue
+        for t, w in raw:
+            cand = (t or "").upper().strip()
+            if not cand:
+                continue
+            if w > best_w:
+                best_text, best_w = cand, w
+            for p in entries:
+                toks = p.split()
+                if any(tok.lower() in ("and", "or", "not") for tok in toks):
+                    if _mask_like_ok(p, cand):
+                        return cand, round(min(float(w), 1.0), 3), True
+                    continue
+                sub = _mask_like_extract(p, cand)
+                if sub is not None:
+                    return sub, round(min(float(w), 1.0), 3), True
+    if best_text is None:
+        return None, 0.0, False
+    return best_text, round(min(max(best_w, 0.0), 1.0), 3), False
+
+
 def extract_by_rects(page, rects: dict, pp_map: dict | None = None) -> dict:
     """Extract each field by cropping its trainer-defined normalized rectangle
     and running the extensive OCR pass on the crop.  ``rects`` maps a field key
