@@ -2396,6 +2396,21 @@ def _mask_like_re(pattern: str) -> str:
     return "".join(out)
 
 
+def _mask_like_extract(pattern: str, text: str) -> str | None:
+    """Return the substring of ``text`` matching a single Like-pattern (no
+    and/or/not operators), or None when it does not occur.  Used by the
+    'pattern' mask to pull the matching part out of a noisy OCR read rather than
+    only flagging pass/fail; case is preserved from the input."""
+    if not pattern or not pattern.strip():
+        return None
+    try:
+        core = _mask_like_re(pattern)[1:-1]  # strip ^...$ to search a substring
+        m = re.search(core, text or "", re.IGNORECASE)
+    except re.error:
+        return None
+    return m.group(0) if m else None
+
+
 def _mask_like_ok(pattern: str, text: str) -> bool:
     toks = pattern.split()
     if any(t.lower() in ("and", "or", "not") for t in toks):
@@ -2464,10 +2479,15 @@ def apply_field_mask(mask, value, text, list_lookup=None):
     ``(new_text, ok)``; ``ok`` False means the value is uncertain and the record
     should be flagged for review (the app's correct-or-flagged guarantee):
       none        -> keep raw text.
-      pattern     -> keep text; ok if it matches any Value pattern.
+      pattern     -> extract the substring matching a Value pattern (so a noisy
+                     read is pared down to the matched part); ok when a match is
+                     found, else keep raw + not ok.  Boolean (and/or/not) Value
+                     expressions cannot be extracted, so they only validate.
       partial50/75-> snap to the closest Value entry when similarity >= .50/.75,
                      else keep raw + not ok.
-      charcount   -> Value is a number N; ok iff len(text) == N (never trims)."""
+      charcount   -> Value is a number N; trim an over-length read to its first
+                     N chars (ok), keep an exact-length read (ok), and flag a
+                     too-short read (not ok - characters are never invented)."""
     mask = (mask or "none").strip()
     text = "" if text is None else str(text).strip()
     if mask in ("", "none"):
@@ -2478,12 +2498,24 @@ def apply_field_mask(mask, value, text, list_lookup=None):
         m = re.search(r"\d+", cand or "")
         if not m:
             return (text or None), True
-        return (text or None), (len(text) == int(m.group(0)))
+        n = int(m.group(0))
+        if len(text) > n:
+            return (text[:n] or None), True
+        return (text or None), (len(text) == n)
     entries = _mask_entries(value, list_lookup)
     if not entries:
         return (text or None), True
     if mask == "pattern":
-        return (text or None), any(_mask_like_ok(p, text) for p in entries)
+        for p in entries:
+            toks = p.split()
+            if any(t.lower() in ("and", "or", "not") for t in toks):
+                if _mask_like_ok(p, text):
+                    return (text or None), True
+                continue
+            sub = _mask_like_extract(p, text)
+            if sub is not None:
+                return sub, True
+        return (text or None), False
     if mask in ("partial50", "partial75"):
         thr = 0.5 if mask == "partial50" else 0.75
         best, score = None, 0.0
