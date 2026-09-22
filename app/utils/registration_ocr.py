@@ -2400,15 +2400,26 @@ def _mask_like_extract(pattern: str, text: str) -> str | None:
     """Return the substring of ``text`` matching a single Like-pattern (no
     and/or/not operators), or None when it does not occur.  Used by the
     'pattern' mask to pull the matching part out of a noisy OCR read rather than
-    only flagging pass/fail; case is preserved from the input."""
+    only flagging pass/fail; case is preserved from the input.  When the direct
+    search fails and the pattern carries no space of its own, a whitespace-
+    stripped copy is retried so a read the OCR split with stray spaces
+    ('B LS- 40 70') still yields the intended value ('BLS-4070')."""
     if not pattern or not pattern.strip():
         return None
     try:
         core = _mask_like_re(pattern)[1:-1]  # strip ^...$ to search a substring
         m = re.search(core, text or "", re.IGNORECASE)
+        if m:
+            return m.group(0)
+        if not any(c.isspace() for c in pattern):
+            stripped = re.sub(r"\s+", "", text or "")
+            if stripped != (text or ""):
+                m = re.search(core, stripped, re.IGNORECASE)
+                if m:
+                    return m.group(0)
     except re.error:
         return None
-    return m.group(0) if m else None
+    return None
 
 
 def _mask_like_ok(pattern: str, text: str) -> bool:
