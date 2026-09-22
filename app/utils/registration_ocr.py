@@ -991,6 +991,75 @@ def build_chassis_mask(cand_lists, min_records: int = 4, min_len: int = 11):
             "consensus": consensus, "freq": freq}
 
 
+# Same-model chassis share a fixed prefix (WMI+VDS).  The cluster key folds only
+# unambiguous shape-identical pairs (O/0/D/Q, I/1/7) so light OCR noise does not
+# fragment a model - but it deliberately KEEPS 5/8/S/B/E/F distinct, because
+# those separate genuinely different models (e.g. ``ME1S...`` vs ``ME18...``);
+# merging them would let one model's consensus overwrite the other's prefix.
+_CLUSTER_FOLD = str.maketrans({
+    "0": "O", "D": "O", "Q": "O",
+    "1": "I", "7": "I",
+})
+
+
+def _model_sig(s: str, klen: int = 8) -> str:
+    """Confusion-folded prefix used to group same-model chassis for per-model
+    batch templates (OCR noise in the prefix must not fragment a model)."""
+    return s[:klen].translate(_CLUSTER_FOLD)
+
+
+def build_chassis_masks(cand_lists, min_records: int = 4, min_len: int = 11,
+                        klen: int = 8) -> list[dict]:
+    """Per-model batch templates.  Cluster records by the confusion-folded
+    prefix signature of their dominant-length candidates, then build a chassis
+    mask for each cluster that has enough records.  A same-model fleet yields a
+    single cluster (equivalent to the global mask); a mixed batch gives each
+    model its own template so model-specific prefix positions are not diluted to
+    a low consensus.  Returns a list of masks (each carrying its ``sig``)."""
+    from collections import Counter, defaultdict
+    groups: dict[str, list] = defaultdict(list)
+    for cl in cand_lists:
+        strs = [s for s in (cl or [])]
+        if not strs:
+            continue
+        L = Counter(len(s) for s in strs).most_common(1)[0][0]
+        at_len = [s for s in strs if len(s) == L]
+        if not at_len:
+            continue
+        sig = Counter(_model_sig(s, klen) for s in at_len).most_common(1)[0][0]
+        groups[sig].append(cl)
+    masks: list[dict] = []
+    for sig, cls in groups.items():
+        if len(cls) < min_records:
+            continue
+        m = build_chassis_mask(cls, min_records=min_records, min_len=min_len)
+        if m:
+            m["sig"] = sig
+            masks.append(m)
+    return masks
+
+
+def pick_chassis_mask(masks, value: str | None, klen: int = 10):
+    """Choose the per-model mask whose PREFIX consensus best matches ``value``.
+    Matching is restricted to the model-prefix region (the shared skeleton) so
+    the per-record variable serial tail does not dilute the score.  Returns the
+    mask only when the prefix agreement is high (a record whose model has no
+    populated cluster gets ``None`` and is left untouched - never forced onto a
+    different model's template)."""
+    if not masks or not value:
+        return None
+    best, best_score = None, 0.0
+    for m in masks:
+        cons = m["consensus"]
+        k = min(klen, len(cons), len(value))
+        if k == 0:
+            continue
+        agree = sum(1 for i in range(k) if value[i] == cons[i]) / k
+        if agree > best_score:
+            best, best_score = m, agree
+    return best if best_score >= 0.8 else None
+
+
 def _recover_zeros(value: str, mask):
     """Reinsert dropped zeros so a short chassis matches the batch length.
     Handles filled/touching 0s the recognizer omitted (e.g. 'T46587' for
@@ -1047,14 +1116,23 @@ def _recover_zeros(value: str, mask):
 # At a near-constant position, only these consensus -> misread swaps are trusted
 # as OCR confusions safe to snap back.  Deliberately excludes 0<->6 so genuine
 # 'T0645' style serials are never clobbered; targets the reported filled-0
-# (read as 1 or 8) case.
+# (read as 1 or 8) case.  The letter-consensus rows (B/F/G/J/S) are the CR-book
+# font's systematic glyph confusions measured against operator-verified crops
+# (e.g. this typeface's F is read as E, 8 as S, B as 8); they only fire at an
+# anchor position the batch overwhelmingly agrees on, so a lone outlier there is
+# almost certainly that misread.
 _ANCHOR_FIX = {
     "0": {"1", "8", "D", "O", "Q"},
     "1": {"7", "I"},
-    "5": {"S"},
-    "8": {"B"},
-    "6": {"G"},
     "2": {"Z"},
+    "5": {"S"},
+    "6": {"G"},
+    "8": {"B", "S"},
+    "B": {"8", "E"},
+    "F": {"E", "P"},
+    "G": {"6"},
+    "J": {"1", "I"},
+    "S": {"5", "8"},
 }
 
 
@@ -1101,21 +1179,35 @@ def apply_chassis_mask(value: str | None, mask, thr: float = 0.40):
 
 
 def chassis_needs_review(value: str | None, mask, conf,
-                         thr: float = 0.40, alpha_thr: float = 0.10) -> bool:
+                         thr: float = 0.40, alpha_thr: float = 0.10,
+                         flag_freq: float = 0.85, conf_min: float = 0.70) -> bool:
     """Template-aware review flag: after enforcement, a numeric position still
     not a digit (an un-mappable letter) or a letter position holding a digit
-    means the record does not fit the batch template -> needs a check."""
+    means the record does not fit the batch template -> needs a check.  Also
+    flags a record that disagrees with the batch at a skeleton position it
+    overwhelmingly agrees on (``freq >= flag_freq``): such a deviation is a
+    systematic misread enforcement could not safely snap, so it is surfaced for a
+    human rather than trusted as a confident-but-wrong character.  A low read
+    confidence still flags too, so the confidence safety net survives batch
+    enforcement (together these uphold correct-or-flagged).  The high
+    ``flag_freq`` keeps the per-record variable serial (no digit dominates a
+    position) from raising false alarms."""
     if not value:
         return True
     if not mask:
         return _chassis_review(value, conf)
+    if conf is not None and conf < conf_min:
+        return True
     length, digitp = mask["length"], mask["digitp"]
     if len(value) != length:
         return True
+    cons, freq = mask["consensus"], mask["freq"]
     for i, ch in enumerate(value):
         if digitp[i] >= thr and not ch.isdigit():
             return True
         if digitp[i] <= alpha_thr and not ch.isalpha():
+            return True
+        if freq[i] >= flag_freq and ch != cons[i]:
             return True
     return False
 

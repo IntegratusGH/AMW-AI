@@ -695,18 +695,24 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             # the whole upload, then enforce it so systematic S->5 (etc.)
             # misreads are corrected against the batch's own consistent chars.
             if kind == "cr" and cr_pending:
-                mask = ocr.build_chassis_mask(
-                    [r.get("_chassis_cands") for _, r in cr_pending])
+                ch_cands = [r.get("_chassis_cands") for _, r in cr_pending]
+                # Per-model batch templates: a same-model fleet is one cluster
+                # (== the old global mask); a mixed batch gives each model its
+                # own template.  A record whose model has no populated cluster
+                # gets no mask (left as voted) rather than being forced onto a
+                # different model's template, so enforcement never corrupts.
+                cmasks = ocr.build_chassis_masks(ch_cands)
                 emask = ocr.build_chassis_mask(
                     [r.get("_engine_cands") for _, r in cr_pending], min_len=6)
-                if mask or emask:
+                if cmasks or emask:
                     up.progress_message = "Applying batch templates\u2026"
                     db.session.commit()
                     for rec_obj, r in cr_pending:
                         recovered = False
-                        if mask:
+                        cmask = ocr.pick_chassis_mask(cmasks, rec_obj.chassis_no)
+                        if cmask:
                             new_ch, changed, recovered = ocr.apply_chassis_mask(
-                                rec_obj.chassis_no, mask)
+                                rec_obj.chassis_no, cmask)
                             if changed:
                                 rec_obj.chassis_no = new_ch
                         if emask:
@@ -716,9 +722,9 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                                 rec_obj.engine_no = new_en
                         chassis_bad = (
                             ocr.chassis_needs_review(
-                                rec_obj.chassis_no, mask,
+                                rec_obj.chassis_no, cmask,
                                 rec_obj.chassis_no_confidence)
-                            if mask else ocr._chassis_review(
+                            if cmask else ocr._chassis_review(
                                 rec_obj.chassis_no,
                                 rec_obj.chassis_no_confidence))
                         engine_bad = (
