@@ -1238,6 +1238,20 @@ def _refine_field(page, line, full_zoom, kind, fallback):
             if len(fb) >= 6:
                 cands.append((fb, 0.5))
         text, conf = _vote(cands, prefer_len=17, validator=_chassis_valid)
+        # Length-driven escalation: a 17-char VIN that came back short usually
+        # lost an edge character to a tight crop or too-low render zoom.  Re-OCR
+        # a slightly widened crop at higher zooms and re-vote on the combined
+        # pool so the missing characters are recovered rather than just flagged.
+        if not text or len(text) < 17:
+            wide = pymupdf.Rect(rect.x0 - 6, rect.y0 - 3,
+                                rect.x1 + 12, rect.y1 + 3)
+            extra = [(_norm_chassis(t), w)
+                     for t, w in _rec_candidates(page, wide, zooms=(12, 16))
+                     if len(_norm_chassis(t)) >= 6]
+            if extra:
+                cands.extend(extra)
+                text, conf = _vote(cands, prefer_len=17,
+                                   validator=_chassis_valid)
         cand_strs = [c for c, _ in cands if len(c) >= 15]
         if not text:
             return fallback, None, cand_strs
@@ -1252,6 +1266,17 @@ def _refine_field(page, line, full_zoom, kind, fallback):
             if len(fb) >= 5:
                 cands.append((fb, 0.5))
         text, conf = _vote(cands, validator=_engine_valid)
+        # If the engine serial did not resolve at all, retry a widened crop at
+        # higher zooms before giving up (mirrors the chassis escalation).
+        if not text:
+            wide = pymupdf.Rect(rect.x0 - 6, rect.y0 - 3,
+                                rect.x1 + 12, rect.y1 + 3)
+            extra = [(_norm_engine(t), w)
+                     for t, w in _rec_candidates(page, wide, zooms=(12, 16))
+                     if len(_norm_engine(t)) >= 5]
+            if extra:
+                cands.extend(extra)
+                text, conf = _vote(cands, validator=_engine_valid)
         cand_strs = [c for c, _ in cands if len(c) >= 6]
         if not text:
             return fallback, None, cand_strs
