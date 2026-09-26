@@ -257,6 +257,13 @@ class ReceiptRecord(db.Model):
     needs_review = db.Column(db.Boolean, default=False, nullable=False)
     confidence = db.Column(db.Float, nullable=True)
     raw_text = db.Column(db.Text, nullable=True)
+    # Per-record extraction error (e.g. no template in the picker chain matched
+    # this slip).  When set, the slip was skipped and flagged for the operator
+    # instead of aborting the whole document.
+    error = db.Column(db.String(200), nullable=True)
+    # Name of the Template-picker template that actually validated/was applied to
+    # this slip (the chain may pick a different template per slip).
+    applied_template = db.Column(db.String(120), nullable=True)
     # Template-defined field data (hybrid storage): JSON maps of field key ->
     # value / crop filename / confidence for every field of this record's
     # template.  The canonical typed columns above stay authoritative for

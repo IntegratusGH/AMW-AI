@@ -105,7 +105,7 @@ class Config:
     # Generated SAP batch-input export files (RMV UPLOAD), one per export action.
     EXPORT_DIR = str(Path(UPLOAD_DIR) / "exports")
     ALLOWED_DOC_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "tif", "tiff"}
-    MAX_DOC_UPLOAD_MB = int(os.getenv("MAX_DOC_UPLOAD_MB", "100"))
+    MAX_DOC_UPLOAD_MB = int(os.getenv("MAX_DOC_UPLOAD_MB", "500"))
 
     # Global request-body cap (also bounds uploads); icons are further limited
     # per-field in the form.  Sized to the larger document uploads so scanned

@@ -23,11 +23,25 @@ _engine = None
 _engine_lock = threading.Lock()
 
 
+# Higher-accuracy PP-OCRv4 ONNX models (offline).  Loaded from OCR_MODELS_DIR
+# when set, else an ``ocr_models`` folder beside the app package; when the files
+# are absent RapidOCR falls back to its bundled PP-OCRv3 models.
+_MODELS_DIR = os.getenv("OCR_MODELS_DIR") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "ocr_models")
+
+
 def _get_engine():
     global _engine
     if _engine is None:
-        from rapidocr_onnxruntime import RapidOCR
-        _engine = RapidOCR()
+        with _engine_lock:
+            if _engine is None:
+                from rapidocr_onnxruntime import RapidOCR
+                det = os.path.join(_MODELS_DIR, "ch_PP-OCRv4_det_infer.onnx")
+                rec = os.path.join(_MODELS_DIR, "ch_PP-OCRv4_rec_infer.onnx")
+                kw = ({"det_model_path": det, "rec_model_path": rec}
+                      if os.path.isfile(det) and os.path.isfile(rec) else {})
+                _engine = RapidOCR(**kw)
     return _engine
 
 
@@ -1039,6 +1053,83 @@ def build_chassis_masks(cand_lists, min_records: int = 4, min_len: int = 11,
     return masks
 
 
+# Aggressive fold for cross-model FAMILY grouping: unlike _CLUSTER_FOLD it also
+# collapses the CR-book font's systematic glyph confusions (S/8/5, E/L/F, G/C/6,
+# B) so a model whose fixed skeleton is split only by those misreads still lands
+# in one family.  Used solely to LEARN the skeleton; the actual consensus
+# character kept is the un-folded majority, so real characters are never lost.
+_FAMILY_FOLD = str.maketrans({
+    "0": "O", "D": "O", "Q": "O", "1": "I", "7": "I",
+    "8": "S", "5": "S", "L": "E", "F": "E", "C": "G", "6": "G", "B": "G",
+})
+
+
+def _family_sig(s: str, klen: int = 6) -> str:
+    return s[:klen].translate(_FAMILY_FOLD)
+
+
+def build_family_consensus(values, min_records: int = 3, skel: float = 0.85,
+                           length: int = 17):
+    """Learn per-family skeletons for a whole batch.  Groups full-length chassis
+    by their confusion-folded prefix (so S<->8/5, E<->L, G<->C misreads do not
+    fragment a model the per-model mask cannot cluster), then for each family
+    records the positions whose folded character is near-constant (the fixed
+    skeleton) together with the un-folded majority character and its agreement.
+    Returns ``{sig: {pos: (char, agreement)}}`` (empty when nothing qualifies).
+    Complements build_chassis_masks for heterogeneous batches."""
+    from collections import Counter, defaultdict
+    fams: dict[str, list] = defaultdict(list)
+    for v in values:
+        if v and len(v) == length:
+            fams[_family_sig(v)].append(v)
+    out: dict[str, dict] = {}
+    for sig, strs in fams.items():
+        if len(strs) < min_records:
+            continue
+        skeleton: dict[int, tuple] = {}
+        for i in range(length):
+            fcol = Counter(s[i].translate(_FAMILY_FOLD) for s in strs)
+            fmode, fmc = fcol.most_common(1)[0]
+            if fmc / len(strs) < skel:
+                continue
+            acol = Counter(s[i] for s in strs
+                           if s[i].translate(_FAMILY_FOLD) == fmode)
+            amode, amc = acol.most_common(1)[0]
+            skeleton[i] = (amode, amc / len(strs))
+        if skeleton:
+            out[sig] = skeleton
+    return out
+
+
+def apply_family_consensus(value, consensus, strong: float = 0.70,
+                           length: int = 17):
+    """Snap a chassis's skeleton positions to its family consensus.  A character
+    that disagrees with the skeleton is corrected only when it is a known glyph
+    confusion of the consensus char AND that consensus is strong; a weak
+    consensus or a non-confusion disagreement flags the record for review
+    instead (never silently changed).  Returns ``(new_value, changed, flagged)``.
+    """
+    if not value or len(value) != length or not consensus:
+        return value, False, False
+    skeleton = consensus.get(_family_sig(value))
+    if not skeleton:
+        return value, False, False
+    out = list(value)
+    changed = flagged = False
+    for i, (ch, frac) in skeleton.items():
+        if value[i] == ch:
+            continue
+        if value[i].translate(_FAMILY_FOLD) == ch.translate(_FAMILY_FOLD):
+            if frac >= strong:
+                out[i] = ch
+                changed = True
+            else:
+                flagged = True
+        else:
+            flagged = True
+    return "".join(out), changed, flagged
+
+
 def pick_chassis_mask(masks, value: str | None, klen: int = 10):
     """Choose the per-model mask whose PREFIX consensus best matches ``value``.
     Matching is restricted to the model-prefix region (the shared skeleton) so
@@ -1212,6 +1303,64 @@ def chassis_needs_review(value: str | None, mask, conf,
     return False
 
 
+def _reg_escalate(page, line, full_zoom):
+    """Localized high-resolution detect+recognize for a small-font registration
+    number that the full-page (low-zoom) detector missed.  Renders the field
+    region at high zoom, detects the text row inside it, and recognizes that row
+    tightly - mirroring the chassis high-zoom escalation but adding the detect
+    step, because a small reg value's failure mode is that the full-page pass
+    never locates the row (so recognition runs on the raw box + guilloche).
+
+    Returns ``(value, confidence)`` only for a confident, well-formed plate
+    (letter-prefixed, or high-confidence legacy numeric) so the CR guilloche
+    background - which reads as digit runs - cannot inject a spurious value;
+    otherwise ``None`` (the field stays blank, unchanged from before)."""
+    if page is None or line is None:
+        return None
+    import numpy as np
+    import cv2
+    import pymupdf
+    x0 = line["x0"] / full_zoom; y0 = line["y0"] / full_zoom
+    x1 = line["x1"] / full_zoom; y1 = line["y1"] / full_zoom
+    region = pymupdf.Rect(x0 - 3, y0 - 3, x1 + 8, y1 + 4)
+    cands: list[tuple[str, float]] = []
+    for z in (8, 11):
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(z, z), clip=region)
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+            pix.height, pix.width, pix.n)
+        bgr = (cv2.cvtColor(img[:, :, :3], cv2.COLOR_RGB2BGR) if pix.n >= 3
+               else cv2.cvtColor(img, cv2.COLOR_GRAY2BGR))
+        for r in _ocr(_encode_pix_png(pix)):
+            nb = _norm_reg(r["text"])
+            if len(nb) < 4 or not any(c.isdigit() for c in nb):
+                continue
+            rx0 = max(0, int(r["x0"]) - 2); ry0 = max(0, int(r["y0"]) - 2)
+            rx1 = min(bgr.shape[1], int(r["x1"]) + 2)
+            ry1 = min(bgr.shape[0], int(r["y1"]) + 2)
+            sub = bgr[ry0:ry1, rx0:rx1]
+            if sub.size == 0:
+                continue
+            sub = _deskew(sub)
+            for im in _preprocess_variants(sub):
+                for t, w in _rec_only(_fit_height(im)):
+                    n = _norm_reg(t)
+                    if len(n) >= 4 and any(c.isdigit() for c in n):
+                        cands.append((n, w))
+    if not cands:
+        return None
+    text, conf = _vote(cands, validator=_reg_valid)
+    if not text:
+        return None
+    text = _fix_reg_lk(text)
+    if not text or _reg_review(text, conf):
+        return None
+    # Reject pure legacy-numeric readings unless very confident: the CR guilloche
+    # background reads as digit runs that can satisfy the numeric plate pattern.
+    if not any(c.isalpha() for c in text) and (conf is None or conf < 0.9):
+        return None
+    return text, conf
+
+
 def _refine_field(page, line, full_zoom, kind, fallback):
     """High-accuracy value for a critical field via multi-scale recognition-only
     OCR of its cropped region + voting.  Returns ``(value, confidence, cands)``
@@ -1292,6 +1441,9 @@ def _refine_field(page, line, full_zoom, kind, fallback):
             cands.append((fb, 0.5))
     text, conf = _vote(cands, validator=_reg_valid)
     if not text:
+        esc = _reg_escalate(page, line, full_zoom)
+        if esc:
+            return esc[0], esc[1], []
         return fallback, None, []
     refined = _fix_reg_lk(text)
     coarse = _fix_reg_lk(_norm_reg(fallback)) if fallback else ""
@@ -1311,6 +1463,40 @@ def _line_from_norm(page, box, full_zoom: float) -> dict:
     return {"x0": px0, "y0": py0, "x1": px1, "y1": py1,
             "cx": (px0 + px1) / 2.0, "cy": (py0 + py1) / 2.0,
             "text": "", "score": None, "rect": True}
+
+
+def _line_in_box(lines, box, page, full_zoom: float) -> dict:
+    """Use a user-drawn normalized ``box`` as a region selector: return the
+    detected text row inside it as a tight ``rect`` line (union of same-row
+    fragments), so a loosely-drawn box (taller/wider than the value, catching
+    the CR cell's border lines) is refined on the actual text instead of the raw
+    rectangle.  Falls back to the full box (``_line_from_norm``) when detection
+    found no text inside - e.g. bilevel scans where the label-anchored pass also
+    fails, so the box remains the only signal."""
+    W, H = page.rect.width, page.rect.height
+    bx0, by0 = box[0] * W * full_zoom, box[1] * H * full_zoom
+    bx1, by1 = box[2] * W * full_zoom, box[3] * H * full_zoom
+    inside = [ln for ln in (lines or [])
+              if ln.get("cx") is not None and ln.get("cy") is not None
+              and bx0 - 2 <= ln["cx"] <= bx1 + 2
+              and by0 - 2 <= ln["cy"] <= by1 + 2]
+    if not inside:
+        return _line_from_norm(page, box, full_zoom)
+    # Pick the row nearest the box centre, then union only its same-row
+    # fragments (so a horizontally split value is rejoined without pulling in a
+    # neighbouring row the tall box may also cover).
+    cyb = (by0 + by1) / 2.0
+    target = min(inside, key=lambda ln: abs(ln["cy"] - cyb))
+    row = [ln for ln in inside
+           if abs(ln["cy"] - target["cy"]) <= (by1 - by0) * 0.5]
+    x0 = min(ln["x0"] for ln in row)
+    y0 = min(ln["y0"] for ln in row)
+    x1 = max(ln["x1"] for ln in row)
+    y1 = max(ln["y1"] for ln in row)
+    sc = max((ln.get("score") or 0.0) for ln in row) or None
+    return {"x0": x0, "y0": y0, "x1": x1, "y1": y1,
+            "cx": (x0 + x1) / 2.0, "cy": (y0 + y1) / 2.0,
+            "text": "", "score": sc, "rect": True}
 
 
 # Rendered short-side pixel cap for stored value-region crops when pp removes
@@ -1361,6 +1547,42 @@ def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0,
         return _slice_png(page_bgr, rect, disp_zoom)
     pix = page.get_pixmap(matrix=pymupdf.Matrix(disp_zoom, disp_zoom), clip=rect)
     return pix.tobytes("png")
+
+
+# Fixed display canvas for value crops.  Chassis crops naturally share a wide,
+# consistent aspect (the 17-char string fills its box) so they render uniformly;
+# registration crops are tight around a short plate, so their aspect - and thus
+# their capped display width - varies.  Padding every crop onto a canvas of this
+# fixed aspect makes all crops in a column render at the same size.
+_CROP_CANVAS_W = 600
+_CROP_CANVAS_H = 72
+
+
+def _pad_crop_to_canvas(png_bytes, target_w: int = _CROP_CANVAS_W,
+                        target_h: int = _CROP_CANVAS_H):
+    """Normalise a value-crop PNG onto a fixed white canvas so every crop shares
+    one aspect ratio and renders at a uniform size beside its value.  The content
+    is scaled to fit within the canvas (preserving aspect), left-aligned and
+    vertically centred.  Returns the original bytes unchanged on any failure."""
+    if not png_bytes:
+        return png_bytes
+    import numpy as np
+    import cv2
+    arr = cv2.imdecode(np.frombuffer(png_bytes, np.uint8), cv2.IMREAD_COLOR)
+    if arr is None:
+        return png_bytes
+    h, w = arr.shape[:2]
+    if h == 0 or w == 0:
+        return png_bytes
+    scale = min(target_w / w, target_h / h)
+    nw, nh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
+    resized = cv2.resize(arr, (nw, nh), interpolation=interp)
+    canvas = np.full((target_h, target_w, 3), 255, np.uint8)
+    y = (target_h - nh) // 2
+    canvas[y:y + nh, 0:nw] = resized
+    ok, buf = cv2.imencode(".png", canvas)
+    return buf.tobytes() if ok else png_bytes
 
 
 def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
@@ -1452,7 +1674,7 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     _crop_page_bgr = (_page_bgr(page, _crop_pp, _crop_zoom)
                       if (_crop_pp and page is not None) else None)
     if rects and rects.get("chassis_no") and page is not None:
-        ch_line = _line_from_norm(page, rects["chassis_no"], full_zoom)
+        ch_line = _line_in_box(lines, rects["chassis_no"], page, full_zoom)
         ch_fb, ch_rect = None, True   # box-only: no label fallback
     else:
         ch_lbl = _find_label(lines, _CR_LABELS["chassis_no"])
@@ -1466,12 +1688,12 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
         rec["chassis_no"] = ch_val
     rec["chassis_no_confidence"] = ch_conf
     rec["_chassis_cands"] = ch_cands
-    rec["_chassis_crop_png"] = crop_value_png(page, ch_line, full_zoom,
-                                              disp_zoom=_crop_zoom,
-                                              page_bgr=_crop_page_bgr)
+    rec["_chassis_crop_png"] = _pad_crop_to_canvas(
+        crop_value_png(page, ch_line, full_zoom,
+                       disp_zoom=_crop_zoom, page_bgr=_crop_page_bgr))
 
     if rects and rects.get("registration_no") and page is not None:
-        rg_line = _line_from_norm(page, rects["registration_no"], full_zoom)
+        rg_line = _line_in_box(lines, rects["registration_no"], page, full_zoom)
         rg_fb, rg_rect = None, True   # box-only
     else:
         rg_lbl = _find_label(lines, _CR_LABELS["registration_no"],
@@ -1485,12 +1707,12 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     if rg_val or rg_rect:
         rec["registration_no"] = rg_val
     rec["registration_no_confidence"] = rg_conf
-    rec["_reg_crop_png"] = crop_value_png(page, rg_line, full_zoom,
-                                          disp_zoom=_crop_zoom,
-                                          page_bgr=_crop_page_bgr)
+    rec["_reg_crop_png"] = _pad_crop_to_canvas(
+        crop_value_png(page, rg_line, full_zoom,
+                       disp_zoom=_crop_zoom, page_bgr=_crop_page_bgr))
 
     if rects and rects.get("engine_no") and page is not None:
-        en_line = _line_from_norm(page, rects["engine_no"], full_zoom)
+        en_line = _line_in_box(lines, rects["engine_no"], page, full_zoom)
         en_fb, en_rect = None, True   # box-only
     else:
         en_lbl = _find_label(lines, _CR_LABELS["engine_no"])
@@ -1504,13 +1726,21 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
         rec["engine_no"] = en_val
     rec["engine_no_confidence"] = en_conf
     rec["_engine_cands"] = en_cands
-    rec["_engine_crop_png"] = crop_value_png(page, en_line, full_zoom,
-                                             disp_zoom=_crop_zoom,
-                                             page_bgr=_crop_page_bgr)
+    rec["_engine_crop_png"] = _pad_crop_to_canvas(
+        crop_value_png(page, en_line, full_zoom,
+                       disp_zoom=_crop_zoom, page_bgr=_crop_page_bgr))
 
-    rec["needs_review"] = bool(_chassis_review(rec.get("chassis_no"), ch_conf)
-                               or _reg_review(rec.get("registration_no"), rg_conf)
-                               or _engine_review(rec.get("engine_no"), en_conf))
+    # Only review fields this template captures: in template mode a canonical
+    # field is captured only if it has a value box; a field with no box is never
+    # filled, so its blank value must not force every record into review.  With
+    # no template (rule mode) all canonical fields are expected, as before.
+    def _cap(_k: str) -> bool:
+        return (not rects) or (_k in rects)
+    rec["needs_review"] = bool(
+        (_cap("chassis_no") and _chassis_review(rec.get("chassis_no"), ch_conf))
+        or (_cap("registration_no")
+            and _reg_review(rec.get("registration_no"), rg_conf))
+        or (_cap("engine_no") and _engine_review(rec.get("engine_no"), en_conf)))
 
     rec["raw_text"] = full
     rec["confidence"] = _mean_score(lines)
@@ -2200,8 +2430,8 @@ def _process_receipt_segment(page, seg: list[dict], zoom: float,
     y0_px, y1_px = ybounds if ybounds is not None else _seg_ybounds(seg)
     if rects:
         region = _slip_region_pts(page, y0_px, y1_px, zoom)
-        vals, crops = read_receipt_rects(page, region, rects, pp=pp,
-                                         anchors=anchors)
+        vals, crops, confs = read_receipt_rects(page, region, rects, pp=pp,
+                                                anchors=anchors, seg=seg, zoom=zoom)
         # Populate boxed fields from their box; clear every other extractable
         # field so nothing outside the template leaks in from label anchoring.
         for f in _RC_BOX_FIELDS:
@@ -2210,6 +2440,7 @@ def _process_receipt_segment(page, seg: list[dict], zoom: float,
         rec["receipt_time"] = None
         rec["needs_review"] = False
         rec["_rc_field_crops"] = crops
+        rec["_rc_field_conf"] = confs
         rec.pop("_vehicle_line", None)
         rec.pop("_amt_lines", None)
         rec["_image_crop_png"] = crop_receipt_png(page, y0_px, y1_px, zoom)
@@ -2236,6 +2467,29 @@ def _process_receipt_segment(page, seg: list[dict], zoom: float,
     return rec
 
 
+class NoMatchTemplate(Exception):
+    """Raised by a receipt Template-picker resolver when no template in the
+    validation/fallback chain matches a slip.  Caught per slip by
+    ``extract_receipt_page``, which records the error on that slip and continues
+    with the rest of the document."""
+
+
+def _receipt_error_segment(page, seg: list[dict], zoom: float,
+                           ybounds, message: str) -> dict:
+    """Placeholder record for a slip that matched no template: no field values,
+    flagged for review with ``error`` set, but keeping the slip image crop so the
+    operator can identify and fix it manually."""
+    y0_px, y1_px = ybounds if ybounds is not None else _seg_ybounds(seg)
+    rec = {f: None for f in _RC_BOX_FIELDS}
+    rec["application_no"] = None
+    rec["receipt_time"] = None
+    rec["needs_review"] = True
+    rec["error"] = message or "No matching template"
+    rec["_rc_field_crops"] = {}
+    rec["_image_crop_png"] = crop_receipt_png(page, y0_px, y1_px, zoom)
+    return rec
+
+
 def extract_receipt_page(page, zoom: float = 2.0, pp=None,
                          rects=None, anchors=None, progress=None,
                          resolve=None) -> list[dict]:
@@ -2246,10 +2500,10 @@ def extract_receipt_page(page, zoom: float = 2.0, pp=None,
     within each slip, driven by ``rects`` (field -> normalized box).  ``progress``
     (if given) is called as ``progress(done, total)`` before each slip so a long
     single-page roll can report live per-slip progress.  ``resolve`` (the RC
-    Template picker) is called as ``resolve(page, region_pts)`` for each slip and
-    must return that slip's ``(pp, rects, anchors)`` by walking the template
-    validation/fallback chain (called as ``resolve(page, region_pts, idx,
-    total)``); it may raise to stop the whole document."""
+    Template picker) is called as ``resolve(page, region_pts, idx, total)`` for
+    each slip and must return that slip's ``(pp, rects, anchors, template_name)``
+    by walking the template validation/fallback chain; it raises
+    ``NoMatchTemplate`` when nothing matches (caught per slip -> error record)."""
     lines = _ocr_page(page, zoom)
     segs = _real_segments(lines)
     bounds = _seg_bounds_normalized(segs)
@@ -2261,14 +2515,24 @@ def extract_receipt_page(page, zoom: float = 2.0, pp=None,
                 progress(idx, n)
             except Exception:
                 pass
+        applied_name = None
         if resolve is not None:
             region = _slip_region_pts(page, yb[0], yb[1], zoom)
-            pp_i, rects_i, anchors_i = resolve(page, region, idx, n)
+            try:
+                pp_i, rects_i, anchors_i, applied_name = resolve(
+                    page, region, idx, n)
+            except NoMatchTemplate as exc:
+                # No template in the picker chain matched this slip: record the
+                # error and move on so one unmatched slip never aborts the whole
+                # document.
+                out.append(_receipt_error_segment(page, seg, zoom, yb, str(exc)))
+                continue
         else:
             pp_i, rects_i, anchors_i = pp, rects, anchors
-        out.append(_process_receipt_segment(page, seg, zoom, rects=rects_i,
-                                            pp=pp_i, anchors=anchors_i,
-                                            ybounds=yb))
+        rec = _process_receipt_segment(page, seg, zoom, rects=rects_i,
+                                       pp=pp_i, anchors=anchors_i, ybounds=yb)
+        rec["applied_template"] = applied_name
+        out.append(rec)
     return out
 
 
@@ -2519,6 +2783,49 @@ def _mask_like_extract(pattern: str, text: str) -> str | None:
     return None
 
 
+def _mask_like_format(pattern: str, text: str) -> str | None:
+    """Reformat ``text`` onto a fixed-layout Like-pattern, inserting the pattern's
+    literal characters (space, '-', ...) around the recognised value so a read
+    like 'WPBLS0108' with pattern '?? ???-####' becomes 'WP BLS-0108'.  A pattern
+    is fixed-layout when it uses only ``?`` (letter slot), ``#`` (digit slot) and
+    literals - patterns with ``*``/``[...]``/boolean operators stay
+    validate/extract only.  The value's alphanumerics are mapped positionally
+    onto the slots, correcting per-zone OCR confusions (a digit in a ``?`` slot
+    -> its letter, a letter in a ``#`` slot -> its digit).  Returns the formatted
+    string only when the alnum count matches the slot count and every slot
+    resolves, else None (so the caller flags rather than invents/drops chars)."""
+    if not pattern or "*" in pattern or "[" in pattern:
+        return None
+    if any(t.lower() in ("and", "or", "not") for t in pattern.split()):
+        return None
+    slots = [c for c in pattern if c in "?#"]
+    alnum = [c for c in (text or "") if c.isalnum()]
+    if not slots or len(alnum) != len(slots):
+        return None
+    out: list[str] = []
+    k = 0
+    for c in pattern:
+        if c == "?":
+            ch = alnum[k].upper(); k += 1
+            if ch.isalpha():
+                out.append(ch)
+            elif ch in _LETTER_MAP:
+                out.append(_LETTER_MAP[ch])
+            else:
+                return None
+        elif c == "#":
+            ch = alnum[k].upper(); k += 1
+            if ch.isdigit():
+                out.append(ch)
+            elif ch in _DIGIT_MAP:
+                out.append(_DIGIT_MAP[ch])
+            else:
+                return None
+        else:
+            out.append(c)
+    return "".join(out)
+
+
 def _mask_like_ok(pattern: str, text: str) -> bool:
     toks = pattern.split()
     if any(t.lower() in ("and", "or", "not") for t in toks):
@@ -2614,12 +2921,18 @@ def apply_field_mask(mask, value, text, list_lookup=None):
     if not entries:
         return (text or None), True
     if mask == "pattern":
-        for p in entries:
+        pats: list[str] = []
+        for e in entries:
+            pats.extend(x.strip() for x in re.split(r"[|\n]", e) if x.strip())
+        for p in pats:
             toks = p.split()
             if any(t.lower() in ("and", "or", "not") for t in toks):
                 if _mask_like_ok(p, text):
                     return (text or None), True
                 continue
+            fmt = _mask_like_format(p, text)
+            if fmt is not None:
+                return fmt, True
             sub = _mask_like_extract(p, text)
             if sub is not None:
                 return sub, True
@@ -2823,8 +3136,12 @@ def _parse_receipt_field(name: str, text: str | None):
         m = re.search(r"0\d{6,7}", t.replace(" ", ""))
         return m.group(0) if m else None
     if name == "receipt_no":
-        m = re.search(r"\d{1,4}", t)
-        return m.group(0) if m else None
+        # Join digit groups split by spaces (tilted prints often OCR as
+        # "0271 410"), then keep the longest run.  The old ``\d{1,4}`` capped
+        # the value at 4 digits, truncating full (7-digit) receipt numbers.
+        t2 = re.sub(r"(?<=\d)\s+(?=\d)", "", t)
+        runs = re.findall(r"\d+", t2)
+        return max(runs, key=len) if runs else None
     return t or None
 
 
@@ -2979,19 +3296,55 @@ def _apply_calib_norm(box, M, rw_px: float, rh_px: float):
     return [nx0, ny0, nx1, ny1]
 
 
+def _rect_to_text_row(rect, seg, zoom: float):
+    """Snap a slip field ``rect`` (PDF points) to the detected text row inside
+    it, using the slip's ``seg`` OCR lines (``_ocr_page`` pixel space at
+    ``zoom``).  Receipt counterpart of the CR ``_line_in_box`` region-selector:
+    a loosely-drawn box is read on the actual text row rather than the raw
+    rectangle (which may include the slip's frame lines / adjacent rows).  Only
+    fragments whose centre lies inside the box are considered, so a side-by-side
+    neighbour (its centre outside the box) is never merged in.  Returns the
+    original rect when no detected text falls inside (e.g. a box over faint text
+    the detector missed), so nothing is lost."""
+    import pymupdf
+    px0, py0 = rect.x0 * zoom, rect.y0 * zoom
+    px1, py1 = rect.x1 * zoom, rect.y1 * zoom
+    inside = [ln for ln in (seg or [])
+              if ln.get("cx") is not None and ln.get("cy") is not None
+              and px0 - 2 <= ln["cx"] <= px1 + 2
+              and py0 - 2 <= ln["cy"] <= py1 + 2]
+    if not inside:
+        return rect
+    cyb = (py0 + py1) / 2.0
+    target = min(inside, key=lambda ln: abs(ln["cy"] - cyb))
+    row = [ln for ln in inside
+           if abs(ln["cy"] - target["cy"]) <= (py1 - py0) * 0.5]
+    x0 = min(ln["x0"] for ln in row)
+    y0 = min(ln["y0"] for ln in row)
+    x1 = max(ln["x1"] for ln in row)
+    y1 = max(ln["y1"] for ln in row)
+    pad = 2.0
+    return pymupdf.Rect((x0 - pad) / zoom, (y0 - pad) / zoom,
+                        (x1 + pad) / zoom, (y1 + pad) / zoom)
+
+
 def read_receipt_rects(page, region_pts, rects, pp=None,
-                       anchors=None) -> tuple[dict, dict]:
+                       anchors=None, seg=None, zoom: float = 2.0) -> tuple[dict, dict, dict]:
     """OCR each normalized rect (relative to one slip's ``region_pts`` in PDF
     points) and normalize per receipt field.  When ``anchors`` are given, a
     per-slip similarity transform (see calibrate_slip_affine) is applied to each
-    box so it tracks this slip's actual offset/scale/rotation.  Returns
-    ``(values, crops)`` where ``values`` maps field -> value and ``crops`` maps
-    field -> PNG bytes of the box (so the records page can show the scan)."""
+    box so it tracks this slip's actual offset/scale/rotation.  ``seg`` (the
+    slip's detected OCR lines, at ``zoom``) drives the region-selector that snaps
+    each box to its actual text row before reading.  Returns ``(values, crops)``
+    where ``values`` maps field -> value, ``crops`` maps field -> PNG bytes of
+    the box (so the records page can show the scan) and ``confs`` maps field ->
+    best recognition confidence (used to flag low-confidence reads)."""
     import pymupdf
     rx0, ry0, rx1, ry1 = region_pts
     rw, rh = (rx1 - rx0), (ry1 - ry0)
     values: dict = {}
     crops: dict = {}
+    confs: dict = {}
     # When a pp is active, render the whole page once with it so each field crop
     # is sliced from the same pp-processed image the OCR-settings popup shows.
     # Guilloche removal (FFT) is only effective at a modest render scale, so drop
@@ -3017,16 +3370,23 @@ def read_receipt_rects(page, region_pts, rects, pp=None,
         else:
             rect = pymupdf.Rect(rx0 + x0 * rw, ry0 + y0 * rh,
                                 rx0 + x1 * rw, ry0 + y1 * rh)
+        # Region-selector: read the detected text row inside the box, not the
+        # raw rectangle, so a loose box no longer feeds slip borders/neighbours
+        # to the recognizer (falls back to the box when no text is detected).
+        rect = _rect_to_text_row(rect, seg, zoom)
         cands = [(_clean(t), s) for t, s in
                  _rec_candidates(page, rect, pp=pp) if _clean(t)]
-        raw = max(cands, key=lambda c: c[1])[0] if cands else None
+        best = max(cands, key=lambda c: c[1]) if cands else None
+        raw = best[0] if best else None
         values[name] = _parse_receipt_field(name, raw)
+        if best is not None:
+            confs[name] = round(float(best[1]), 3)
         # Slice the crop from the pp-processed page (matching the popup) when a
         # pp is set; otherwise render the raw box (the true scan).
         crops[name] = (_slice_png(page_bgr, rect, _crop_zoom)
                        if page_bgr is not None
                        else _encode_rect_png(page, rect, pp=None, zoom=4.0))
-    return values, crops
+    return values, crops, confs
 
 
 def first_slip_region(page, zoom: float = 2.0):

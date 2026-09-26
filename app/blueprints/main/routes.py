@@ -180,6 +180,9 @@ _CR_CONF_ATTR = {
     "registration_no": "registration_no_confidence",
     "engine_no": "engine_no_confidence",
 }
+# Receipt fields with OCR confidence below this are flagged (red cell + review).
+_RC_CONF_MIN = 0.75
+
 _RC_CROP_ATTR = {
     "slip_no": "slip_crop",
     "receipt_no": "receipt_no_crop",
@@ -568,6 +571,10 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             if up is None:
                 return
             # Re-process: drop any previously extracted rows and reset counters.
+            # Clear ``processed`` up front so an interrupted run (worker killed /
+            # service restarted) is recoverable as incomplete rather than being
+            # mistaken for a finished one by the startup orphan recovery.
+            up.processed = False
             RecordModel.query.filter_by(upload_id=upload_id).delete()
             import shutil
             shutil.rmtree(
@@ -739,6 +746,12 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 if cmasks or emask:
                     up.progress_message = "Applying batch templates\u2026"
                     db.session.commit()
+                    # Only flag review for fields the upload's template captures.
+                    # A field with no value box is never filled, so its blank
+                    # value must not force every record into review; no template
+                    # (rule mode) captures all canonical fields, as before.
+                    cr_captured = (set(upload_rects) if upload_rects else
+                                   {"registration_no", "chassis_no", "engine_no"})
                     for rec_obj, r in cr_pending:
                         recovered = False
                         cmask = ocr.pick_chassis_mask(cmasks, rec_obj.chassis_no)
@@ -752,14 +765,14 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                                 rec_obj.engine_no, emask)
                             if echanged:
                                 rec_obj.engine_no = new_en
-                        chassis_bad = (
+                        chassis_bad = ("chassis_no" in cr_captured) and (
                             ocr.chassis_needs_review(
                                 rec_obj.chassis_no, cmask,
                                 rec_obj.chassis_no_confidence)
                             if cmask else ocr._chassis_review(
                                 rec_obj.chassis_no,
                                 rec_obj.chassis_no_confidence))
-                        engine_bad = (
+                        engine_bad = ("engine_no" in cr_captured) and (
                             ocr.chassis_needs_review(
                                 rec_obj.engine_no, emask,
                                 rec_obj.engine_no_confidence)
@@ -768,9 +781,25 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                                 rec_obj.engine_no_confidence))
                         rec_obj.needs_review = bool(
                             recovered or chassis_bad or engine_bad
-                            or ocr._reg_review(
-                                rec_obj.registration_no,
-                                rec_obj.registration_no_confidence))
+                            or (("registration_no" in cr_captured)
+                                and ocr._reg_review(
+                                    rec_obj.registration_no,
+                                    rec_obj.registration_no_confidence)))
+                    db.session.commit()
+                # Cross-model family consensus: correct systematic single-glyph
+                # misreads (S<->8/5, E<->L, G<->C) the per-model mask cannot
+                # cluster in a heterogeneous batch, and flag weak/ambiguous
+                # skeleton disagreements for review (never silently changed).
+                fam_cons = ocr.build_family_consensus(
+                    [rc.chassis_no for rc, _ in cr_pending])
+                if fam_cons:
+                    for rec_obj, r in cr_pending:
+                        new_ch, changed, flagged = ocr.apply_family_consensus(
+                            rec_obj.chassis_no, fam_cons)
+                        if changed:
+                            rec_obj.chassis_no = new_ch
+                        if flagged:
+                            rec_obj.needs_review = True
                     db.session.commit()
 
             # Persist the cropped value-region scans (Chassis No / Reg No) so the
@@ -881,6 +910,10 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                     else ocr.default_field_defs(kind))
             crop_attr = cfg.get("crop_attr", {})
             conf_attr = cfg.get("conf_attr", {})
+            # Receipts capture per-field confidence during box extraction (CR
+            # uses conf_attr columns), so map record id -> that field->conf dict.
+            rc_conf_by_id = ({ro.id: (r.get("_rc_field_conf") or {})
+                              for ro, r in rc_pending} if kind == "rc" else {})
             for rec_obj in RecordModel.query.filter_by(
                     upload_id=upload_id).all():
                 fv, fc, fk = ocr.build_field_data(
@@ -888,6 +921,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 for k, v in (custom_vals.get(rec_obj.id) or {}).items():
                     if v not in (None, ""):
                         fv[k] = v
+                fk.update(rc_conf_by_id.get(rec_obj.id, {}))
                 rec_obj.field_values = json.dumps(fv) if fv else None
                 rec_obj.field_crops = json.dumps(fc) if fc else None
                 rec_obj.field_confidence = json.dumps(fk) if fk else None
@@ -1973,9 +2007,41 @@ def upload_records(kind: str, upload_id: int):
                    if d.get("capture") and d["key"] in canon_cols}
     else:
         visible = set(canon_cols)
-    # thead has 4 structural columns per kind (cr: Pg/Review/Save/Image,
-    # rc: Review/Dup/Conf/Image) plus the visible canonical + extra columns.
-    col_count = 4 + len(visible) + len(extra_fields)
+    # Receipts: flag each field cell whose read fails its field-setting mask or
+    # whose OCR confidence is below the threshold, and mark the record for review
+    # when any cell is flagged (in addition to the existing needs_review/error).
+    if kind == "rc":
+        mask_defs = [d for d in defs
+                     if (d.get("mask") or "none") != "none"]
+        for r in records:
+            flags: set = set()
+            try:
+                fconf = json.loads(r.field_confidence) if r.field_confidence else {}
+            except (ValueError, TypeError):
+                fconf = {}
+            for key, c in fconf.items():
+                try:
+                    if c is not None and float(c) < _RC_CONF_MIN:
+                        flags.add(key)
+                except (TypeError, ValueError):
+                    pass
+            for d in mask_defs:
+                key = d["key"]
+                role = d.get("role") or key
+                val = getattr(r, role, None)
+                if val in (None, ""):
+                    val = r.fv.get(key)
+                if val in (None, ""):
+                    continue
+                _nv, ok = ocr.apply_field_mask(
+                    d.get("mask"), d.get("value"), str(val), _list_lookup)
+                if not ok:
+                    flags.add(key)
+            r._flags = flags
+            r._review = bool(flags) or bool(r.needs_review)
+    # thead structural columns per kind (cr: Pg/Review/Save/Image = 4;
+    # rc: Review/Rec No/Template/Dup/Conf/Image = 6) plus visible + extra cols.
+    col_count = (6 if kind == "rc" else 4) + len(visible) + len(extra_fields)
     return render_template(
         "main/registration_records.html", kind=kind, upload=up,
         records=records, extra_fields=extra_fields,
@@ -2546,9 +2612,10 @@ def _make_rc_slip_resolver(base_tpl, report=None):
     walking the assigned template's predecessors) and walks its validation/
     fallback chain: it applies a template's image settings and OCRs its validate
     box on that slip, and the first template whose read contains its validate
-    text supplies the slip's ``(pp, rects, anchors)``.  Templates without
-    validation are used as-is.  Raises ValueError("No Match Template") when a
-    slip matches nothing in the chain.  ``report`` (if given) is called with a
+    text supplies the slip's ``(pp, rects, anchors, name)``.  Templates without
+    validation are used as-is.  Raises ``ocr.NoMatchTemplate`` when a slip matches
+    nothing in the chain (extract_receipt_page catches it, records the error on
+    that slip and continues).  ``report`` (if given) is called with a
     short status string as each template is validated so the progress bar can
     show which template matched."""
     from app.utils import registration_ocr as ocr
@@ -2600,17 +2667,17 @@ def _make_rc_slip_resolver(base_tpl, report=None):
                     or not box or not expected):
                 if report:
                     report(f"Using {t.name} \u2014 {_slip(idx, total)}\u2026")
-                return _pp(t), _rects(t), _anchors(t)
+                return _pp(t), _rects(t), _anchors(t), t.name
             if report:
                 report(f"Validating {t.name} \u2014 {_slip(idx, total)}\u2026")
             text, _ = ocr.read_slip_rect(page, region, box, pp=_pp(t) or None)
             if _validate_contains(expected, text):
                 if report:
                     report(f"Validated {t.name} \u2014 {_slip(idx, total)}")
-                return _pp(t), _rects(t), _anchors(t)
+                return _pp(t), _rects(t), _anchors(t), t.name
             nxt = getattr(t, "fail_template_id", None)
             t = db.session.get(OcrTemplate, nxt) if nxt else None
-        raise ValueError("No Match Template")
+        raise ocr.NoMatchTemplate("No matching template")
 
     return resolve
 

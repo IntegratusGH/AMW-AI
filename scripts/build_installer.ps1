@@ -75,6 +75,15 @@ Copy-Item (Join-Path $root "app")     (Join-Path $build "app")     -Recurse
 Copy-Item (Join-Path $root "service") (Join-Path $build "service") -Recurse
 Copy-Item (Join-Path $root "scripts") (Join-Path $build "scripts") -Recurse
 Copy-Item (Join-Path $root "migrations") (Join-Path $build "migrations") -Recurse
+# bundle the in-use PP-OCRv4 ONNX models (det + rec mobile) so the MSI ships v4
+# offline; the payload harvester below auto-includes anything under build\.
+$mdst = Join-Path $build "ocr_models"
+New-Item -ItemType Directory -Force -Path $mdst | Out-Null
+foreach ($m in "ch_PP-OCRv4_det_infer.onnx","ch_PP-OCRv4_rec_infer.onnx") {
+  $msrc = Join-Path $root "ocr_models\$m"
+  if (Test-Path $msrc) { Copy-Item $msrc $mdst -Force }
+  else { Write-Warning "ocr model missing: $msrc (MSI will fall back to v3)" }
+}
 Copy-Item (Join-Path $root "manage.py"),(Join-Path $root "wsgi.py"),`
           (Join-Path $root "VERSION"),(Join-Path $root ".env.example") $build
 # purge caches/secrets from payload

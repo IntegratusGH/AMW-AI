@@ -456,7 +456,8 @@
               OCR'd (with this template's image settings) before cropping; the
               template is used only if the read text matches the validate
               text/pattern, otherwise the fail template is tried. If none match,
-              processing stops with “No Match Template”. Plain text is matched
+              that slip is flagged “Error” and skipped, and processing continues
+              with the next slip. Plain text is matched
               loosely (tolerates minor OCR errors). Wildcards: <code>*</code> any
               run, <code>?</code> one letter, <code>#</code> one digit,
               <code>[abc]</code>/<code>[a-c]</code> a set/range, <code>[!abc]</code>

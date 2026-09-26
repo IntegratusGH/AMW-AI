@@ -349,6 +349,9 @@ select.input { appearance: auto; }
 .proc-msg { font-size: 12px; color: var(--text-muted); }
 .row-review { background: rgba(217,138,31,.09); }
 .row-review:hover { background: rgba(217,138,31,.14); }
+/* A single field cell whose read failed its mask or is below the confidence
+   threshold: light-red background so the operator can spot it at a glance. */
+.cell-flag { background: rgba(214,69,69,.16); }
 
 /* Value-region scan crops + inline correction inputs on the CR records page. */
 .val-crop { display: block; max-height: 34px; max-width: 240px; margin-bottom: 4px;

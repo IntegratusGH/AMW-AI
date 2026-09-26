@@ -42,3 +42,6 @@ scripts/sql/
 SampleCRBook/
 SampleCS-Receipt/
 _*.py
+
+# OCR model weights (downloaded, bundled at build)
+ocr_models/
