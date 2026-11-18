@@ -631,10 +631,59 @@ def cr_page_signature(lines: list[dict], page_w: float, page_h: float) -> dict:
     return {"labels": labels, "pos": pos}
 
 
+def _ocr_text_quality(lines: list[dict]) -> float:
+    """Confidence-weighted count of alphanumeric characters in the OCR lines; a
+    page read in the wrong orientation yields far fewer confident glyphs.  Used
+    as the tie-breaker when choosing a page's orientation."""
+    tot = 0.0
+    for ln in (lines or []):
+        sc = ln.get("score") or 0.0
+        if sc >= 0.5:
+            tot += sum(ch.isalnum() for ch in (ln.get("text") or "")) * sc
+    return tot
+
+
+def _auto_orient_cr_page(page, zoom: float, ocr_fn, lines0):
+    """Detect and correct a CR page scanned sideways/upside-down before any field
+    extraction runs.  RapidOCR carries no angle classifier, so when the upright
+    read is not already a clear CR book we re-OCR the page at 90/180/270 and keep
+    the orientation whose CR field labels read best (char count breaks ties).
+    The chosen rotation is applied via ``page.set_rotation`` so every later
+    full-page render and value-box crop sees the corrected page.  ``ocr_fn(page,
+    zoom) -> lines`` OCRs the page at its current rotation.  Returns
+    ``(lines, angle)`` where ``angle`` is the clockwise rotation applied."""
+    def _q(lines):
+        sig = cr_page_signature(
+            lines, page.rect.width * zoom, page.rect.height * zoom)
+        core = sum(1 for k in _CR_CORE_LABELS if k in sig["labels"])
+        return (core, len(sig["labels"]), _ocr_text_quality(lines))
+
+    base = page.rotation
+    q0 = _q(lines0)
+    # An upright read that already looks like a CR book needs no probing.
+    if q0[0] >= _CR_MIN_CORE:
+        return lines0, 0
+    best_angle, best_q, best_lines = 0, q0, lines0
+    for a in (90, 180, 270):
+        page.set_rotation((base + a) % 360)
+        lines_a = ocr_fn(page, zoom)
+        qa = _q(lines_a)
+        if qa > best_q:
+            best_angle, best_q, best_lines = a, qa, lines_a
+    # Only rotate for a real improvement (a readable CR book in the new
+    # orientation), so a genuinely sparse/blank page is never spun around.
+    if best_angle and best_q[0] >= _CR_MIN_CORE:
+        page.set_rotation((base + best_angle) % 360)
+        return best_lines, best_angle
+    page.set_rotation(base)
+    return lines0, 0
+
+
 def detect_cr_page(page, zoom: float = 2.0) -> dict:
     """Fast label-only pass classifying a single page for the review step.
     Returns {signature, core_hits, is_cr}."""
     lines = _ocr_page(page, zoom)
+    lines, _angle = _auto_orient_cr_page(page, zoom, _ocr_page, lines)
     sig = cr_page_signature(
         lines, page.rect.width * zoom, page.rect.height * zoom)
     core = sum(1 for k in _CR_CORE_LABELS if k in sig["labels"])
@@ -1946,7 +1995,10 @@ def extract_cr_page(page, zoom: float = 3.0,
     each value be cropped from its box instead of located by its label."""
     _pp_ctx.pp = pp or None
     try:
-        lines = _ocr(_render_page_png(page, zoom))
+        def _ocr_fn(pg, z):
+            return _ocr(_render_page_png(pg, z))
+        lines = _ocr_fn(page, zoom)
+        lines, _angle = _auto_orient_cr_page(page, zoom, _ocr_fn, lines)
         if not lines:
             return None
         return _parse_cr_page(lines, page=page, full_zoom=zoom,
@@ -2609,7 +2661,7 @@ def default_field_defs(kind: str) -> list[dict]:
     """Built-in field definitions for a doc kind (no boxes / pp yet)."""
     return [{"key": k, "label": field_label(kind, k), "type": field_type(k),
              "role": k, "box": None, "pp": None,
-             "capture": False, "mask": "none", "value": ""}
+             "capture": False, "mask": "none", "value": "", "min_conf": 0.0}
             for k in _DEFAULT_FIELD_KEYS.get(kind, [])]
 
 
@@ -2645,6 +2697,12 @@ def clean_fields(fields, kind: str = "cr") -> list[dict]:
         mask = str(f.get("mask") or "none").strip()
         if mask not in _MASK_TYPES:
             mask = "none"
+        # Minimum OCR confidence (0..1) below which this field is flagged for
+        # review in the records view; 0/blank never flags on confidence.
+        try:
+            min_conf = max(0.0, min(1.0, float(f.get("min_conf"))))
+        except (TypeError, ValueError):
+            min_conf = 0.0
         capture = bool(f.get("capture", cbox is not None))
         # An unselected field keeps no box, so a later reload cannot resurrect
         # its "capture" flag from a stale box (unchecking now truly sticks).
@@ -2660,6 +2718,7 @@ def clean_fields(fields, kind: str = "cr") -> list[dict]:
             "capture": capture,
             "mask": mask,
             "value": str(f.get("value") or "").strip(),
+            "min_conf": round(min_conf, 3),
         })
     return out
 
@@ -3378,8 +3437,13 @@ def read_receipt_rects(page, region_pts, rects, pp=None,
                  _rec_candidates(page, rect, pp=pp) if _clean(t)]
         best = max(cands, key=lambda c: c[1]) if cands else None
         raw = best[0] if best else None
-        values[name] = _parse_receipt_field(name, raw)
-        if best is not None:
+        parsed = _parse_receipt_field(name, raw)
+        values[name] = parsed
+        # Only record a confidence when parsing produced a real value: a typed
+        # field (e.g. a currency like Total/Bank Total) whose box OCR'd with high
+        # confidence but failed normalization is blank, so it must not carry a
+        # misleading high percentage in the records view.
+        if best is not None and parsed not in (None, ""):
             confs[name] = round(float(best[1]), 3)
         # Slice the crop from the pp-processed page (matching the popup) when a
         # pp is set; otherwise render the raw box (the true scan).

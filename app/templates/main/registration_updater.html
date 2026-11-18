@@ -42,19 +42,23 @@
         <td class="dup-cell">{{ u.duplicate_records }}</td>
         <td class="ta-right actions">
           {% if kind == 'rc' %}
+          {# Receipts: processing auto-starts on upload (template inherited from
+             the previous receipt upload), so there is no play/start icon here.
+             A processed upload can still be re-processed. #}
           <button type="button" class="act-btn" title="OCR settings"
                   aria-label="OCR settings" data-ocr-open data-kind="rc"
                   data-uid="{{ u.id }}">{{ icon('cog', 16) }}</button>
+          {% if u.processed %}
           <form method="post" class="inline"
                 action="{{ url_for('main.process_upload', kind='rc', upload_id=u.id) }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            <button class="act-btn" type="submit"
-                    title="{{ 'Re-process' if u.processed else 'Process' }}"
-                    aria-label="{{ 'Re-process' if u.processed else 'Process' }}"
+            <button class="act-btn" type="submit" title="Re-process"
+                    aria-label="Re-process"
                     {{ 'disabled' if u.status == 'processing' else '' }}>
-              {{ icon('refresh', 16) if u.processed else icon('play', 16) }}
+              {{ icon('refresh', 16) }}
             </button>
           </form>
+          {% endif %}
           {% else %}
           {# CR: processing auto-starts on upload (or via the format review
              page), so there is no play/start icon here.  A processed upload can
@@ -119,6 +123,7 @@
   </div>
 
   <section class="tab-panel {{ 'is-active' if active_tab == 'cr' }}" id="tab-cr" role="tabpanel">
+    <div class="reg-tiles">
     <div class="upload-tile card">
       <span class="upload-ico">{{ icon('file-check', 30) }}</span>
       <h3>CR Book upload</h3>
@@ -133,11 +138,83 @@
       </form>
     </div>
 
+    <div class="upload-tile card">
+      <span class="upload-ico">{{ icon('cog', 30) }}</span>
+      <h3>Automate CR Book upload</h3>
+      <p class="muted">Define a server folder to watch. When Auto is on, new PDFs
+        in the folder and its sub-folders are picked up and processed
+        automatically. Already-processed files are skipped.</p>
+      <form method="post" action="{{ url_for('main.cr_auto_folder') }}" class="upload-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="text" name="folder" class="file-input" autocomplete="off"
+               placeholder="e.g. D:\scans\cr_books" value="{{ cr_auto.folder or '' }}"
+               data-folder-input>
+        <button type="button" class="btn" data-folder-browse>Browse&hellip;</button>
+        {% set iv = cr_auto.interval_seconds %}
+        <label class="auto-interval">
+          <span>Scan every</span>
+          <input type="number" name="iv_h" min="0" step="1" value="{{ iv // 3600 }}" aria-label="hours">:
+          <input type="number" name="iv_m" min="0" max="59" step="1" value="{{ (iv % 3600) // 60 }}" aria-label="minutes">:
+          <input type="number" name="iv_s" min="0" max="59" step="1" value="{{ iv % 60 }}" aria-label="seconds">
+          <span>(h:m:s)</span>
+        </label>
+        <button class="btn btn-primary" type="submit">Save settings</button>
+      </form>
+      <form method="post" action="{{ url_for('main.cr_auto_toggle') }}" class="upload-form"
+            data-cr-auto-toggle>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="enabled" value="off">
+        <label class="switch" title="{{ 'Define a folder to enable Auto' if not cr_auto.folder else 'Watch the folder and auto-process new CR-book PDFs' }}">
+          <input type="checkbox" data-cr-auto-switch
+                 {{ 'checked' if cr_auto.enabled }} {{ 'disabled' if not cr_auto.folder }}>
+          <span class="switch-slider"></span>
+          <span class="switch-label">Auto</span>
+        </label>
+      </form>
+      <div class="auto-status" data-cr-auto-status
+           data-status-url="{{ url_for('main.cr_auto_status') }}"
+           {{ '' if cr_auto.enabled else 'hidden' }}>
+        <span class="auto-status__dot" data-auto-dot></span>
+        <div class="auto-status__text">
+          <span class="auto-status__msg" data-auto-msg>Starting&hellip;</span>
+          <span class="auto-status__meta muted" data-auto-meta></span>
+        </div>
+      </div>
+    </div>
+    </div>
+
+    <div class="tmpl-modal" data-folder-modal hidden
+         data-browse-url="{{ url_for('main.cr_auto_browse') }}">
+      <div class="tmpl-modal__backdrop" data-folder-close></div>
+      <div class="tmpl-modal__panel" role="dialog" aria-label="Select a server folder">
+        <div class="tmpl-modal__head">
+          <h3>Select a server folder</h3>
+          <button type="button" class="btn btn-icon" data-folder-close
+                  title="Close" aria-label="Close">{{ icon('x', 18) }}</button>
+        </div>
+        <div class="folder-browser">
+          <div class="folder-browser__bar">
+            <button type="button" class="btn btn-sm" data-folder-up>
+              {{ icon('chevron-left', 14) }} Up</button>
+            <span class="folder-browser__cur" data-folder-cur>&mdash;</span>
+          </div>
+          <ul class="folder-browser__list" data-folder-list></ul>
+          <p class="folder-browser__msg muted" data-folder-msg></p>
+        </div>
+        <div class="tmpl-modal__foot">
+          <button type="button" class="btn" data-folder-close>Cancel</button>
+          <button type="button" class="btn btn-primary" data-folder-pick disabled>
+            Select this folder</button>
+        </div>
+      </div>
+    </div>
+
     <h4 class="reg-subtitle">CR Book uploads</h4>
     {{ uploads_table('cr', cr_uploads, current_user.is_ai_trainer, cr_counts) }}
   </section>
 
   <section class="tab-panel {{ 'is-active' if active_tab == 'rc' }}" id="tab-rc" role="tabpanel">
+    <div class="reg-tiles">
     <div class="upload-tile card">
       <span class="upload-ico">{{ icon('credit-card', 30) }}</span>
       <h3>Registration Receipts upload</h3>
@@ -148,6 +225,77 @@
         {% for e in rc_form.file.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
         {{ rc_form.submit_rc(class="btn btn-primary") }}
       </form>
+    </div>
+
+    <div class="upload-tile card">
+      <span class="upload-ico">{{ icon('cog', 30) }}</span>
+      <h3>Automate Registration Receipts upload</h3>
+      <p class="muted">Define a server folder to watch. When Auto is on, new PDFs
+        in the folder and its sub-folders are picked up and processed
+        automatically. Already-processed files are skipped.</p>
+      <form method="post" action="{{ url_for('main.rc_auto_folder') }}" class="upload-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="text" name="folder" class="file-input" autocomplete="off"
+               placeholder="e.g. D:\scans\receipts" value="{{ rc_auto.folder or '' }}"
+               data-rc-folder-input>
+        <button type="button" class="btn" data-rc-folder-browse>Browse&hellip;</button>
+        {% set iv = rc_auto.interval_seconds %}
+        <label class="auto-interval">
+          <span>Scan every</span>
+          <input type="number" name="iv_h" min="0" step="1" value="{{ iv // 3600 }}" aria-label="hours">:
+          <input type="number" name="iv_m" min="0" max="59" step="1" value="{{ (iv % 3600) // 60 }}" aria-label="minutes">:
+          <input type="number" name="iv_s" min="0" max="59" step="1" value="{{ iv % 60 }}" aria-label="seconds">
+          <span>(h:m:s)</span>
+        </label>
+        <button class="btn btn-primary" type="submit">Save settings</button>
+      </form>
+      <form method="post" action="{{ url_for('main.rc_auto_toggle') }}" class="upload-form"
+            data-rc-auto-toggle>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="enabled" value="off">
+        <label class="switch" title="{{ 'Define a folder to enable Auto' if not rc_auto.folder else 'Watch the folder and auto-process new receipt PDFs' }}">
+          <input type="checkbox" data-rc-auto-switch
+                 {{ 'checked' if rc_auto.enabled }} {{ 'disabled' if not rc_auto.folder }}>
+          <span class="switch-slider"></span>
+          <span class="switch-label">Auto</span>
+        </label>
+      </form>
+      <div class="auto-status" data-rc-auto-status
+           data-status-url="{{ url_for('main.rc_auto_status') }}"
+           {{ '' if rc_auto.enabled else 'hidden' }}>
+        <span class="auto-status__dot" data-auto-dot></span>
+        <div class="auto-status__text">
+          <span class="auto-status__msg" data-auto-msg>Starting&hellip;</span>
+          <span class="auto-status__meta muted" data-auto-meta></span>
+        </div>
+      </div>
+    </div>
+    </div>
+
+    <div class="tmpl-modal" data-rc-folder-modal hidden
+         data-browse-url="{{ url_for('main.cr_auto_browse') }}">
+      <div class="tmpl-modal__backdrop" data-rc-folder-close></div>
+      <div class="tmpl-modal__panel" role="dialog" aria-label="Select a server folder">
+        <div class="tmpl-modal__head">
+          <h3>Select a server folder</h3>
+          <button type="button" class="btn btn-icon" data-rc-folder-close
+                  title="Close" aria-label="Close">{{ icon('x', 18) }}</button>
+        </div>
+        <div class="folder-browser">
+          <div class="folder-browser__bar">
+            <button type="button" class="btn btn-sm" data-rc-folder-up>
+              {{ icon('chevron-left', 14) }} Up</button>
+            <span class="folder-browser__cur" data-rc-folder-cur>&mdash;</span>
+          </div>
+          <ul class="folder-browser__list" data-rc-folder-list></ul>
+          <p class="folder-browser__msg muted" data-rc-folder-msg></p>
+        </div>
+        <div class="tmpl-modal__foot">
+          <button type="button" class="btn" data-rc-folder-close>Cancel</button>
+          <button type="button" class="btn btn-primary" data-rc-folder-pick disabled>
+            Select this folder</button>
+        </div>
+      </div>
     </div>
 
     <h4 class="reg-subtitle">Receipt uploads</h4>
@@ -410,7 +558,9 @@
             <div class="fld-wrap">
               <table class="fld-table" data-fld-table>
                 <thead><tr><th title="Capture with a box"></th><th>Field</th>
-                  <th>Apply mask</th><th>Value</th><th></th></tr></thead>
+                  <th>Apply mask</th><th>Value</th>
+                  <th title="Minimum OCR confidence %. A captured field read below this is flagged for review in the records view; blank never flags on confidence.">Min&nbsp;%</th>
+                  <th></th></tr></thead>
                 <tbody data-fld-body></tbody>
               </table>
             </div>
@@ -1213,7 +1363,7 @@
     var cat = (fieldCatalog || []).map(function (d) {
       return { key: d.key, label: d.label, type: d.type, role: d.role,
                canonical: !!d.canonical, box: null, pp: null,
-               capture: false, mask: 'none', value: '' };
+               capture: false, mask: 'none', value: '', min_conf: 0 };
     });
     var byKey = {}; cat.forEach(function (d) { byKey[d.key] = d; });
     ((t && t.fields) || []).forEach(function (f) {
@@ -1221,12 +1371,13 @@
       if (!d) {
         d = { key: f.key, label: f.label || f.key, type: f.type || 'text',
               role: f.role || f.key, canonical: false, box: null, pp: null,
-              capture: false, mask: 'none', value: '' };
+              capture: false, mask: 'none', value: '', min_conf: 0 };
         byKey[f.key] = d; cat.push(d);
       }
       d.capture = !!f.capture || !!f.box;
       d.mask = f.mask || 'none';
       d.value = f.value || '';
+      d.min_conf = (typeof f.min_conf === 'number') ? f.min_conf : (d.min_conf || 0);
       if (f.box) d.box = f.box.slice();
     });
     // ocr_rects is authoritative for the built-in value boxes (it is what the
@@ -1256,6 +1407,7 @@
         '<td><input type="text" class="fld-label" data-fld-label value="' + esc(d.label || '') + '"></td>' +
         '<td>' + maskSelectHtml(d.mask || 'none') + '</td>' +
         '<td><input type="text" class="fld-value" data-fld-value value="' + esc(d.value || '') + '" placeholder="text or [List]"></td>' +
+        '<td class="ta-center"><input type="number" class="fld-minconf" data-fld-minconf min="0" max="100" step="1" value="' + (d.min_conf ? Math.round(d.min_conf * 100) : '') + '" placeholder="—"></td>' +
         (d.canonical
           ? '<td class="ta-center muted" title="Built-in field">\u2014</td>'
           : '<td class="ta-center"><button type="button" class="act-btn fld-del" data-fld-del title="Delete field & column">\u00d7</button></td>');
@@ -1263,6 +1415,7 @@
       tr.querySelector('[data-fld-label]').addEventListener('input', function () { fieldDefs[idx].label = this.value; renderRects(); });
       tr.querySelector('[data-fld-mask]').addEventListener('change', function () { fieldDefs[idx].mask = this.value; });
       tr.querySelector('[data-fld-value]').addEventListener('input', function () { fieldDefs[idx].value = this.value; });
+      tr.querySelector('[data-fld-minconf]').addEventListener('input', function () { var n = parseFloat(this.value); fieldDefs[idx].min_conf = isNaN(n) ? 0 : Math.max(0, Math.min(100, n)) / 100; });
       var delBtn = tr.querySelector('[data-fld-del]');
       if (delBtn) delBtn.addEventListener('click', function () { deleteField(idx); });
       fldBody.appendChild(tr);
@@ -1290,7 +1443,7 @@
         var c = fieldCatalog.filter(function (x) { return x.key === d.key; })[0] || {};
         var def = { key: d.key, label: c.label || label, type: c.type || 'text',
                     role: c.role || d.key, canonical: false, box: null, pp: null,
-                    capture: true, mask: 'none', value: '' };
+                    capture: true, mask: 'none', value: '', min_conf: 0 };
         fieldDefs.push(def);
         rects[def.key] = stackedBox(fieldDefs.length - 1); def.box = rects[def.key];
       }
@@ -1781,6 +1934,250 @@
     sInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
     sClear.addEventListener('click', function () { sInput.value = ''; applySearch(); sInput.focus(); });
   }
+})();
+</script>
+
+<script>
+(function () {
+  // 'Auto' switch: submit its form on toggle, carrying the on/off state in the
+  // hidden 'enabled' field (a disabled switch has no folder yet).
+  var sw = document.querySelector('[data-cr-auto-switch]');
+  if (!sw) return;
+  var form = sw.closest('[data-cr-auto-toggle]');
+  var hidden = form && form.querySelector('input[name="enabled"]');
+  sw.addEventListener('change', function () {
+    if (hidden) hidden.value = sw.checked ? 'on' : 'off';
+    if (form) form.submit();
+  });
+})();
+</script>
+
+<script>
+(function () {
+  // Server folder browser for the Automate CR Book upload tile.
+  var modal = document.querySelector('[data-folder-modal]');
+  var input = document.querySelector('[data-folder-input]');
+  var openBtn = document.querySelector('[data-folder-browse]');
+  if (!modal || !input || !openBtn) return;
+  var BROWSE = modal.getAttribute('data-browse-url');
+  var listEl = modal.querySelector('[data-folder-list]');
+  var curEl = modal.querySelector('[data-folder-cur]');
+  var msgEl = modal.querySelector('[data-folder-msg]');
+  var upBtn = modal.querySelector('[data-folder-up]');
+  var pickBtn = modal.querySelector('[data-folder-pick]');
+  var cur = '';      // current folder path ('' = drive/root list)
+  var parent = null; // parent path for the Up button
+
+  function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+  function load(path) {
+    msgEl.textContent = 'Loading\u2026';
+    listEl.innerHTML = '';
+    fetch(BROWSE + '?path=' + encodeURIComponent(path || ''), {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || !d.ok) { msgEl.textContent = (d && d.error) || 'Cannot open folder.'; return; }
+      cur = d.path || '';
+      parent = d.parent;
+      curEl.textContent = cur || 'This PC (drives)';
+      pickBtn.disabled = !cur;
+      upBtn.disabled = (parent === null);
+      msgEl.textContent = d.dirs.length ? '' : 'No sub-folders.';
+      d.dirs.forEach(function (dir) {
+        var li = document.createElement('li');
+        li.className = 'folder-browser__item';
+        li.setAttribute('data-path', dir.path);
+        li.innerHTML = esc(dir.name);
+        li.addEventListener('click', function () { load(dir.path); });
+        listEl.appendChild(li);
+      });
+    }).catch(function () { msgEl.textContent = 'Network error.'; });
+  }
+
+  function open() { modal.hidden = false; load(input.value.trim()); }
+  function close() { modal.hidden = true; }
+
+  openBtn.addEventListener('click', open);
+  upBtn.addEventListener('click', function () { if (parent !== null) load(parent); });
+  pickBtn.addEventListener('click', function () { if (cur) { input.value = cur; close(); } });
+  modal.addEventListener('click', function (e) {
+    if (e.target.closest && e.target.closest('[data-folder-close]')) close();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !modal.hidden) close();
+  });
+})();
+</script>
+
+<script>
+(function () {
+  // Live automation status: poll while Auto is on and show the watcher's phase,
+  // counts and a client-side countdown to the next scan.  A reload is triggered
+  // when new files are picked up so the uploads table reflects them.
+  var box = document.querySelector('[data-cr-auto-status]');
+  if (!box) return;
+  var STATUS = box.getAttribute('data-status-url');
+  var dot = box.querySelector('[data-auto-dot]');
+  var msg = box.querySelector('[data-auto-msg]');
+  var meta = box.querySelector('[data-auto-meta]');
+  var POLL = 2000;
+  var baseIngested = null, last = null;
+
+  function clock(sec) {
+    sec = Math.max(0, Math.round(sec));
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return (h ? p(h) + ':' : '') + p(m) + ':' + p(s);
+  }
+  function render(d) {
+    if (!d) return;
+    dot.className = 'auto-status__dot is-' + (d.phase || 'off');
+    msg.textContent = d.message || '';
+    var parts = [];
+    if (d.processing) parts.push(d.processing + ' processing');
+    if (d.ingested_total) parts.push(d.ingested_total + ' picked up');
+    if (d.last_scan_epoch) parts.push('last scan ' + new Date(d.last_scan_epoch * 1000).toLocaleTimeString());
+    if (d.phase === 'waiting' && d.next_scan_epoch) parts.push('next scan in ' + clock(d.next_scan_epoch - Date.now() / 1000));
+    meta.textContent = parts.join(' \u00b7 ');
+  }
+  function tick() { if (last && last.phase === 'waiting' && last.next_scan_epoch) render(last); }
+  function poll() {
+    fetch(STATUS, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        last = d;
+        if (!d.enabled) { box.hidden = true; return; }
+        box.hidden = false;
+        if (baseIngested === null) baseIngested = d.ingested_total || 0;
+        render(d);
+        if ((d.ingested_total || 0) > baseIngested) { window.location.reload(); return; }
+        setTimeout(poll, POLL);
+      })
+      .catch(function () { setTimeout(poll, 4000); });
+  }
+  if (!box.hidden) { poll(); setInterval(tick, 1000); }
+})();
+</script>
+
+<script>
+(function () {
+  // Receipts 'Auto' switch: submit its form on toggle, carrying the on/off
+  // state in the hidden 'enabled' field (a disabled switch has no folder yet).
+  var sw = document.querySelector('[data-rc-auto-switch]');
+  if (!sw) return;
+  var form = sw.closest('[data-rc-auto-toggle]');
+  var hidden = form && form.querySelector('input[name="enabled"]');
+  sw.addEventListener('change', function () {
+    if (hidden) hidden.value = sw.checked ? 'on' : 'off';
+    if (form) form.submit();
+  });
+})();
+</script>
+
+<script>
+(function () {
+  // Server folder browser for the Automate Registration Receipts upload tile.
+  var modal = document.querySelector('[data-rc-folder-modal]');
+  var input = document.querySelector('[data-rc-folder-input]');
+  var openBtn = document.querySelector('[data-rc-folder-browse]');
+  if (!modal || !input || !openBtn) return;
+  var BROWSE = modal.getAttribute('data-browse-url');
+  var listEl = modal.querySelector('[data-rc-folder-list]');
+  var curEl = modal.querySelector('[data-rc-folder-cur]');
+  var msgEl = modal.querySelector('[data-rc-folder-msg]');
+  var upBtn = modal.querySelector('[data-rc-folder-up]');
+  var pickBtn = modal.querySelector('[data-rc-folder-pick]');
+  var cur = '';      // current folder path ('' = drive/root list)
+  var parent = null; // parent path for the Up button
+
+  function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+  function load(path) {
+    msgEl.textContent = 'Loading\u2026';
+    listEl.innerHTML = '';
+    fetch(BROWSE + '?path=' + encodeURIComponent(path || ''), {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || !d.ok) { msgEl.textContent = (d && d.error) || 'Cannot open folder.'; return; }
+      cur = d.path || '';
+      parent = d.parent;
+      curEl.textContent = cur || 'This PC (drives)';
+      pickBtn.disabled = !cur;
+      upBtn.disabled = (parent === null);
+      msgEl.textContent = d.dirs.length ? '' : 'No sub-folders.';
+      d.dirs.forEach(function (dir) {
+        var li = document.createElement('li');
+        li.className = 'folder-browser__item';
+        li.setAttribute('data-path', dir.path);
+        li.innerHTML = esc(dir.name);
+        li.addEventListener('click', function () { load(dir.path); });
+        listEl.appendChild(li);
+      });
+    }).catch(function () { msgEl.textContent = 'Network error.'; });
+  }
+
+  function open() { modal.hidden = false; load(input.value.trim()); }
+  function close() { modal.hidden = true; }
+
+  openBtn.addEventListener('click', open);
+  upBtn.addEventListener('click', function () { if (parent !== null) load(parent); });
+  pickBtn.addEventListener('click', function () { if (cur) { input.value = cur; close(); } });
+  modal.addEventListener('click', function (e) {
+    if (e.target.closest && e.target.closest('[data-rc-folder-close]')) close();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !modal.hidden) close();
+  });
+})();
+</script>
+
+<script>
+(function () {
+  // Live automation status for the receipts watcher: poll while Auto is on and
+  // show the watcher's phase, counts and a client-side countdown to the next
+  // scan.  A reload is triggered when new files are picked up.
+  var box = document.querySelector('[data-rc-auto-status]');
+  if (!box) return;
+  var STATUS = box.getAttribute('data-status-url');
+  var dot = box.querySelector('[data-auto-dot]');
+  var msg = box.querySelector('[data-auto-msg]');
+  var meta = box.querySelector('[data-auto-meta]');
+  var POLL = 2000;
+  var baseIngested = null, last = null;
+
+  function clock(sec) {
+    sec = Math.max(0, Math.round(sec));
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return (h ? p(h) + ':' : '') + p(m) + ':' + p(s);
+  }
+  function render(d) {
+    if (!d) return;
+    dot.className = 'auto-status__dot is-' + (d.phase || 'off');
+    msg.textContent = d.message || '';
+    var parts = [];
+    if (d.processing) parts.push(d.processing + ' processing');
+    if (d.ingested_total) parts.push(d.ingested_total + ' picked up');
+    if (d.last_scan_epoch) parts.push('last scan ' + new Date(d.last_scan_epoch * 1000).toLocaleTimeString());
+    if (d.phase === 'waiting' && d.next_scan_epoch) parts.push('next scan in ' + clock(d.next_scan_epoch - Date.now() / 1000));
+    meta.textContent = parts.join(' \u00b7 ');
+  }
+  function tick() { if (last && last.phase === 'waiting' && last.next_scan_epoch) render(last); }
+  function poll() {
+    fetch(STATUS, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        last = d;
+        if (!d.enabled) { box.hidden = true; return; }
+        box.hidden = false;
+        if (baseIngested === null) baseIngested = d.ingested_total || 0;
+        render(d);
+        if ((d.ingested_total || 0) > baseIngested) { window.location.reload(); return; }
+        setTimeout(poll, POLL);
+      })
+      .catch(function () { setTimeout(poll, 4000); });
+  }
+  if (!box.hidden) { poll(); setInterval(tick, 1000); }
 })();
 </script>
 {% endblock %}

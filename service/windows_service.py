@@ -44,29 +44,47 @@ class AMWAIService(win32serviceutil.ServiceFramework):
         win32event.SetEvent(self.hWaitStop)
 
     def SvcDoRun(self):
-        servicemanager.LogMsg(
-            servicemanager.EVENTLOG_INFORMATION_TYPE,
-            servicemanager.PYS_SERVICE_STARTED,
-            (self._svc_name_, ""),
-        )
+        # Event-log writes can throw on a freshly-built runtime whose message
+        # source is not yet registered; never let that stop the server from
+        # starting under the Service Control Manager.
+        try:
+            servicemanager.LogMsg(
+                servicemanager.EVENTLOG_INFORMATION_TYPE,
+                servicemanager.PYS_SERVICE_STARTED,
+                (self._svc_name_, ""),
+            )
+        except Exception:
+            pass
         self._run_server()
 
     def _run_server(self):
         # Ensure relative paths (.env, templates) resolve correctly.
         os.chdir(str(BASE_DIR))
-
-        from waitress.server import create_server
-        from app import create_app
-        from app.config import Config
-
-        app = create_app()
-        self.server = create_server(
-            app, host=Config.HOST, port=Config.PORT, threads=8
-        )
         try:
+            from waitress.server import create_server
+            from app import create_app
+            from app.config import Config
+
+            app = create_app()
+            self.server = create_server(
+                app, host=Config.HOST, port=Config.PORT, threads=8
+            )
             self.server.run()
-        except Exception as exc:  # pragma: no cover - logged to Event Viewer
-            servicemanager.LogErrorMsg(f"AMW-AI service error: {exc}")
+        except Exception as exc:  # pragma: no cover - background service
+            # Surface startup/runtime failures to a file and the Event Viewer
+            # (the file always works even before the event source exists).
+            import traceback
+            try:
+                _p = os.path.join(os.getenv("PROGRAMDATA", r"C:\ProgramData"),
+                                  "AMW-AI", "logs", "service_error.log")
+                with open(_p, "a", encoding="utf-8") as _f:
+                    _f.write(traceback.format_exc() + "\n")
+            except Exception:
+                pass
+            try:
+                servicemanager.LogErrorMsg(f"AMW-AI service error: {exc}")
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

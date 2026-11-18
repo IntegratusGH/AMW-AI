@@ -28,6 +28,7 @@ from flask_login import current_user, login_required
 from sqlalchemy import case, func
 from sqlalchemy import inspect as sqla_inspect
 from sqlalchemy import text as sa_text
+from sqlalchemy.exc import IntegrityError
 from werkzeug.utils import secure_filename
 
 from app.blueprints.main import main_bp
@@ -53,6 +54,8 @@ from app.models import (
     STATUS_PENDING,
     STATUS_PROCESSING,
     Category,
+    CRAutoFile,
+    CRAutoSetting,
     CRBookRecord,
     CRBookUpload,
     CRFormat,
@@ -65,6 +68,8 @@ from app.models import (
     OcrCustomField,
     OcrList,
     OcrTemplate,
+    RCAutoFile,
+    RCAutoSetting,
     ReceiptRecord,
     ReceiptUpload,
     User,
@@ -461,14 +466,17 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
     capture-field box and apply its Apply-mask rule.  Custom (non-canonical)
     fields take their value from the box read + mask and are written to their
     real record column; canonical fields keep their tuned value but have the
-    mask applied to validate/snap it.  A mask reporting 'not ok' flags the
-    record for review (the correct-or-flagged guarantee).  Returns
-    ``{record_id: {custom_key: value}}`` so the field_values mirror can include
-    the custom fields."""
+    mask applied to validate/snap it.  Returns ``(custom_values, confidences,
+    mask_flagged)``: ``{record_id: {custom_key: value}}`` for the field_values
+    mirror, ``{record_id: {key: confidence}}`` for every box-read field, and the
+    set of record ids whose read failed its Apply-mask (the correct-or-flagged
+    guarantee; the caller folds this into the final review flag)."""
     from app.utils import registration_ocr as ocr
     out: dict = {}
+    conf_out: dict = {}
+    mask_flagged: set = set()
     if tpl is None:
-        return out
+        return out, conf_out, mask_flagged
     defs = ocr.template_field_defs(tpl)
     canon = _canonical_keys(kind)
     str_cols = {c.key for c in sqla_inspect(_RECORD_MODEL[kind]).columns
@@ -476,14 +484,24 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
     cap_defs = [d for d in defs if d.get("box") and d.get("capture")
                 and _safe_field_key(d["key"]) and d["key"] not in canon]
     mask_defs = [d for d in defs
-                 if (d.get("mask") or "none") != "none" and d.get("value")]
-    if not cap_defs and not mask_defs:
-        return out
+                 if d.get("capture")
+                 and (d.get("mask") or "none") != "none" and d.get("value")]
+    _ret_empty = (out, conf_out, mask_flagged)
+    # Canonical CR fields captured with a box but with no dedicated confidence
+    # column: box-read them solely to record a per-field confidence (their value
+    # stays the tuned/extracted one) so minimum-confidence review can cover
+    # every captured field, not just the three critical identifiers.
+    conf_only_defs = ([d for d in defs
+                       if d.get("box") and d.get("capture")
+                       and d["key"] in canon and d["key"] not in _CR_CONF_ATTR]
+                      if kind == "cr" else [])
+    if not cap_defs and not mask_defs and not conf_only_defs:
+        return _ret_empty
     for d in cap_defs:
         ensure_record_column(kind, d["key"], d.get("label"))
     recs = RecordModel.query.filter_by(upload_id=upload_id).all()
     if not recs:
-        return out
+        return _ret_empty
     tpp = _tpl_pp(tpl)
     doc, total = ocr.open_document(up.stored_path)
     try:
@@ -517,8 +535,16 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
                     if rok and rv:
                         val, ok = rv, True
                 out.setdefault(rec.id, {})[d["key"]] = val or ""
+                if _c is not None:
+                    conf_out.setdefault(rec.id, {})[d["key"]] = round(
+                        float(_c), 3)
                 if not ok:
                     flagged = True
+            for d in conf_only_defs:
+                _raw, _c = ocr.read_rect(page, d["box"], pp=(d.get("pp") or tpp))
+                if _c is not None:
+                    conf_out.setdefault(rec.id, {})[d["key"]] = round(
+                        float(_c), 3)
             for d in mask_defs:
                 role = d.get("role") or d["key"]
                 if role not in canon:
@@ -539,8 +565,8 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
                     setattr(rec, role, val[:255])
                 if not ok:
                     flagged = True
-            if flagged and hasattr(rec, "needs_review"):
-                rec.needs_review = True
+            if flagged:
+                mask_flagged.add(rec.id)
             cvals = {k: v for k, v in (out.get(rec.id) or {}).items()
                      if _safe_field_key(k)}
             if cvals:
@@ -553,7 +579,7 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
         db.session.commit()
     finally:
         doc.close()
-    return out
+    return out, conf_out, mask_flagged
 
 
 def _run_processing(app, kind: str, upload_id: int) -> None:
@@ -746,17 +772,12 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 if cmasks or emask:
                     up.progress_message = "Applying batch templates\u2026"
                     db.session.commit()
-                    # Only flag review for fields the upload's template captures.
-                    # A field with no value box is never filled, so its blank
-                    # value must not force every record into review; no template
-                    # (rule mode) captures all canonical fields, as before.
-                    cr_captured = (set(upload_rects) if upload_rects else
-                                   {"registration_no", "chassis_no", "engine_no"})
+                    # Batch-template value corrections only; review is driven by
+                    # the per-field minimum-confidence check applied later.
                     for rec_obj, r in cr_pending:
-                        recovered = False
                         cmask = ocr.pick_chassis_mask(cmasks, rec_obj.chassis_no)
                         if cmask:
-                            new_ch, changed, recovered = ocr.apply_chassis_mask(
+                            new_ch, changed, _ = ocr.apply_chassis_mask(
                                 rec_obj.chassis_no, cmask)
                             if changed:
                                 rec_obj.chassis_no = new_ch
@@ -765,26 +786,6 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                                 rec_obj.engine_no, emask)
                             if echanged:
                                 rec_obj.engine_no = new_en
-                        chassis_bad = ("chassis_no" in cr_captured) and (
-                            ocr.chassis_needs_review(
-                                rec_obj.chassis_no, cmask,
-                                rec_obj.chassis_no_confidence)
-                            if cmask else ocr._chassis_review(
-                                rec_obj.chassis_no,
-                                rec_obj.chassis_no_confidence))
-                        engine_bad = ("engine_no" in cr_captured) and (
-                            ocr.chassis_needs_review(
-                                rec_obj.engine_no, emask,
-                                rec_obj.engine_no_confidence)
-                            if emask else ocr._engine_review(
-                                rec_obj.engine_no,
-                                rec_obj.engine_no_confidence))
-                        rec_obj.needs_review = bool(
-                            recovered or chassis_bad or engine_bad
-                            or (("registration_no" in cr_captured)
-                                and ocr._reg_review(
-                                    rec_obj.registration_no,
-                                    rec_obj.registration_no_confidence)))
                     db.session.commit()
                 # Cross-model family consensus: correct systematic single-glyph
                 # misreads (S<->8/5, E<->L, G<->C) the per-model mask cannot
@@ -794,12 +795,10 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                     [rc.chassis_no for rc, _ in cr_pending])
                 if fam_cons:
                     for rec_obj, r in cr_pending:
-                        new_ch, changed, flagged = ocr.apply_family_consensus(
+                        new_ch, changed, _ = ocr.apply_family_consensus(
                             rec_obj.chassis_no, fam_cons)
                         if changed:
                             rec_obj.chassis_no = new_ch
-                        if flagged:
-                            rec_obj.needs_review = True
                     db.session.commit()
 
             # Persist the cropped value-region scans (Chassis No / Reg No) so the
@@ -897,7 +896,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             # reads for review.  Returns the custom values for the JSON mirror.
             up.progress_message = "Applying field masks…"
             db.session.commit()
-            custom_vals = _capture_custom_and_masks(
+            custom_vals, conf_by_id, mask_flagged = _capture_custom_and_masks(
                 kind, up, tpl, RecordModel, upload_id)
 
             # Hybrid field storage: mirror each record's final (batch-corrected)
@@ -914,6 +913,15 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             # uses conf_attr columns), so map record id -> that field->conf dict.
             rc_conf_by_id = ({ro.id: (r.get("_rc_field_conf") or {})
                               for ro, r in rc_pending} if kind == "rc" else {})
+            # Per-field minimum-confidence thresholds from the template (0..1);
+            # a blank/0 minimum never flags that field on confidence.  Only the
+            # template's selected (captured) fields are reviewed; with no
+            # template the legacy defaults cover all standard fields.
+            restrict = tpl is not None
+            captured_keys = {d["key"] for d in defs if d.get("capture")}
+            min_conf_by_key = {d["key"]: (d.get("min_conf") or 0.0)
+                               for d in defs
+                               if (not restrict) or d.get("capture")}
             for rec_obj in RecordModel.query.filter_by(
                     upload_id=upload_id).all():
                 fv, fc, fk = ocr.build_field_data(
@@ -921,7 +929,47 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 for k, v in (custom_vals.get(rec_obj.id) or {}).items():
                     if v not in (None, ""):
                         fv[k] = v
+                # Confidence for every captured field: box-read scores
+                # (conf_by_id) as the base, with the critical CR columns
+                # (build_field_data) and receipt per-slip scores kept
+                # authoritative on top.
+                fk = {**conf_by_id.get(rec_obj.id, {}), **fk}
                 fk.update(rc_conf_by_id.get(rec_obj.id, {}))
+                # Review is driven solely by the per-field settings: a captured
+                # field whose confidence is below its template minimum
+                # (receipts fall back to the global default when a field sets
+                # none) or whose read failed its Apply-mask.  A blank minimum
+                # never flags on confidence.
+                conf_bad = False
+                for fkey, fcval in fk.items():
+                    if restrict and fkey not in captured_keys:
+                        continue
+                    mc = min_conf_by_key.get(fkey, 0.0)
+                    if kind == "rc" and mc <= 0:
+                        mc = _RC_CONF_MIN
+                    try:
+                        if mc > 0 and fcval is not None and float(fcval) < mc:
+                            conf_bad = True
+                            break
+                    except (TypeError, ValueError):
+                        pass
+                # A captured field that produced no value flags the record too,
+                # so an empty required read shows for review (not only low
+                # confidence or mask failures).
+                blank_bad = False
+                for d in defs:
+                    if not d.get("capture"):
+                        continue
+                    bkey = d["key"]
+                    brole = d.get("role") or bkey
+                    bval = getattr(rec_obj, brole, None)
+                    if bval in (None, ""):
+                        bval = fv.get(bkey)
+                    if bval in (None, ""):
+                        blank_bad = True
+                        break
+                rec_obj.needs_review = (
+                    (rec_obj.id in mask_flagged) or conf_bad or blank_bad)
                 rec_obj.field_values = json.dumps(fv) if fv else None
                 rec_obj.field_crops = json.dumps(fc) if fc else None
                 rec_obj.field_confidence = json.dumps(fk) if fk else None
@@ -1058,6 +1106,654 @@ def _start_cr_detection(upload_id: int) -> None:
     ).start()
 
 
+# ===== Automated CR-book folder watcher ===================================
+# Scans a configured server folder (recursively) for new PDFs and auto-ingests
+# them into the CR-book pipeline.  A persistent ledger (CRAutoFile) keyed by the
+# source path + size + modified-time guarantees a file is never processed twice.
+_CR_AUTO_SCAN_INTERVAL = 30          # default seconds between scans (DB-backed)
+_CR_AUTO_INTERVAL_MIN = 5            # floor on the configurable interval
+_CR_AUTO_IDLE_POLL = 2              # seconds between "still processing?" checks
+_CR_AUTO_SCAN_LOCK = threading.Lock()
+_CR_AUTO_WATCHER_LOCK = threading.Lock()
+_CR_AUTO_WATCHER_STARTED = False
+
+# Live, in-memory status of the folder watcher, surfaced to the tile so the
+# operator can watch it work.  ``phase`` is one of off/scanning/processing/
+# waiting/error; ``updated_at`` bumps on every change.
+_CR_AUTO_STATE_LOCK = threading.Lock()
+_CR_AUTO_STATE = {
+    "phase": "off",
+    "message": "Automation is off.",
+    "current_file": None,
+    "last_scan_epoch": None,
+    "next_scan_epoch": None,
+    "picked_last": 0,
+    "ingested_total": 0,
+    "updated_at": 0.0,
+}
+
+
+def _cr_auto_set_state(**fields) -> None:
+    import time
+    with _CR_AUTO_STATE_LOCK:
+        _CR_AUTO_STATE.update(fields)
+        _CR_AUTO_STATE["updated_at"] = time.time()
+
+
+def _cr_auto_state_snapshot() -> dict:
+    with _CR_AUTO_STATE_LOCK:
+        return dict(_CR_AUTO_STATE)
+
+
+def _get_cr_auto_setting() -> CRAutoSetting:
+    """Fetch the singleton watcher-settings row, creating it on first use."""
+    setting = CRAutoSetting.query.order_by(CRAutoSetting.id).first()
+    if setting is None:
+        setting = CRAutoSetting(folder=None, enabled=False)
+        db.session.add(setting)
+        db.session.commit()
+    return setting
+
+
+def _save_doc_from_path(src_path: str, dest_dir: str) -> tuple[str, str]:
+    """Copy a file already on disk into ``dest_dir`` under a unique stored name,
+    mirroring ``_save_doc`` (which handles an uploaded FileStorage)."""
+    import shutil
+    os.makedirs(dest_dir, exist_ok=True)
+    orig = os.path.basename(src_path) or "upload.pdf"
+    safe = secure_filename(orig) or "upload.pdf"
+    stored = f"{uuid.uuid4().hex}_{safe}"
+    path = os.path.join(dest_dir, stored)
+    shutil.copy2(src_path, path)
+    return orig, path
+
+
+def _run_cr_auto_scan(app) -> None:
+    """One scan pass: when the watcher is enabled and its folder exists, pick up
+    every *.pdf under it (recursively) that is not already in the ledger, copy it
+    into the CR-book upload store, create an upload and start processing."""
+    if not _CR_AUTO_SCAN_LOCK.acquire(blocking=False):
+        return  # a scan is already running in this process
+    try:
+        import time
+        with app.app_context():
+            setting = _get_cr_auto_setting()
+            folder = (setting.folder or "").strip()
+            if not setting.enabled:
+                _cr_auto_set_state(phase="off", current_file=None,
+                                   next_scan_epoch=None,
+                                   message="Automation is off.")
+                return
+            if not folder or not os.path.isdir(folder):
+                _cr_auto_set_state(
+                    phase="error", current_file=None,
+                    message=("Folder not set." if not folder
+                             else "Folder is not reachable on the server."))
+                return
+            _cr_auto_set_state(phase="scanning", current_file=None,
+                               message="Scanning folder for new PDFs\u2026")
+            picked = 0
+            for root, _dirs, files in os.walk(folder):
+                for name in files:
+                    if not name.lower().endswith(".pdf"):
+                        continue
+                    src = os.path.join(root, name)
+                    try:
+                        st = os.stat(src)
+                    except OSError:
+                        continue
+                    size, mtime = int(st.st_size), int(st.st_mtime)
+                    seen = CRAutoFile.query.filter_by(
+                        source_path=src, size=size, mtime=mtime).first()
+                    if seen is not None:
+                        continue
+                    if _ingest_cr_auto_file(src, size, mtime):
+                        picked += 1
+            _cr_auto_set_state(
+                phase="scanning", current_file=None, picked_last=picked,
+                last_scan_epoch=time.time(),
+                message=(f"Processed {picked} new file(s)."
+                         if picked else "Scan complete \u2014 no new files."))
+    except Exception as exc:  # pragma: no cover - background worker
+        db.session.rollback()
+        app.logger.warning("CR auto-scan failed: %s", exc)
+        _cr_auto_set_state(phase="error",
+                           message=f"Scan error: {str(exc)[:150]}")
+    finally:
+        _CR_AUTO_SCAN_LOCK.release()
+
+
+def _ingest_cr_auto_file(src: str, size: int, mtime: int) -> bool:
+    """Copy one picked-up PDF into the CR-book store, create its upload
+    (inheriting the previous CR template), record it in the ledger so it is
+    never re-picked, then OCR it synchronously so a whole-folder pickup is
+    processed one file at a time.  Returns True when a new upload was created."""
+    base = os.path.basename(src)
+    _cr_auto_set_state(phase="scanning", current_file=base,
+                       message=f"Picking up: {base}")
+    try:
+        name, path = _save_doc_from_path(
+            src, current_app.config["CR_BOOK_UPLOAD_DIR"])
+    except OSError:
+        return False  # unreadable/locked file -- retry on a later scan
+    prev = (CRBookUpload.query
+            .order_by(CRBookUpload.uploaded_at.desc()).first())
+    up = CRBookUpload(
+        filename=name, stored_path=path, uploaded_by=None,
+        status=STATUS_PROCESSING, review_status=REVIEW_READY,
+        template_id=(prev.template_id if prev else None))
+    db.session.add(up)
+    try:
+        db.session.flush()
+        db.session.add(CRAutoFile(
+            source_path=src, size=size, mtime=mtime, upload_id=up.id))
+        db.session.commit()
+    except IntegrityError:
+        # Another scan picked the same file first: drop our copy and skip.
+        db.session.rollback()
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return False
+    total = _cr_auto_state_snapshot().get("ingested_total", 0) + 1
+    _cr_auto_set_state(phase="processing", current_file=name,
+                       ingested_total=total, message=f"Processing: {name}")
+    # Process synchronously (in this watcher thread) so picked-up files are
+    # OCR'd one at a time.  Spawning one OCR thread per file overwhelmed the
+    # service and left large batches stuck in 'processing' indefinitely.
+    _run_processing(current_app._get_current_object(), "cr", up.id)
+    return True
+
+
+def _cr_auto_interval(app) -> int:
+    """Current scan interval (seconds) from the DB-backed settings, floored at
+    ``_CR_AUTO_INTERVAL_MIN``."""
+    with app.app_context():
+        setting = _get_cr_auto_setting()
+        return max(_CR_AUTO_INTERVAL_MIN,
+                   int(setting.interval_seconds or _CR_AUTO_SCAN_INTERVAL))
+
+
+def _cr_auto_wait_idle(app) -> None:  # pragma: no cover - background worker
+    """Block until no CR-book upload is still processing, so the next scan only
+    starts once the picked-up files have finished."""
+    import time
+    while True:
+        with app.app_context():
+            busy = (CRBookUpload.query
+                    .filter_by(status=STATUS_PROCESSING).count())
+        if not busy:
+            return
+        _cr_auto_set_state(phase="processing", current_file=None,
+                           message=f"Processing {busy} file(s)\u2026")
+        time.sleep(_CR_AUTO_IDLE_POLL)
+
+
+def _cr_auto_watcher(app) -> None:  # pragma: no cover - background worker
+    import time
+    while True:
+        _run_cr_auto_scan(app)       # pick up new files, start processing
+        _cr_auto_wait_idle(app)      # let that processing finish first
+        interval = _cr_auto_interval(app)
+        with app.app_context():
+            enabled = _get_cr_auto_setting().enabled
+        if enabled:
+            _cr_auto_set_state(
+                phase="waiting", current_file=None,
+                next_scan_epoch=time.time() + interval,
+                message="Idle \u2014 waiting for the next scan.")
+        else:
+            _cr_auto_set_state(phase="off", current_file=None,
+                               next_scan_epoch=None,
+                               message="Automation is off.")
+        time.sleep(interval)
+
+
+def start_cr_auto_watcher(app) -> None:
+    """Start the single background folder-watcher thread (idempotent)."""
+    global _CR_AUTO_WATCHER_STARTED
+    with _CR_AUTO_WATCHER_LOCK:
+        if _CR_AUTO_WATCHER_STARTED:
+            return
+        _CR_AUTO_WATCHER_STARTED = True
+    threading.Thread(
+        target=_cr_auto_watcher, args=(app,), daemon=True).start()
+
+
+def _trigger_cr_auto_scan() -> None:
+    """Kick an immediate one-off scan (e.g. right after the switch is turned on)
+    so the operator does not wait for the next periodic pass."""
+    app = current_app._get_current_object()
+    threading.Thread(
+        target=_run_cr_auto_scan, args=(app,), daemon=True).start()
+
+
+@main_bp.route("/operations/registration-updater/cr/auto/folder",
+               methods=["POST"])
+@login_required
+def cr_auto_folder():
+    _require_module(REGISTRATION_UPDATER_KEY)
+    setting = _get_cr_auto_setting()
+    folder = (request.form.get("folder") or "").strip()
+
+    def _part(name: str) -> int:
+        try:
+            return max(0, int(request.form.get(name) or 0))
+        except (TypeError, ValueError):
+            return 0
+    total = _part("iv_h") * 3600 + _part("iv_m") * 60 + _part("iv_s")
+    if total <= 0:
+        interval = setting.interval_seconds or _CR_AUTO_SCAN_INTERVAL
+    else:
+        interval = max(_CR_AUTO_INTERVAL_MIN, total)
+    setting.folder = folder or None
+    setting.interval_seconds = interval
+    setting.updated_by = current_user.id
+    if not folder:
+        setting.enabled = False  # no folder -> watcher cannot run
+    record_audit("cr_auto_folder_set", f"folder={folder} interval={interval}")
+    db.session.commit()
+    if folder and not os.path.isdir(folder):
+        flash("Folder saved, but it does not exist or is not reachable on the "
+              "server yet. Auto will start once the path is valid.", "warning")
+    elif folder:
+        flash("Automation folder saved.", "success")
+        if setting.enabled:
+            _trigger_cr_auto_scan()
+    else:
+        flash("Automation folder cleared.", "info")
+    return redirect(url_for("main.registration_updater", tab="cr"))
+
+
+@main_bp.route("/operations/registration-updater/cr/auto/toggle",
+               methods=["POST"])
+@login_required
+def cr_auto_toggle():
+    _require_module(REGISTRATION_UPDATER_KEY)
+    setting = _get_cr_auto_setting()
+    want_on = (request.form.get("enabled") or "").strip().lower() in (
+        "1", "true", "yes", "on")
+    folder = (setting.folder or "").strip()
+    if want_on and not folder:
+        flash("Define a folder before turning on Auto.", "warning")
+        return redirect(url_for("main.registration_updater", tab="cr"))
+    setting.enabled = want_on
+    setting.updated_by = current_user.id
+    record_audit("cr_auto_toggle", f"enabled={want_on}")
+    db.session.commit()
+    if want_on:
+        _cr_auto_set_state(phase="scanning", current_file=None,
+                           next_scan_epoch=None,
+                           message="Auto on \u2014 scanning\u2026")
+        if not os.path.isdir(folder):
+            flash("Auto is on, but the folder is not reachable yet. It will "
+                  "start picking up PDFs once the path is valid.", "warning")
+        else:
+            flash("Auto is on \u2014 watching the folder for new CR-book PDFs.",
+                  "success")
+        _trigger_cr_auto_scan()
+    else:
+        _cr_auto_set_state(phase="off", current_file=None,
+                           next_scan_epoch=None,
+                           message="Automation is off.")
+        flash("Auto is off.", "info")
+    return redirect(url_for("main.registration_updater", tab="cr"))
+
+
+def _list_drive_roots() -> list[dict]:
+    """Top-level folder roots to seed the server folder browser: drive letters on
+    Windows, the filesystem root elsewhere."""
+    roots: list[dict] = []
+    if os.name == "nt":
+        import string
+        for letter in string.ascii_uppercase:
+            drive = f"{letter}:\\"
+            if os.path.isdir(drive):
+                roots.append({"name": drive, "path": drive})
+    else:
+        roots.append({"name": "/", "path": "/"})
+    return roots
+
+
+@main_bp.route("/operations/registration-updater/cr/auto/browse")
+@login_required
+def cr_auto_browse():
+    """List the sub-folders of a server directory so the automation tile can
+    offer a folder picker.  An empty path returns the drive/root list."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    raw = (request.args.get("path") or "").strip()
+    if not raw:
+        return jsonify({"ok": True, "path": "", "parent": None,
+                        "is_root": True, "dirs": _list_drive_roots()})
+    path = os.path.abspath(raw)
+    if not os.path.isdir(path):
+        return jsonify({"ok": False, "error": "Not a folder."}), 400
+    try:
+        dirs = []
+        for name in sorted(os.listdir(path), key=str.lower):
+            full = os.path.join(path, name)
+            try:
+                if os.path.isdir(full):
+                    dirs.append({"name": name, "path": full})
+            except OSError:
+                continue
+    except OSError as exc:
+        return jsonify({"ok": False, "error": f"Cannot open folder: {exc}"}), 400
+    parent = os.path.dirname(path.rstrip("\\/"))
+    if parent == path or not parent:
+        parent = ""  # at a drive root -> back goes to the drive list
+    return jsonify({"ok": True, "path": path, "parent": parent,
+                    "is_root": False, "dirs": dirs})
+
+
+@main_bp.route("/operations/registration-updater/cr/auto/status")
+@login_required
+def cr_auto_status():
+    """Live status of the CR-book folder watcher for the automation tile."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    setting = _get_cr_auto_setting()
+    snap = _cr_auto_state_snapshot()
+    snap["enabled"] = bool(setting.enabled)
+    snap["interval_seconds"] = setting.interval_seconds
+    snap["processing"] = (CRBookUpload.query
+                          .filter_by(status=STATUS_PROCESSING).count())
+    return jsonify(snap)
+
+
+# ===== Automated receipts folder watcher ==================================
+# Mirror of the CR-book watcher for the receipts pipeline: scans a configured
+# server folder (recursively) for new PDFs and auto-ingests them as receipt
+# uploads.  A persistent ledger (RCAutoFile) keyed by the source path + size +
+# modified-time guarantees a file is never processed twice.
+_RC_AUTO_SCAN_INTERVAL = 30
+_RC_AUTO_INTERVAL_MIN = 5
+_RC_AUTO_IDLE_POLL = 2
+_RC_AUTO_SCAN_LOCK = threading.Lock()
+_RC_AUTO_WATCHER_LOCK = threading.Lock()
+_RC_AUTO_WATCHER_STARTED = False
+
+_RC_AUTO_STATE_LOCK = threading.Lock()
+_RC_AUTO_STATE = {
+    "phase": "off",
+    "message": "Automation is off.",
+    "current_file": None,
+    "last_scan_epoch": None,
+    "next_scan_epoch": None,
+    "picked_last": 0,
+    "ingested_total": 0,
+    "updated_at": 0.0,
+}
+
+
+def _rc_auto_set_state(**fields) -> None:
+    import time
+    with _RC_AUTO_STATE_LOCK:
+        _RC_AUTO_STATE.update(fields)
+        _RC_AUTO_STATE["updated_at"] = time.time()
+
+
+def _rc_auto_state_snapshot() -> dict:
+    with _RC_AUTO_STATE_LOCK:
+        return dict(_RC_AUTO_STATE)
+
+
+def _get_rc_auto_setting() -> RCAutoSetting:
+    """Fetch the singleton watcher-settings row, creating it on first use."""
+    setting = RCAutoSetting.query.order_by(RCAutoSetting.id).first()
+    if setting is None:
+        setting = RCAutoSetting(folder=None, enabled=False)
+        db.session.add(setting)
+        db.session.commit()
+    return setting
+
+
+def _run_rc_auto_scan(app) -> None:
+    """One scan pass: when the watcher is enabled and its folder exists, pick up
+    every *.pdf under it (recursively) that is not already in the ledger, copy it
+    into the receipt upload store, create an upload and start processing."""
+    if not _RC_AUTO_SCAN_LOCK.acquire(blocking=False):
+        return  # a scan is already running in this process
+    try:
+        import time
+        with app.app_context():
+            setting = _get_rc_auto_setting()
+            folder = (setting.folder or "").strip()
+            if not setting.enabled:
+                _rc_auto_set_state(phase="off", current_file=None,
+                                   next_scan_epoch=None,
+                                   message="Automation is off.")
+                return
+            if not folder or not os.path.isdir(folder):
+                _rc_auto_set_state(
+                    phase="error", current_file=None,
+                    message=("Folder not set." if not folder
+                             else "Folder is not reachable on the server."))
+                return
+            _rc_auto_set_state(phase="scanning", current_file=None,
+                               message="Scanning folder for new PDFs\u2026")
+            picked = 0
+            for root, _dirs, files in os.walk(folder):
+                for name in files:
+                    if not name.lower().endswith(".pdf"):
+                        continue
+                    src = os.path.join(root, name)
+                    try:
+                        st = os.stat(src)
+                    except OSError:
+                        continue
+                    size, mtime = int(st.st_size), int(st.st_mtime)
+                    seen = RCAutoFile.query.filter_by(
+                        source_path=src, size=size, mtime=mtime).first()
+                    if seen is not None:
+                        continue
+                    if _ingest_rc_auto_file(src, size, mtime):
+                        picked += 1
+            _rc_auto_set_state(
+                phase="scanning", current_file=None, picked_last=picked,
+                last_scan_epoch=time.time(),
+                message=(f"Processed {picked} new file(s)."
+                         if picked else "Scan complete \u2014 no new files."))
+    except Exception as exc:  # pragma: no cover - background worker
+        db.session.rollback()
+        app.logger.warning("Receipts auto-scan failed: %s", exc)
+        _rc_auto_set_state(phase="error",
+                           message=f"Scan error: {str(exc)[:150]}")
+    finally:
+        _RC_AUTO_SCAN_LOCK.release()
+
+
+def _ingest_rc_auto_file(src: str, size: int, mtime: int) -> bool:
+    """Copy one picked-up PDF into the receipt store, create its upload
+    (inheriting the previous receipt template), record it in the ledger so it is
+    never re-picked, then OCR it synchronously so a whole-folder pickup is
+    processed one file at a time.  Returns True when a new upload was created."""
+    base = os.path.basename(src)
+    _rc_auto_set_state(phase="scanning", current_file=base,
+                       message=f"Picking up: {base}")
+    try:
+        name, path = _save_doc_from_path(
+            src, current_app.config["RECEIPT_UPLOAD_DIR"])
+    except OSError:
+        return False  # unreadable/locked file -- retry on a later scan
+    prev = (ReceiptUpload.query
+            .order_by(ReceiptUpload.uploaded_at.desc()).first())
+    up = ReceiptUpload(
+        filename=name, stored_path=path, uploaded_by=None,
+        status=STATUS_PROCESSING,
+        template_id=(prev.template_id if prev else None))
+    db.session.add(up)
+    try:
+        db.session.flush()
+        db.session.add(RCAutoFile(
+            source_path=src, size=size, mtime=mtime, upload_id=up.id))
+        db.session.commit()
+    except IntegrityError:
+        # Another scan picked the same file first: drop our copy and skip.
+        db.session.rollback()
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return False
+    total = _rc_auto_state_snapshot().get("ingested_total", 0) + 1
+    _rc_auto_set_state(phase="processing", current_file=name,
+                       ingested_total=total, message=f"Processing: {name}")
+    # Process synchronously (in this watcher thread) so picked-up files are
+    # OCR'd one at a time, matching the CR-book watcher.
+    _run_processing(current_app._get_current_object(), "rc", up.id)
+    return True
+
+
+def _rc_auto_interval(app) -> int:
+    """Current scan interval (seconds) from the DB-backed settings, floored at
+    ``_RC_AUTO_INTERVAL_MIN``."""
+    with app.app_context():
+        setting = _get_rc_auto_setting()
+        return max(_RC_AUTO_INTERVAL_MIN,
+                   int(setting.interval_seconds or _RC_AUTO_SCAN_INTERVAL))
+
+
+def _rc_auto_wait_idle(app) -> None:  # pragma: no cover - background worker
+    """Block until no receipt upload is still processing, so the next scan only
+    starts once the picked-up files have finished."""
+    import time
+    while True:
+        with app.app_context():
+            busy = (ReceiptUpload.query
+                    .filter_by(status=STATUS_PROCESSING).count())
+        if not busy:
+            return
+        _rc_auto_set_state(phase="processing", current_file=None,
+                           message=f"Processing {busy} file(s)\u2026")
+        time.sleep(_RC_AUTO_IDLE_POLL)
+
+
+def _rc_auto_watcher(app) -> None:  # pragma: no cover - background worker
+    import time
+    while True:
+        _run_rc_auto_scan(app)       # pick up new files, start processing
+        _rc_auto_wait_idle(app)      # let that processing finish first
+        interval = _rc_auto_interval(app)
+        with app.app_context():
+            enabled = _get_rc_auto_setting().enabled
+        if enabled:
+            _rc_auto_set_state(
+                phase="waiting", current_file=None,
+                next_scan_epoch=time.time() + interval,
+                message="Idle \u2014 waiting for the next scan.")
+        else:
+            _rc_auto_set_state(phase="off", current_file=None,
+                               next_scan_epoch=None,
+                               message="Automation is off.")
+        time.sleep(interval)
+
+
+def start_rc_auto_watcher(app) -> None:
+    """Start the single background folder-watcher thread (idempotent)."""
+    global _RC_AUTO_WATCHER_STARTED
+    with _RC_AUTO_WATCHER_LOCK:
+        if _RC_AUTO_WATCHER_STARTED:
+            return
+        _RC_AUTO_WATCHER_STARTED = True
+    threading.Thread(
+        target=_rc_auto_watcher, args=(app,), daemon=True).start()
+
+
+def _trigger_rc_auto_scan() -> None:
+    """Kick an immediate one-off scan (e.g. right after the switch is turned on)
+    so the operator does not wait for the next periodic pass."""
+    app = current_app._get_current_object()
+    threading.Thread(
+        target=_run_rc_auto_scan, args=(app,), daemon=True).start()
+
+
+@main_bp.route("/operations/registration-updater/rc/auto/folder",
+               methods=["POST"])
+@login_required
+def rc_auto_folder():
+    _require_module(REGISTRATION_UPDATER_KEY)
+    setting = _get_rc_auto_setting()
+    folder = (request.form.get("folder") or "").strip()
+
+    def _part(name: str) -> int:
+        try:
+            return max(0, int(request.form.get(name) or 0))
+        except (TypeError, ValueError):
+            return 0
+    total = _part("iv_h") * 3600 + _part("iv_m") * 60 + _part("iv_s")
+    if total <= 0:
+        interval = setting.interval_seconds or _RC_AUTO_SCAN_INTERVAL
+    else:
+        interval = max(_RC_AUTO_INTERVAL_MIN, total)
+    setting.folder = folder or None
+    setting.interval_seconds = interval
+    setting.updated_by = current_user.id
+    if not folder:
+        setting.enabled = False  # no folder -> watcher cannot run
+    record_audit("rc_auto_folder_set", f"folder={folder} interval={interval}")
+    db.session.commit()
+    if folder and not os.path.isdir(folder):
+        flash("Folder saved, but it does not exist or is not reachable on the "
+              "server yet. Auto will start once the path is valid.", "warning")
+    elif folder:
+        flash("Automation folder saved.", "success")
+        if setting.enabled:
+            _trigger_rc_auto_scan()
+    else:
+        flash("Automation folder cleared.", "info")
+    return redirect(url_for("main.registration_updater", tab="rc"))
+
+
+@main_bp.route("/operations/registration-updater/rc/auto/toggle",
+               methods=["POST"])
+@login_required
+def rc_auto_toggle():
+    _require_module(REGISTRATION_UPDATER_KEY)
+    setting = _get_rc_auto_setting()
+    want_on = (request.form.get("enabled") or "").strip().lower() in (
+        "1", "true", "yes", "on")
+    folder = (setting.folder or "").strip()
+    if want_on and not folder:
+        flash("Define a folder before turning on Auto.", "warning")
+        return redirect(url_for("main.registration_updater", tab="rc"))
+    setting.enabled = want_on
+    setting.updated_by = current_user.id
+    record_audit("rc_auto_toggle", f"enabled={want_on}")
+    db.session.commit()
+    if want_on:
+        _rc_auto_set_state(phase="scanning", current_file=None,
+                           next_scan_epoch=None,
+                           message="Auto on \u2014 scanning\u2026")
+        if not os.path.isdir(folder):
+            flash("Auto is on, but the folder is not reachable yet. It will "
+                  "start picking up PDFs once the path is valid.", "warning")
+        else:
+            flash("Auto is on \u2014 watching the folder for new receipt PDFs.",
+                  "success")
+        _trigger_rc_auto_scan()
+    else:
+        _rc_auto_set_state(phase="off", current_file=None,
+                           next_scan_epoch=None,
+                           message="Automation is off.")
+        flash("Auto is off.", "info")
+    return redirect(url_for("main.registration_updater", tab="rc"))
+
+
+@main_bp.route("/operations/registration-updater/rc/auto/status")
+@login_required
+def rc_auto_status():
+    """Live status of the receipts folder watcher for the automation tile."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    setting = _get_rc_auto_setting()
+    snap = _rc_auto_state_snapshot()
+    snap["enabled"] = bool(setting.enabled)
+    snap["interval_seconds"] = setting.interval_seconds
+    snap["processing"] = (ReceiptUpload.query
+                          .filter_by(status=STATUS_PROCESSING).count())
+    return jsonify(snap)
+
+
 def _unique_format_key(name: str) -> str:
     base = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-") or "format"
     if base in ("oldcrbook", "_generic"):
@@ -1106,16 +1802,21 @@ def registration_updater():
     if rc_form.submit_rc.data and rc_form.validate_on_submit():
         name, path = _save_doc(
             rc_form.file.data, current_app.config["RECEIPT_UPLOAD_DIR"])
+        # Inherit the OCR template from the previous receipt upload so a
+        # same-layout batch auto-processes with the tuned settings + value
+        # boxes, then start OCR immediately (mirrors the CR-book tile).
+        prev = (ReceiptUpload.query
+                .order_by(ReceiptUpload.uploaded_at.desc()).first())
         up = ReceiptUpload(
             filename=name, stored_path=path,
-            uploaded_by=current_user.id, status=STATUS_PENDING)
+            uploaded_by=current_user.id, status=STATUS_PROCESSING,
+            template_id=(prev.template_id if prev else None))
         db.session.add(up)
         record_audit("receipt_uploaded", f"file={name}")
         db.session.commit()
-        # Pre-separate the roll into slips in the background so the OCR-settings
-        # popup opens instantly when the operator gets to it.
-        _start_rc_warm(up.id)
-        flash("Receipts uploaded. Click Process to extract records.", "success")
+        _start_processing("rc", up.id)
+        flash("Receipts uploaded \u2014 processing started (OCR runs in the "
+              "background). Refresh to see results.", "success")
         return redirect(url_for("main.registration_updater", tab="rc"))
 
     cr_uploads = CRBookUpload.query.order_by(CRBookUpload.uploaded_at.desc()).all()
@@ -1155,7 +1856,8 @@ def registration_updater():
         can_edit_export=can_edit_export,
         export_config=_get_export_config(), export_fields=_export_catalog(),
         export_default=_DEFAULT_EXPORT_CONFIG,
-        export_samples=export_samples, active_tab=active_tab)
+        export_samples=export_samples, active_tab=active_tab,
+        cr_auto=_get_cr_auto_setting(), rc_auto=_get_rc_auto_setting())
 
 
 # Two-letter province prefixes used on some Sri Lankan registration numbers,
@@ -2007,24 +2709,59 @@ def upload_records(kind: str, upload_id: int):
                    if d.get("capture") and d["key"] in canon_cols}
     else:
         visible = set(canon_cols)
-    # Receipts: flag each field cell whose read fails its field-setting mask or
-    # whose OCR confidence is below the threshold, and mark the record for review
-    # when any cell is flagged (in addition to the existing needs_review/error).
-    if kind == "rc":
-        mask_defs = [d for d in defs
-                     if (d.get("mask") or "none") != "none"]
+    # Flag each field cell whose stored confidence is below its template
+    # minimum-confidence (receipts fall back to the global default when a field
+    # sets none) or whose value fails its Apply-mask, so the operator sees which
+    # cells to check.  CR rows follow the stored needs_review flag (an operator
+    # Save clears it); receipts have no per-row verify, so a live flag also
+    # marks them for review.
+    # Only fields the template actually selects (captured) are reviewed; a
+    # template's unselected fields never flag.  With no template in use the
+    # legacy defaults apply to all standard fields (receipts' global minimum).
+    restrict = tpl is not None
+    captured_keys = {d["key"] for d in defs if d.get("capture")}
+    min_conf_by_key = {d["key"]: (d.get("min_conf") or 0.0) for d in defs
+                       if (not restrict) or d.get("capture")}
+    mask_defs = [d for d in defs
+                 if d.get("capture") and (d.get("mask") or "none") != "none"]
+    if kind in ("cr", "rc"):
         for r in records:
             flags: set = set()
+            reasons: list = []
             try:
                 fconf = json.loads(r.field_confidence) if r.field_confidence else {}
             except (ValueError, TypeError):
                 fconf = {}
+            # Per-field confidence as a whole-number percent for the cell
+            # tooltips, plus a human-readable reason for each flagged field.
+            conf_pct: dict = {}
             for key, c in fconf.items():
                 try:
-                    if c is not None and float(c) < _RC_CONF_MIN:
-                        flags.add(key)
+                    cf = float(c) if c is not None else None
                 except (TypeError, ValueError):
-                    pass
+                    cf = None
+                if cf is not None:
+                    conf_pct[key] = round(cf * 100)
+                if (restrict and key not in captured_keys) or cf is None:
+                    continue
+                mc = min_conf_by_key.get(key, 0.0)
+                if kind == "rc" and mc <= 0:
+                    mc = _RC_CONF_MIN
+                if mc > 0 and cf < mc:
+                    flags.add(key)
+                    reasons.append(
+                        "%s: confidence %d%% below %d%%" % (
+                            label_by_key.get(key, key),
+                            round(cf * 100), round(mc * 100)))
+            # CR exposes its critical reads as dedicated *_confidence columns;
+            # seed those so the three always have a percent for display.
+            if kind == "cr":
+                for key, col in (("registration_no", "registration_no_confidence"),
+                                 ("chassis_no", "chassis_no_confidence"),
+                                 ("engine_no", "engine_no_confidence")):
+                    v = getattr(r, col, None)
+                    if v is not None:
+                        conf_pct.setdefault(key, round(float(v) * 100))
             for d in mask_defs:
                 key = d["key"]
                 role = d.get("role") or key
@@ -2037,8 +2774,35 @@ def upload_records(kind: str, upload_id: int):
                     d.get("mask"), d.get("value"), str(val), _list_lookup)
                 if not ok:
                     flags.add(key)
-            r._flags = flags
-            r._review = bool(flags) or bool(r.needs_review)
+                    reasons.append(
+                        "%s: value does not match the required format"
+                        % label_by_key.get(key, key))
+            # Flag any captured field that produced no value, so an empty read
+            # (e.g. an amount whose decimals were cropped off) surfaces for
+            # review instead of silently passing as OK.
+            for d in defs:
+                if not d.get("capture"):
+                    continue
+                key = d["key"]
+                role = d.get("role") or key
+                val = getattr(r, role, None)
+                if val in (None, ""):
+                    val = r.fv.get(key)
+                if val in (None, ""):
+                    flags.add(key)
+                    reasons.append(
+                        "%s: no value captured" % label_by_key.get(key, key))
+            r._conf_pct = conf_pct
+            if kind == "cr":
+                r._review = bool(r.needs_review)
+                r._flags = flags if r.needs_review else set()
+                r._reasons = (reasons or ["Flagged for review during processing"]) \
+                    if r.needs_review else []
+            else:
+                r._review = bool(flags) or bool(r.needs_review)
+                r._flags = flags
+                r._reasons = (reasons or ["Flagged for review during processing"]) \
+                    if r._review else []
     # thead structural columns per kind (cr: Pg/Review/Save/Image = 4;
     # rc: Review/Rec No/Template/Dup/Conf/Image = 6) plus visible + extra cols.
     col_count = (6 if kind == "rc" else 4) + len(visible) + len(extra_fields)

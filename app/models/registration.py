@@ -540,3 +540,99 @@ class OcrCustomField(db.Model):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<OcrCustomField {self.kind}:{self.key}>"
+
+
+class CRAutoSetting(db.Model):
+    """Singleton settings for the automated CR-book folder watcher: the server
+    folder scanned (recursively) for new PDFs and whether the watcher is on."""
+
+    __tablename__ = "cr_auto_settings"
+
+    id = db.Column(db.Integer, primary_key=True)
+    folder = db.Column(db.String(500), nullable=True)
+    enabled = db.Column(db.Boolean, nullable=False, default=False,
+                        server_default=db.text("0"))
+    # Seconds to wait after a scan's picked files finish processing before the
+    # next scan.
+    interval_seconds = db.Column(db.Integer, nullable=False, default=30,
+                                 server_default=db.text("30"))
+    updated_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow,
+                           onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<CRAutoSetting enabled={self.enabled} folder={self.folder!r}>"
+
+
+class CRAutoFile(db.Model):
+    """Ledger of source PDFs already ingested by the CR-book folder watcher so a
+    file is never picked up twice.  Identity is the absolute source path plus its
+    size and modified-time: an edited/replaced file (changed size or mtime) is
+    treated as new and re-ingested."""
+
+    __tablename__ = "cr_auto_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    source_path = db.Column(db.String(700), nullable=False, index=True)
+    size = db.Column(db.BigInteger, nullable=False, default=0)
+    mtime = db.Column(db.BigInteger, nullable=False, default=0)
+    upload_id = db.Column(
+        db.Integer, db.ForeignKey("cr_book_uploads.id", ondelete="SET NULL"),
+        nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("source_path", "size", "mtime",
+                            name="uq_cr_auto_file_identity"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<CRAutoFile {self.source_path!r}>"
+
+
+class RCAutoSetting(db.Model):
+    """Singleton settings for the automated receipts folder watcher: the server
+    folder scanned (recursively) for new PDFs and whether the watcher is on."""
+
+    __tablename__ = "rc_auto_settings"
+
+    id = db.Column(db.Integer, primary_key=True)
+    folder = db.Column(db.String(500), nullable=True)
+    enabled = db.Column(db.Boolean, nullable=False, default=False,
+                        server_default=db.text("0"))
+    # Seconds to wait after a scan's picked files finish processing before the
+    # next scan.
+    interval_seconds = db.Column(db.Integer, nullable=False, default=30,
+                                 server_default=db.text("30"))
+    updated_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow,
+                           onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<RCAutoSetting enabled={self.enabled} folder={self.folder!r}>"
+
+
+class RCAutoFile(db.Model):
+    """Ledger of source PDFs already ingested by the receipts folder watcher so a
+    file is never picked up twice.  Identity is the absolute source path plus its
+    size and modified-time: an edited/replaced file (changed size or mtime) is
+    treated as new and re-ingested."""
+
+    __tablename__ = "rc_auto_files"
+
+    id = db.Column(db.Integer, primary_key=True)
+    source_path = db.Column(db.String(700), nullable=False, index=True)
+    size = db.Column(db.BigInteger, nullable=False, default=0)
+    mtime = db.Column(db.BigInteger, nullable=False, default=0)
+    upload_id = db.Column(
+        db.Integer, db.ForeignKey("receipt_uploads.id", ondelete="SET NULL"),
+        nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("source_path", "size", "mtime",
+                            name="uq_rc_auto_file_identity"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<RCAutoFile {self.source_path!r}>"

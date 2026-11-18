@@ -117,6 +117,12 @@ class Config:
         MAX_DOC_UPLOAD_MB * 1024 * 1024 + 5 * 1024 * 1024,
     )
 
+    # A "processing" upload whose live progress has not advanced for this many
+    # seconds is treated as an interrupted worker and demoted so it can be
+    # re-processed.  The startup orphan recovery only runs on restart, so this
+    # covers a worker that dies mid-run while the service keeps running.
+    UPLOAD_STALL_TIMEOUT_SEC = int(os.getenv("UPLOAD_STALL_TIMEOUT_SEC", "900"))
+
     # Default admin bootstrap (used by scripts/init_db.py)
     DEFAULT_ADMIN_USERNAME = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
     DEFAULT_ADMIN_EMAIL = os.getenv("DEFAULT_ADMIN_EMAIL", "admin@example.com")

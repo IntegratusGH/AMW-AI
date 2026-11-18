@@ -337,7 +337,7 @@ select.input { appearance: auto; }
 
 /* ---- Registration Updater workspace ------------------------------------- */
 .reg-intro { margin: -4px 0 18px; }
-.reg-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+.reg-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: stretch; }
 .reg-uploads { overflow-x: auto; overflow-y: visible; }
 .reg-uploads .table { min-width: 820px; }
 .status-cell { min-width: 230px; }
@@ -371,7 +371,60 @@ select.input { appearance: auto; }
 .upload-form .upload-check { flex-basis: 100%; margin-top: 2px; }
 .file-input { flex: 1 1 220px; min-width: 0; padding: 8px; border: 1px dashed var(--border);
   border-radius: var(--radius-sm); background: var(--surface-2); font-size: 13px; }
+.tab-panel .reg-tiles .upload-tile { max-width: none; }
 @media (max-width: 1100px) { .reg-tiles { grid-template-columns: 1fr; } }
+
+/* On/off toggle switch (e.g. the Automate CR Book upload 'Auto' control). */
+.switch { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch-slider { position: relative; width: 42px; height: 24px; flex: none;
+  border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border);
+  transition: background .2s, border-color .2s; }
+.switch-slider::before { content: ""; position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .2s; }
+.switch input:checked + .switch-slider { background: var(--primary); border-color: var(--primary); }
+.switch input:checked + .switch-slider::before { transform: translateX(18px); }
+.switch input:disabled + .switch-slider { opacity: .5; }
+.switch input:disabled ~ .switch-label { color: var(--text-muted); }
+.switch:has(input:disabled) { cursor: not-allowed; }
+.switch-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.auto-interval { display: inline-flex; align-items: center; gap: 4px;
+  font-size: 13px; color: var(--text-muted); }
+.auto-interval input { width: 54px; padding: 7px 6px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text);
+  font-size: 13px; text-align: center; }
+.auto-interval span { margin: 0 2px; }
+
+/* Server folder browser (Automate CR Book upload tile) */
+.folder-browser { padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+.folder-browser__bar { display: flex; align-items: center; gap: 10px; }
+.folder-browser__cur { font-size: 13px; color: var(--text); word-break: break-all;
+  font-variant-numeric: tabular-nums; }
+.folder-browser__list { list-style: none; margin: 0; padding: 0; max-height: 46vh;
+  overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); }
+.folder-browser__item { padding: 8px 12px; cursor: pointer; font-size: 13px;
+  border-bottom: 1px solid var(--border); }
+.folder-browser__item:last-child { border-bottom: 0; }
+.folder-browser__item:hover { background: var(--primary-soft); color: var(--primary); }
+.folder-browser__msg { margin: 0; font-size: 12px; }
+
+/* Live automation status (Automate CR Book upload tile) */
+.auto-status { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-2); }
+.auto-status[hidden] { display: none; }
+.auto-status__dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 4px;
+  flex: none; background: var(--text-muted); }
+.auto-status__dot.is-scanning { background: #3b82f6; animation: auto-pulse 1s infinite; }
+.auto-status__dot.is-processing { background: #d97706; animation: auto-pulse 1s infinite; }
+.auto-status__dot.is-waiting { background: #16a34a; }
+.auto-status__dot.is-error { background: #d64545; }
+.auto-status__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.auto-status__msg { font-size: 13px; color: var(--text); }
+.auto-status__meta { font-size: 12px; }
+@keyframes auto-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 
 /* Module admin: reorder controls, icon picker, role checklist */
 .mod-order { white-space: nowrap; display: flex; gap: 4px; }
@@ -675,6 +728,9 @@ select.input { appearance: auto; }
   padding: 4px 6px; border: 1px solid var(--border); border-radius: 5px;
   background: var(--surface); color: var(--text); }
 .fld-table .fld-label { min-width: 90px; }
+.fld-table .fld-minconf { width: 4.5em; box-sizing: border-box; padding: 4px 6px;
+  border: 1px solid var(--border); border-radius: 5px; background: var(--surface);
+  color: var(--text); text-align: center; }
 .fld-add { display: flex; gap: 8px; margin: 8px 0; }
 .fld-add input { flex: 1 1 auto; padding: 6px 8px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: var(--text); }
