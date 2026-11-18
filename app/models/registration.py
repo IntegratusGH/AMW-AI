@@ -43,6 +43,13 @@ class _UploadMixin:
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     uploaded_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
 
+    # Identity of the source file: its original name (independent of any
+    # ``copy N`` display rename) and its last-modified wall-clock time.  The
+    # UPLOADED column shows source_mtime; (source_name, source_mtime) keys the
+    # same-name/different-date re-upload handling.
+    source_name = db.Column(db.String(255), nullable=True)
+    source_mtime = db.Column(db.DateTime, nullable=True)
+
     processed = db.Column(db.Boolean, default=False, nullable=False)
     status = db.Column(db.String(20), default=STATUS_PENDING, nullable=False)
     page_count = db.Column(db.Integer, default=0, nullable=False)

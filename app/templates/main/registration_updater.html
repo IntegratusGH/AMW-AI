@@ -19,7 +19,7 @@
 <div class="card table-card reg-uploads">
   <table class="table">
     <thead>
-      <tr><th>ID</th><th>File</th><th>Uploaded</th><th>Status</th>
+      <tr><th>ID</th><th>File</th><th title="When the file was uploaded into the system">Uploaded</th><th title="The source file's last-modified date and time">Last modified</th><th>Status</th>
         <th title="Total records captured from this upload">Captured</th>
         <th title="Records currently in the table (mapped rows move out)">In table</th>
         <th>Dupes</th><th class="ta-right">Actions</th></tr>
@@ -31,6 +31,7 @@
         <td class="mono">{{ u.id }}</td>
         <td>{{ u.filename }}</td>
         <td>{{ u.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>{{ u.source_mtime.strftime('%Y-%m-%d %H:%M') if u.source_mtime else '—' }}</td>
         <td class="status-cell">
           {% if kind == 'cr' and u.review_status == 'detecting' %}<span class="badge badge-info">Checking format…</span>
           {% elif kind == 'cr' and u.review_status == 'needs_review' %}<span class="badge badge-warning">Review needed</span>
@@ -95,7 +96,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="8" class="muted ta-center">No uploads yet.</td></tr>
+      <tr><td colspan="9" class="muted ta-center">No uploads yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -130,6 +131,7 @@
       <p class="muted">Upload a scanned CR-book PDF (may contain many CR books).</p>
       <form method="post" enctype="multipart/form-data" class="upload-form">
         {{ cr_form.hidden_tag() }}
+        <input type="hidden" name="file_mtime" class="file-mtime">
         {{ cr_form.file(class="file-input", accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff") }}
         {% for e in cr_form.file.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
         {{ cr_form.submit_cr(class="btn btn-primary") }}
@@ -221,6 +223,7 @@
       <p class="muted">Upload a receipts PDF (may contain many deposit slips).</p>
       <form method="post" enctype="multipart/form-data" class="upload-form">
         {{ rc_form.hidden_tag() }}
+        <input type="hidden" name="file_mtime" class="file-mtime">
         {{ rc_form.file(class="file-input", accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff") }}
         {% for e in rc_form.file.errors %}<span class="field-error">{{ e }}</span>{% endfor %}
         {{ rc_form.submit_rc(class="btn btn-primary") }}
@@ -2179,5 +2182,19 @@
   }
   if (!box.hidden) { poll(); setInterval(tick, 1000); }
 })();
+</script>
+
+<script>
+// Capture the selected file's last-modified time so the server can show it in
+// the UPLOADED column and tell a re-uploaded (same name, new date) file apart
+// from an identical one.  A plain browser upload does not send this otherwise.
+document.addEventListener('DOMContentLoaded', function () {
+  document.querySelectorAll('.upload-form input[type=file]').forEach(function (inp) {
+    inp.addEventListener('change', function () {
+      var mt = inp.closest('form').querySelector('.file-mtime');
+      if (mt) mt.value = (inp.files && inp.files[0]) ? (inp.files[0].lastModified || '') : '';
+    });
+  });
+});
 </script>
 {% endblock %}

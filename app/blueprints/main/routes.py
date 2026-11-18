@@ -169,6 +169,44 @@ def _save_doc(file, dest_dir: str) -> tuple[str, str]:
     return file.filename or safe, path
 
 
+def _upload_mtime_from_epoch_ms(raw) -> datetime | None:
+    """Parse a client-posted epoch-milliseconds string (the browser file's
+    ``lastModified``) into a second-precision local datetime, or None when it is
+    absent/invalid."""
+    try:
+        ms = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    if ms <= 0:
+        return None
+    return datetime.fromtimestamp(ms / 1000).replace(microsecond=0)
+
+
+def _resolve_upload_identity(model, orig_name: str,
+                            mtime_dt: datetime | None) -> tuple[str, bool]:
+    """Decide the display filename + duplicate flag for a new upload keyed by
+    (original filename, file last-modified).  Returns ``(display_name, is_dup)``:
+
+    * same name + same last-modified  -> duplicate (``is_dup`` True, skip it);
+    * same name + a new last-modified -> ``"<stem> copy N<ext>"`` (N = how many
+      uploads already share this name);
+    * unknown last-modified           -> keep the name as-is, never dedups
+      (legacy behaviour for browsers/files without a last-modified).
+    """
+    if mtime_dt is None:
+        return orig_name, False
+    existing = model.query.filter_by(source_name=orig_name).all()
+    for e in existing:
+        if (e.source_mtime is not None
+                and e.source_mtime.replace(microsecond=0) == mtime_dt):
+            return orig_name, True
+    n = len(existing)
+    if n == 0:
+        return orig_name, False
+    stem, ext = os.path.splitext(orig_name)
+    return f"{stem} copy {n}{ext}", False
+
+
 # Template-box field -> record crop-filename column, per doc kind.  Used both to
 # persist the per-field value-region crops and (via build_field_data) to fill the
 # hybrid field_crops JSON.  ``_RC_CROP_ATTR`` is also consumed by the receipt
@@ -1236,12 +1274,30 @@ def _ingest_cr_auto_file(src: str, size: int, mtime: int) -> bool:
             src, current_app.config["CR_BOOK_UPLOAD_DIR"])
     except OSError:
         return False  # unreadable/locked file -- retry on a later scan
+    mtime_dt = datetime.fromtimestamp(int(mtime)).replace(microsecond=0)
+    display, is_dup = _resolve_upload_identity(CRBookUpload, name, mtime_dt)
+    if is_dup:
+        # Same name + last-modified already ingested (e.g. the file also exists
+        # under another watched path): drop our copy and record it in the ledger
+        # so this path is not rescanned, then skip without a new upload.
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        try:
+            db.session.add(CRAutoFile(
+                source_path=src, size=size, mtime=mtime, upload_id=None))
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+        return False
     prev = (CRBookUpload.query
             .order_by(CRBookUpload.uploaded_at.desc()).first())
     up = CRBookUpload(
-        filename=name, stored_path=path, uploaded_by=None,
+        filename=display, stored_path=path, uploaded_by=None,
         status=STATUS_PROCESSING, review_status=REVIEW_READY,
-        template_id=(prev.template_id if prev else None))
+        template_id=(prev.template_id if prev else None),
+        source_name=name, source_mtime=mtime_dt)
     db.session.add(up)
     try:
         db.session.flush()
@@ -1257,8 +1313,8 @@ def _ingest_cr_auto_file(src: str, size: int, mtime: int) -> bool:
             pass
         return False
     total = _cr_auto_state_snapshot().get("ingested_total", 0) + 1
-    _cr_auto_set_state(phase="processing", current_file=name,
-                       ingested_total=total, message=f"Processing: {name}")
+    _cr_auto_set_state(phase="processing", current_file=display,
+                       ingested_total=total, message=f"Processing: {display}")
     # Process synchronously (in this watcher thread) so picked-up files are
     # OCR'd one at a time.  Spawning one OCR thread per file overwhelmed the
     # service and left large batches stuck in 'processing' indefinitely.
@@ -1576,12 +1632,30 @@ def _ingest_rc_auto_file(src: str, size: int, mtime: int) -> bool:
             src, current_app.config["RECEIPT_UPLOAD_DIR"])
     except OSError:
         return False  # unreadable/locked file -- retry on a later scan
+    mtime_dt = datetime.fromtimestamp(int(mtime)).replace(microsecond=0)
+    display, is_dup = _resolve_upload_identity(ReceiptUpload, name, mtime_dt)
+    if is_dup:
+        # Same name + last-modified already ingested (e.g. the file also exists
+        # under another watched path): drop our copy and record it in the ledger
+        # so this path is not rescanned, then skip without a new upload.
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        try:
+            db.session.add(RCAutoFile(
+                source_path=src, size=size, mtime=mtime, upload_id=None))
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+        return False
     prev = (ReceiptUpload.query
             .order_by(ReceiptUpload.uploaded_at.desc()).first())
     up = ReceiptUpload(
-        filename=name, stored_path=path, uploaded_by=None,
+        filename=display, stored_path=path, uploaded_by=None,
         status=STATUS_PROCESSING,
-        template_id=(prev.template_id if prev else None))
+        template_id=(prev.template_id if prev else None),
+        source_name=name, source_mtime=mtime_dt)
     db.session.add(up)
     try:
         db.session.flush()
@@ -1597,8 +1671,8 @@ def _ingest_rc_auto_file(src: str, size: int, mtime: int) -> bool:
             pass
         return False
     total = _rc_auto_state_snapshot().get("ingested_total", 0) + 1
-    _rc_auto_set_state(phase="processing", current_file=name,
-                       ingested_total=total, message=f"Processing: {name}")
+    _rc_auto_set_state(phase="processing", current_file=display,
+                       ingested_total=total, message=f"Processing: {display}")
     # Process synchronously (in this watcher thread) so picked-up files are
     # OCR'd one at a time, matching the CR-book watcher.
     _run_processing(current_app._get_current_object(), "rc", up.id)
@@ -1775,19 +1849,30 @@ def registration_updater():
     if cr_form.submit_cr.data and cr_form.validate_on_submit():
         name, path = _save_doc(
             cr_form.file.data, current_app.config["CR_BOOK_UPLOAD_DIR"])
+        mtime_dt = _upload_mtime_from_epoch_ms(request.form.get("file_mtime"))
+        display, is_dup = _resolve_upload_identity(CRBookUpload, name, mtime_dt)
+        if is_dup:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            flash("This CR Book (same name and date) was already uploaded \u2014 "
+                  "skipped.", "info")
+            return redirect(url_for("main.registration_updater", tab="cr"))
         check_format = bool(cr_form.check_format.data)
         # Inherit the OCR template from the previous CR upload so a same-layout
         # batch auto-processes with the tuned settings + value boxes.
         prev = (CRBookUpload.query
                 .order_by(CRBookUpload.uploaded_at.desc()).first())
         up = CRBookUpload(
-            filename=name, stored_path=path, uploaded_by=current_user.id,
+            filename=display, stored_path=path, uploaded_by=current_user.id,
             status=STATUS_PENDING if check_format else STATUS_PROCESSING,
             review_status=REVIEW_DETECTING if check_format else REVIEW_READY,
-            template_id=(prev.template_id if prev else None))
+            template_id=(prev.template_id if prev else None),
+            source_name=name, source_mtime=mtime_dt)
         db.session.add(up)
         record_audit("cr_book_uploaded",
-                     f"file={name} check_format={check_format}")
+                     f"file={display} check_format={check_format}")
         db.session.commit()
         if check_format:
             _start_cr_detection(up.id)
@@ -1802,17 +1887,28 @@ def registration_updater():
     if rc_form.submit_rc.data and rc_form.validate_on_submit():
         name, path = _save_doc(
             rc_form.file.data, current_app.config["RECEIPT_UPLOAD_DIR"])
+        mtime_dt = _upload_mtime_from_epoch_ms(request.form.get("file_mtime"))
+        display, is_dup = _resolve_upload_identity(ReceiptUpload, name, mtime_dt)
+        if is_dup:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            flash("These receipts (same name and date) were already uploaded "
+                  "\u2014 skipped.", "info")
+            return redirect(url_for("main.registration_updater", tab="rc"))
         # Inherit the OCR template from the previous receipt upload so a
         # same-layout batch auto-processes with the tuned settings + value
         # boxes, then start OCR immediately (mirrors the CR-book tile).
         prev = (ReceiptUpload.query
                 .order_by(ReceiptUpload.uploaded_at.desc()).first())
         up = ReceiptUpload(
-            filename=name, stored_path=path,
+            filename=display, stored_path=path,
             uploaded_by=current_user.id, status=STATUS_PROCESSING,
-            template_id=(prev.template_id if prev else None))
+            template_id=(prev.template_id if prev else None),
+            source_name=name, source_mtime=mtime_dt)
         db.session.add(up)
-        record_audit("receipt_uploaded", f"file={name}")
+        record_audit("receipt_uploaded", f"file={display}")
         db.session.commit()
         _start_processing("rc", up.id)
         flash("Receipts uploaded \u2014 processing started (OCR runs in the "
