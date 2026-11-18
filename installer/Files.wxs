@@ -340,6 +340,9 @@
           <Component Id="cmp10e75ab76a27d60cf9adfb93" Guid="*">
             <File Id="fil10e75ab76a27d60cf9adfb93" Name="0034_cr_auto_upload.py" KeyPath="yes" Source="$(var.PayloadDir)\migrations\versions\0034_cr_auto_upload.py" />
           </Component>
+          <Component Id="cmpbe98eb7fec9b0f991444cd43" Guid="*">
+            <File Id="filbe98eb7fec9b0f991444cd43" Name="0035_rc_auto_upload.py" KeyPath="yes" Source="$(var.PayloadDir)\migrations\versions\0035_rc_auto_upload.py" />
+          </Component>
         </Directory>
       </Directory>
       <Directory Id="dirbcaba2af67421ef49a13b1c6" Name="ocr_models">
@@ -13158,6 +13161,7 @@
       <ComponentRef Id="cmp69dc2539d8a5420ae9f72c19" />
       <ComponentRef Id="cmp8b1ac9ef1eeede7edf562661" />
       <ComponentRef Id="cmp10e75ab76a27d60cf9adfb93" />
+      <ComponentRef Id="cmpbe98eb7fec9b0f991444cd43" />
       <ComponentRef Id="cmp13091fc9878daffa6ef8fc2b" />
       <ComponentRef Id="cmpb0e40e7eb7f55704fe4f688c" />
       <ComponentRef Id="cmpcb58a1309c209bb0a5304a90" />
