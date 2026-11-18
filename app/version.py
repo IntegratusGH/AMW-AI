@@ -1,3 +1,3 @@
-__version__ = "1.90"
+__version__ = "1.92"
 __build__ = 0
 
