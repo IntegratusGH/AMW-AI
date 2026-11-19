@@ -29,7 +29,7 @@
   <table class="table">
     {% if kind == 'cr' %}
     <thead>
-      <tr><th>Pg</th><th>Review</th>
+      <tr><th>Pg</th><th>Review</th><th>Template</th>
         {% if 'registration_no' in visible %}<th>Reg No</th>{% endif %}
         {% if 'chassis_no' in visible %}<th>Chassis No</th>{% endif %}
         {% if 'engine_no' in visible %}<th>Engine No</th>{% endif %}
@@ -46,6 +46,7 @@
       <tr class="{{ 'row-review' if r._review else '' }}" data-search="{{ r.registration_no or '' }}">
         <td>{{ r.page_no or '' }}</td>
         <td>{% if r._review %}<span class="badge badge-warning" title="{{ r._reasons|join('; ') }}">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
+        <td>{{ r.applied_template or '—' }}</td>
         {% if 'registration_no' in visible %}<td class="{{ 'cell-flag' if 'registration_no' in r._flags }}" title="confidence {{ conf_pct_text(r, 'registration_no') }}">
           {% if r.reg_crop %}<img class="val-crop" loading="lazy" alt="Reg No scan"
             src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field='reg') }}">{% endif %}
@@ -67,7 +68,8 @@
         {% if 'cylinder_capacity' in visible %}<td class="{{ 'cell-flag' if 'cylinder_capacity' in r._flags }}" title="confidence {{ conf_pct_text(r, 'cylinder_capacity') }}">{{ r.cylinder_capacity or '—' }}</td>{% endif %}
         {% if 'year_of_manufacture' in visible %}<td class="{{ 'cell-flag' if 'year_of_manufacture' in r._flags }}" title="confidence {{ conf_pct_text(r, 'year_of_manufacture') }}">{{ r.year_of_manufacture or '—' }}</td>{% endif %}
         {% if 'colour' in visible %}<td class="{{ 'cell-flag' if 'colour' in r._flags }}" title="confidence {{ conf_pct_text(r, 'colour') }}">{{ r.colour or '—' }}</td>{% endif %}
-        {% for f in extra_fields %}<td class="{{ 'cell-flag' if f[0] in r._flags }}" title="confidence {{ conf_pct_text(r, f[0]) }}">{{ r.fv.get(f[0]) or '—' }}</td>{% endfor %}
+        {% for f in extra_fields %}<td class="{{ 'cell-flag' if f[0] in r._flags }}" title="confidence {{ conf_pct_text(r, f[0]) }}">{% if r.fc.get(f[0]) %}<img class="val-crop" loading="lazy" alt="{{ f[1] }} scan"
+          src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field=f[0]) }}">{% endif %}{{ r.fv.get(f[0]) or '—' }}</td>{% endfor %}
         <td class="actions">
           <form id="rec{{ r.id }}" method="post" class="inline"
                 action="{{ url_for('main.cr_edit_record', upload_id=upload.id, record_id=r.id) }}">

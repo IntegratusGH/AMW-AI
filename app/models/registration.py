@@ -158,6 +158,10 @@ class CRBookRecord(db.Model):
     engine_no_confidence = db.Column(db.Float, nullable=True)
     needs_review = db.Column(db.Boolean, default=False, nullable=False)
     raw_text = db.Column(db.Text, nullable=True)
+    # Name of the Template-picker template applied to this record (the CR
+    # template resolved for the upload via the validation/fallback chain);
+    # shown in View Records.
+    applied_template = db.Column(db.String(120), nullable=True)
     # Template-defined field data (hybrid storage): JSON maps of field key ->
     # value / crop filename / confidence for every field of this record's
     # template.  The canonical typed columns above stay authoritative for

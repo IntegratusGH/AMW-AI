@@ -262,6 +262,24 @@ _DOC_KINDS = {
 }
 
 
+# Sentinel stored in a record's non-captured value fields when the upload's
+# template restricts OCR to a selected subset of fields.  Text columns hold this
+# token; numeric columns are nulled (and mirrored as the token in field_values).
+_NA_VALUE = "-N/A-"
+# Canonical OCR value columns per kind eligible for the N/A sentinel (record ids,
+# crops, confidences, review flags, JSON mirrors and timestamps are untouched).
+_CR_VALUE_COLS = (
+    "cr_number", "registration_no", "chassis_no", "engine_no",
+    "current_owner", "current_owner_address", "absolute_owner", "make",
+    "model", "class_of_vehicle", "fuel_type", "cylinder_capacity",
+    "year_of_manufacture", "colour", "country_of_origin",
+    "provincial_council", "date_first_registration")
+_RC_VALUE_COLS = (
+    "slip_no", "receipt_no", "receipt_date", "receipt_time", "vehicle_no",
+    "application_no", "total_amount", "bank_charges", "bank_total")
+_DOC_VALUE_COLS = {"cr": _CR_VALUE_COLS, "rc": _RC_VALUE_COLS}
+
+
 def _assign_columns(obj, data: dict) -> None:
     """Copy dict values onto matching model columns, truncating long strings."""
     for col in sqla_inspect(type(obj)).columns:
@@ -512,38 +530,64 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
     from app.utils import registration_ocr as ocr
     out: dict = {}
     conf_out: dict = {}
+    crops_out: dict = {}
     mask_flagged: set = set()
     if tpl is None:
-        return out, conf_out, mask_flagged
-    defs = ocr.template_field_defs(tpl)
+        return out, conf_out, mask_flagged, crops_out
     canon = _canonical_keys(kind)
     str_cols = {c.key for c in sqla_inspect(_RECORD_MODEL[kind]).columns
                 if isinstance(c.type, db.String)}
-    cap_defs = [d for d in defs if d.get("box") and d.get("capture")
-                and _safe_field_key(d["key"]) and d["key"] not in canon]
-    mask_defs = [d for d in defs
-                 if d.get("capture")
-                 and (d.get("mask") or "none") != "none" and d.get("value")]
-    _ret_empty = (out, conf_out, mask_flagged)
+    _ret_empty = (out, conf_out, mask_flagged, crops_out)
+
+    # Field capture is driven by each record's APPLIED template (receipts resolve
+    # a template per slip via the fallback chain), which may select MORE fields
+    # than the upload's head template -- e.g. a 6-line-item slip under a
+    # 1-line-item head template.  Resolve (and cache by name) each template's
+    # capture defs, canonical-mask defs, confidence-only defs and image pp.
     # Canonical CR fields captured with a box but with no dedicated confidence
-    # column: box-read them solely to record a per-field confidence (their value
-    # stays the tuned/extracted one) so minimum-confidence review can cover
-    # every captured field, not just the three critical identifiers.
-    conf_only_defs = ([d for d in defs
-                       if d.get("box") and d.get("capture")
-                       and d["key"] in canon and d["key"] not in _CR_CONF_ATTR]
-                      if kind == "cr" else [])
-    if not cap_defs and not mask_defs and not conf_only_defs:
-        return _ret_empty
-    for d in cap_defs:
-        ensure_record_column(kind, d["key"], d.get("label"))
+    # column are box-read solely to record a per-field confidence (conf_only).
+    _defs_cache: dict = {}
+
+    def _defs_for(template):
+        name = getattr(template, "name", None)
+        if name not in _defs_cache:
+            tdefs = ocr.template_field_defs(template) if template else []
+            cap = [d for d in tdefs if d.get("box") and d.get("capture")
+                   and _safe_field_key(d["key"]) and d["key"] not in canon]
+            msk = [d for d in tdefs if d.get("capture")
+                   and (d.get("mask") or "none") != "none" and d.get("value")]
+            conf_only = ([d for d in tdefs
+                          if d.get("box") and d.get("capture")
+                          and d["key"] in canon and d["key"] not in _CR_CONF_ATTR]
+                         if kind == "cr" else [])
+            _defs_cache[name] = (cap, msk, conf_only,
+                                 _tpl_pp(template) if template else None)
+        return _defs_cache[name]
+
     recs = RecordModel.query.filter_by(upload_id=upload_id).all()
     if not recs:
         return _ret_empty
-    tpp = _tpl_pp(tpl)
+    # The head template plus every applied template present in this batch, so
+    # their capture columns exist and their defs are cached up front.
+    templates_by_name = {getattr(tpl, "name", None): tpl}
+    if kind == "rc":
+        for nm in {r.applied_template for r in recs if r.applied_template}:
+            if nm not in templates_by_name:
+                templates_by_name[nm] = OcrTemplate.query.filter_by(
+                    name=nm).first()
+    for t in templates_by_name.values():
+        for d in _defs_for(t)[0]:
+            ensure_record_column(kind, d["key"], d.get("label"))
+    if not any(any(_defs_for(t)[:3]) for t in templates_by_name.values()):
+        return _ret_empty
     doc, total = ocr.open_document(up.stored_path)
     try:
         slips = _rc_slip_index(up) if kind == "rc" else None
+        cr_crop_dir = None
+        if kind == "cr":
+            cr_crop_dir = os.path.join(
+                current_app.config["CR_BOOK_CROP_DIR"], str(upload_id))
+            os.makedirs(cr_crop_dir, exist_ok=True)
         for rec in recs:
             if kind == "cr":
                 pno = getattr(rec, "page_no", None) or 1
@@ -556,6 +600,12 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
                 s = slips[idx]
                 page = doc[s["page"]]
                 region = ocr._slip_region_pts(page, s["y0"], s["y1"], s["zoom"])
+            # Use the record's applied template (receipts) so a slip that matched
+            # a richer template captures all of its fields; CR uses the single
+            # resolved template.
+            rt = ((templates_by_name.get(getattr(rec, "applied_template", None))
+                   if kind == "rc" else tpl) or tpl)
+            cap_defs, mask_defs, conf_only_defs, tpp = _defs_for(rt)
             flagged = False
             for d in cap_defs:
                 fpp = d.get("pp") or tpp
@@ -576,6 +626,16 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
                 if _c is not None:
                     conf_out.setdefault(rec.id, {})[d["key"]] = round(
                         float(_c), 3)
+                # Persist a crop of the field box so View Records can show the
+                # scanned region beside the value (as the three critical CR
+                # identifiers already do).
+                if kind == "cr":
+                    png = ocr.crop_box_png(page, d["box"])
+                    if png:
+                        cfn = f"{rec.id}_{_safe_field_key(d['key'])}.png"
+                        with open(os.path.join(cr_crop_dir, cfn), "wb") as fh:
+                            fh.write(png)
+                        crops_out.setdefault(rec.id, {})[d["key"]] = cfn
                 if not ok:
                     flagged = True
             for d in conf_only_defs:
@@ -617,7 +677,7 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
         db.session.commit()
     finally:
         doc.close()
-    return out, conf_out, mask_flagged
+    return out, conf_out, mask_flagged, crops_out
 
 
 def _run_processing(app, kind: str, upload_id: int) -> None:
@@ -696,7 +756,13 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 if kind == "rc":
                     rc_resolver = _make_rc_slip_resolver(tpl, report=_rc_report)
                 else:
-                    tpl = _resolve_effective_template(kind, doc, tpl)
+                    tpl = _resolve_effective_template(
+                        kind, doc, _chain_head(tpl, "cr"))
+            # CR resolves one template per document (via the picker chain), so
+            # tag every record with its name for View Records (receipts set
+            # this per slip during extraction).
+            cr_applied_name = (
+                tpl.name if (kind == "cr" and tpl is not None) else None)
             if tpl and tpl.ocr_pp:
                 try:
                     upload_pp = ocr.clean_pp(json.loads(tpl.ocr_pp)) or None
@@ -753,6 +819,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                     if kind == "cr":
                         for r in page_recs:
                             r["page_no"] = i + 1
+                            r["applied_template"] = cr_applied_name
 
                     for r in page_recs:
                         if kind == "rc":
@@ -934,8 +1001,9 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             # reads for review.  Returns the custom values for the JSON mirror.
             up.progress_message = "Applying field masks…"
             db.session.commit()
-            custom_vals, conf_by_id, mask_flagged = _capture_custom_and_masks(
-                kind, up, tpl, RecordModel, upload_id)
+            custom_vals, conf_by_id, mask_flagged, custom_crops = \
+                _capture_custom_and_masks(
+                    kind, up, tpl, RecordModel, upload_id)
 
             # Hybrid field storage: mirror each record's final (batch-corrected)
             # canonical values, crops and confidences into the template-driven
@@ -960,13 +1028,65 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             min_conf_by_key = {d["key"]: (d.get("min_conf") or 0.0)
                                for d in defs
                                if (not restrict) or d.get("capture")}
+            # When the template explicitly selects fields, keep only the fields
+            # captured by each record's APPLIED template (receipts resolve a
+            # template per slip via the fallback chain, CR per page), which may
+            # select fewer fields than the upload's head template.  Every other
+            # value column is set to the N/A sentinel (text) / nulled (numeric)
+            # and mirrored as "-N/A-" in field_values, so e.g. a 3-line-item slip
+            # never shows a 4th line item read with the head template's box.
+            na_restrict = bool(getattr(tpl, "fields", None))
+            captured_roles = {(d.get("role") or d["key"])
+                              for d in defs if d.get("capture")}
+            na_str_cols = {c.key for c in sqla_inspect(RecordModel).columns
+                           if isinstance(c.type, db.String)}
+            _caps_cache: dict = {}
+
+            def _applied_caps(name):
+                """(captured keys, captured roles) of the named template, cached;
+                None when the name is unknown so the caller falls back to the
+                upload's head template."""
+                if name not in _caps_cache:
+                    t = (OcrTemplate.query.filter_by(name=name).first()
+                         if name else None)
+                    if t is None:
+                        _caps_cache[name] = None
+                    else:
+                        tdefs = ocr.template_field_defs(t)
+                        _caps_cache[name] = (
+                            {d["key"] for d in tdefs if d.get("capture")},
+                            {(d.get("role") or d["key"])
+                             for d in tdefs if d.get("capture")})
+                return _caps_cache[name]
+
             for rec_obj in RecordModel.query.filter_by(
                     upload_id=upload_id).all():
+                caps = (_applied_caps(getattr(rec_obj, "applied_template", None))
+                        if na_restrict else None)
+                cap_keys, cap_roles = (
+                    caps if caps else (captured_keys, captured_roles))
+                blank_roles = ((set(_DOC_VALUE_COLS[kind]) | captured_roles)
+                               - cap_roles) if na_restrict else set()
+                for col in blank_roles:
+                    if hasattr(rec_obj, col):
+                        setattr(rec_obj, col,
+                                _NA_VALUE if col in na_str_cols else None)
                 fv, fc, fk = ocr.build_field_data(
                     defs, rec_obj, crop_attr, conf_attr)
                 for k, v in (custom_vals.get(rec_obj.id) or {}).items():
-                    if v not in (None, ""):
+                    if v not in (None, "") and (not na_restrict
+                                                or k in cap_keys):
                         fv[k] = v
+                for k, cfn in (custom_crops.get(rec_obj.id) or {}).items():
+                    if cfn and (not na_restrict or k in cap_keys):
+                        fc[k] = cfn
+                if na_restrict:
+                    # Every field shown for the upload (present in field_values
+                    # or captured by the head template) that the applied template
+                    # does not capture reads "-N/A-".
+                    for k in set(fv) | captured_keys:
+                        if k not in cap_keys:
+                            fv[k] = _NA_VALUE
                 # Confidence for every captured field: box-read scores
                 # (conf_by_id) as the base, with the critical CR columns
                 # (build_field_data) and receipt per-slip scores kept
@@ -980,7 +1100,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 # never flags on confidence.
                 conf_bad = False
                 for fkey, fcval in fk.items():
-                    if restrict and fkey not in captured_keys:
+                    if restrict and fkey not in cap_keys:
                         continue
                     mc = min_conf_by_key.get(fkey, 0.0)
                     if kind == "rc" and mc <= 0:
@@ -1979,7 +2099,7 @@ def _reg_match_key(value, omit_province: bool = False) -> str | None:
     ``omit_province`` is set, a leading province prefix (see
     ``_strip_province_code``) is removed first so 'WP KA-1234' matches
     'KA-1234'."""
-    if not value:
+    if not value or str(value).strip() in (_NA_VALUE, "N/A"):
         return None
     v = _strip_province_code(value) if omit_province else value.upper()
     return re.sub(r"[^A-Z0-9]", "", v) or None
@@ -2785,6 +2905,10 @@ def upload_records(kind: str, upload_id: int):
             r.fv = json.loads(r.field_values) if r.field_values else {}
         except (ValueError, TypeError):
             r.fv = {}
+        try:
+            r.fc = json.loads(r.field_crops) if r.field_crops else {}
+        except (ValueError, TypeError):
+            r.fc = {}
         for k in r.fv:
             if k not in canon and k not in extra_keys:
                 extra_keys.append(k)
@@ -2899,9 +3023,9 @@ def upload_records(kind: str, upload_id: int):
                 r._flags = flags
                 r._reasons = (reasons or ["Flagged for review during processing"]) \
                     if r._review else []
-    # thead structural columns per kind (cr: Pg/Review/Save/Image = 4;
+    # thead structural columns per kind (cr: Pg/Review/Template/Save/Image = 5;
     # rc: Review/Rec No/Template/Dup/Conf/Image = 6) plus visible + extra cols.
-    col_count = (6 if kind == "rc" else 4) + len(visible) + len(extra_fields)
+    col_count = (6 if kind == "rc" else 5) + len(visible) + len(extra_fields)
     return render_template(
         "main/registration_records.html", kind=kind, upload=up,
         records=records, extra_fields=extra_fields,
@@ -2912,15 +3036,23 @@ def upload_records(kind: str, upload_id: int):
                "/crop/<int:record_id>/<field>")
 @login_required
 def cr_value_crop(upload_id: int, record_id: int, field: str):
-    """Serve the cropped value-region scan (chassis|reg|engine) for one record."""
+    """Serve a record's cropped value-region scan: the three critical identifiers
+    (chassis|reg|engine) from their columns, or any template field box crop keyed
+    by field in the record's field_crops JSON."""
     _require_module(REGISTRATION_UPDATER_KEY)
-    if field not in ("chassis", "reg", "engine"):
-        abort(404)
     rec = db.session.get(CRBookRecord, record_id) or abort(404)
     if rec.upload_id != upload_id:
         abort(404)
-    fn = {"chassis": rec.chassis_crop, "reg": rec.reg_crop,
-          "engine": rec.engine_crop}.get(field)
+    fixed = {"chassis": rec.chassis_crop, "reg": rec.reg_crop,
+             "engine": rec.engine_crop}
+    if field in fixed:
+        fn = fixed[field]
+    else:
+        try:
+            fc = json.loads(rec.field_crops) if rec.field_crops else {}
+        except (ValueError, TypeError):
+            fc = {}
+        fn = fc.get(field)
     if not fn:
         abort(404)
     crop_dir = os.path.join(current_app.config["CR_BOOK_CROP_DIR"], str(upload_id))
@@ -3447,17 +3579,17 @@ def _resolve_effective_template(kind, doc, base_tpl):
     raise ValueError("No Match Template")
 
 
-def _rc_chain_head(base_tpl):
+def _chain_head(base_tpl, kind):
     """Return the head of ``base_tpl``'s validation/fallback chain by following
-    predecessors (receipt templates whose ``fail_template_id`` points at the
-    current template) back to the root, so every slip starts from the FIRST
+    predecessors (templates of ``kind`` whose ``fail_template_id`` points at the
+    current template) back to the root, so resolution starts from the FIRST
     template in the chain regardless of which template the upload was assigned.
     Cycle-safe."""
     head = base_tpl
     seen: set[int] = {head.id}
     while True:
         pred = (OcrTemplate.query
-                .filter_by(kind="rc", fail_template_id=head.id)
+                .filter_by(kind=kind, fail_template_id=head.id)
                 .first())
         if pred is None or pred.id in seen:
             break
@@ -3479,7 +3611,7 @@ def _make_rc_slip_resolver(base_tpl, report=None):
     short status string as each template is validated so the progress bar can
     show which template matched."""
     from app.utils import registration_ocr as ocr
-    base_tpl = _rc_chain_head(base_tpl)
+    base_tpl = _chain_head(base_tpl, "rc")
 
     def _pp(t):
         try:

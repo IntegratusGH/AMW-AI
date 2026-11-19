@@ -1598,6 +1598,27 @@ def crop_value_png(page, line, full_zoom: float, disp_zoom: float = 5.0,
     return pix.tobytes("png")
 
 
+def crop_box_png(page, box, disp_zoom: float = 5.0, page_bgr=None):
+    """Render exactly a normalized template field box ``[x0,y0,x1,y1]`` (page
+    fractions) to a PNG, so the stored value crop shows the box the trainer drew
+    rather than the snapped OCR line.  Mirrors ``crop_value_png``'s rendering
+    (slices from ``page_bgr`` when given so pp matches the popup).  Returns
+    ``None`` when the region is unavailable."""
+    if page is None or not box:
+        return None
+    import pymupdf
+    try:
+        x0, y0, x1, y1 = box
+    except (TypeError, ValueError):
+        return None
+    W, H = page.rect.width, page.rect.height
+    rect = pymupdf.Rect(x0 * W, y0 * H, x1 * W, y1 * H)
+    if page_bgr is not None:
+        return _slice_png(page_bgr, rect, disp_zoom)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(disp_zoom, disp_zoom), clip=rect)
+    return pix.tobytes("png")
+
+
 # Fixed display canvas for value crops.  Chassis crops naturally share a wide,
 # consistent aspect (the 17-char string fills its box) so they render uniformly;
 # registration crops are tight around a short plate, so their aspect - and thus
@@ -1722,6 +1743,16 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
                   if (_crop_pp and _crop_pp.get("fft")) else 5.0)
     _crop_page_bgr = (_page_bgr(page, _crop_pp, _crop_zoom)
                       if (_crop_pp and page is not None) else None)
+
+    def _value_crop_png(_key, _line):
+        """Crop the template box when this field has one (so the stored image
+        matches the box the trainer drew), else the label-anchored OCR line."""
+        if rects and rects.get(_key) and page is not None:
+            return crop_box_png(page, rects[_key],
+                                disp_zoom=_crop_zoom, page_bgr=_crop_page_bgr)
+        return crop_value_png(page, _line, full_zoom,
+                              disp_zoom=_crop_zoom, page_bgr=_crop_page_bgr)
+
     if rects and rects.get("chassis_no") and page is not None:
         ch_line = _line_in_box(lines, rects["chassis_no"], page, full_zoom)
         ch_fb, ch_rect = None, True   # box-only: no label fallback
@@ -1738,8 +1769,7 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     rec["chassis_no_confidence"] = ch_conf
     rec["_chassis_cands"] = ch_cands
     rec["_chassis_crop_png"] = _pad_crop_to_canvas(
-        crop_value_png(page, ch_line, full_zoom,
-                       disp_zoom=_crop_zoom, page_bgr=_crop_page_bgr))
+        _value_crop_png("chassis_no", ch_line))
 
     if rects and rects.get("registration_no") and page is not None:
         rg_line = _line_in_box(lines, rects["registration_no"], page, full_zoom)
@@ -1757,8 +1787,7 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
         rec["registration_no"] = rg_val
     rec["registration_no_confidence"] = rg_conf
     rec["_reg_crop_png"] = _pad_crop_to_canvas(
-        crop_value_png(page, rg_line, full_zoom,
-                       disp_zoom=_crop_zoom, page_bgr=_crop_page_bgr))
+        _value_crop_png("registration_no", rg_line))
 
     if rects and rects.get("engine_no") and page is not None:
         en_line = _line_in_box(lines, rects["engine_no"], page, full_zoom)
@@ -1776,8 +1805,7 @@ def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
     rec["engine_no_confidence"] = en_conf
     rec["_engine_cands"] = en_cands
     rec["_engine_crop_png"] = _pad_crop_to_canvas(
-        crop_value_png(page, en_line, full_zoom,
-                       disp_zoom=_crop_zoom, page_bgr=_crop_page_bgr))
+        _value_crop_png("engine_no", en_line))
 
     # Only review fields this template captures: in template mode a canonical
     # field is captured only if it has a value box; a field with no box is never
@@ -3387,6 +3415,104 @@ def _rect_to_text_row(rect, seg, zoom: float):
                         (x1 + pad) / zoom, (y1 + pad) / zoom)
 
 
+# ---------------------------------------------------------------------------
+# Receipt field voting refinement -- the CR _refine_field method applied to
+# receipts: each field normalizes every OCR pass to its canonical token, votes
+# per-character across passes (validator up-weighting well-formed reads), and
+# escalates to a widened high-zoom crop when nothing resolves.  Replaces the
+# former single-best pick so systematic digit/letter confusions self-correct.
+# ---------------------------------------------------------------------------
+def _rc_norm_slip(t: str) -> str:
+    d = re.sub(r"\D", "", t or "")
+    m = re.search(r"0\d{6,7}", d)
+    return m.group(0) if m else d
+
+
+def _rc_norm_receipt(t: str) -> str:
+    t2 = re.sub(r"(?<=\d)\s+(?=\d)", "", t or "")
+    runs = re.findall(r"\d+", t2)
+    return max(runs, key=len) if runs else ""
+
+
+def _rc_norm_vehicle(t: str) -> str:
+    m = _VEHICLE_RE.search((t or "").upper())
+    return f"{m.group(1)}-{m.group(2)}{m.group(3)}" if m else ""
+
+
+def _rc_norm_date(t: str) -> str:
+    m = re.search(r"(\d{2})[/\s.]{0,2}(\d{2})[/\s.]{0,2}(\d{4})", t or "")
+    return f"{m.group(1)}/{m.group(2)}/{m.group(3)}" if m else ""
+
+
+def _rc_norm_amount(t: str) -> str:
+    return _norm_amount(t) or ""
+
+
+def _rc_valid_slip(s: str) -> bool:
+    return bool(_SLIP_RE.fullmatch(s or ""))
+
+
+def _rc_valid_receipt(s: str) -> bool:
+    return bool(s) and s.isdigit() and 4 <= len(s) <= 8
+
+
+def _rc_valid_vehicle(s: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z]{2,3}-\d{3,4}[A-Z]?", s or ""))
+
+
+def _rc_valid_date(s: str) -> bool:
+    m = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", s or "")
+    if not m:
+        return False
+    day, mon = int(m.group(1)), int(m.group(2))
+    return 1 <= day <= 31 and 1 <= mon <= 12
+
+
+def _rc_valid_amount(s: str) -> bool:
+    return bool(re.fullmatch(r"\d+\.\d{2}", s or ""))
+
+
+# field -> (candidate normalizer, structure validator, preferred length|None)
+_RC_REFINE = {
+    "slip_no": (_rc_norm_slip, _rc_valid_slip, 7),
+    "receipt_no": (_rc_norm_receipt, _rc_valid_receipt, None),
+    "vehicle_no": (_rc_norm_vehicle, _rc_valid_vehicle, None),
+    "receipt_date": (_rc_norm_date, _rc_valid_date, 10),
+    "total_amount": (_rc_norm_amount, _rc_valid_amount, None),
+    "bank_charges": (_rc_norm_amount, _rc_valid_amount, None),
+    "bank_total": (_rc_norm_amount, _rc_valid_amount, None),
+}
+
+
+def _refine_receipt_field(page, rect, name, pp=None):
+    """High-accuracy receipt value via the CR voting method.  ``rect`` is the
+    field's (text-row-snapped) PDF-point rectangle.  Returns ``(value, conf)``
+    with the value already parsed into the field's typed form; ``conf`` is None
+    unless a real value resolved (so a blank read carries no misleading score).
+    """
+    raw = _rec_candidates(page, rect, pp=pp)
+    spec = _RC_REFINE.get(name)
+    if spec is None:
+        cands = [(_clean(t), w) for t, w in raw if _clean(t)]
+        best = max(cands, key=lambda c: c[1]) if cands else None
+        if best is None:
+            return None, None
+        val = _parse_receipt_field(name, best[0])
+        return val, (round(float(best[1]), 3) if val not in (None, "") else None)
+    norm, valid, prefer = spec
+    cands = [(norm(t), w) for t, w in raw if norm(t)]
+    text, conf = _vote(cands, prefer_len=prefer, validator=valid)
+    if not text:
+        import pymupdf
+        wide = pymupdf.Rect(rect.x0 - 6, rect.y0 - 3, rect.x1 + 12, rect.y1 + 3)
+        extra = [(norm(t), w) for t, w in
+                 _rec_candidates(page, wide, zooms=(12, 16), pp=pp) if norm(t)]
+        if extra:
+            text, conf = _vote(extra, prefer_len=prefer, validator=valid)
+    val = _parse_receipt_field(name, text) if text else None
+    return val, (round(float(conf), 3) if (conf and val not in (None, "")) else None)
+
+
 def read_receipt_rects(page, region_pts, rects, pp=None,
                        anchors=None, seg=None, zoom: float = 2.0) -> tuple[dict, dict, dict]:
     """OCR each normalized rect (relative to one slip's ``region_pts`` in PDF
@@ -3432,24 +3558,26 @@ def read_receipt_rects(page, region_pts, rects, pp=None,
         # Region-selector: read the detected text row inside the box, not the
         # raw rectangle, so a loose box no longer feeds slip borders/neighbours
         # to the recognizer (falls back to the box when no text is detected).
-        rect = _rect_to_text_row(rect, seg, zoom)
-        cands = [(_clean(t), s) for t, s in
-                 _rec_candidates(page, rect, pp=pp) if _clean(t)]
-        best = max(cands, key=lambda c: c[1]) if cands else None
-        raw = best[0] if best else None
-        parsed = _parse_receipt_field(name, raw)
+        # The crop below keeps the full box so the stored image matches the
+        # template field position the trainer drew.
+        box_rect = rect
+        row_rect = _rect_to_text_row(box_rect, seg, zoom)
+        # High-accuracy read via the CR voting method (multi-pass candidates ->
+        # per-character weighted vote -> validator up-weight -> length
+        # escalation), replacing the former single-best pick.
+        parsed, conf = _refine_receipt_field(page, row_rect, name, pp=pp)
         values[name] = parsed
-        # Only record a confidence when parsing produced a real value: a typed
-        # field (e.g. a currency like Total/Bank Total) whose box OCR'd with high
-        # confidence but failed normalization is blank, so it must not carry a
-        # misleading high percentage in the records view.
-        if best is not None and parsed not in (None, ""):
-            confs[name] = round(float(best[1]), 3)
-        # Slice the crop from the pp-processed page (matching the popup) when a
-        # pp is set; otherwise render the raw box (the true scan).
-        crops[name] = (_slice_png(page_bgr, rect, _crop_zoom)
+        # Only record a confidence when parsing produced a real value so a typed
+        # field (e.g. a currency) that OCR'd but failed normalization carries no
+        # misleading percentage in the records view.
+        if conf is not None and parsed not in (None, ""):
+            confs[name] = conf
+        # Crop the full template box (what the trainer drew) so the stored image
+        # matches the template field position; slice from the pp-processed page
+        # when a pp is set, otherwise render the raw box (the true scan).
+        crops[name] = (_slice_png(page_bgr, box_rect, _crop_zoom)
                        if page_bgr is not None
-                       else _encode_rect_png(page, rect, pp=None, zoom=4.0))
+                       else _encode_rect_png(page, box_rect, pp=None, zoom=4.0))
     return values, crops, confs
 
 
