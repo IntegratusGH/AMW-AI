@@ -346,6 +346,9 @@
           <Component Id="cmp40e5771e4c51a24dae66cc64" Guid="*">
             <File Id="fil40e5771e4c51a24dae66cc64" Name="0036_upload_source_mtime.py" KeyPath="yes" Source="$(var.PayloadDir)\migrations\versions\0036_upload_source_mtime.py" />
           </Component>
+          <Component Id="cmpdde64572bdaf0b4c16d0068e" Guid="*">
+            <File Id="fildde64572bdaf0b4c16d0068e" Name="0037_cr_applied_template.py" KeyPath="yes" Source="$(var.PayloadDir)\migrations\versions\0037_cr_applied_template.py" />
+          </Component>
         </Directory>
       </Directory>
       <Directory Id="dirbcaba2af67421ef49a13b1c6" Name="ocr_models">
@@ -13166,6 +13169,7 @@
       <ComponentRef Id="cmp10e75ab76a27d60cf9adfb93" />
       <ComponentRef Id="cmpbe98eb7fec9b0f991444cd43" />
       <ComponentRef Id="cmp40e5771e4c51a24dae66cc64" />
+      <ComponentRef Id="cmpdde64572bdaf0b4c16d0068e" />
       <ComponentRef Id="cmp13091fc9878daffa6ef8fc2b" />
       <ComponentRef Id="cmpb0e40e7eb7f55704fe4f688c" />
       <ComponentRef Id="cmpcb58a1309c209bb0a5304a90" />
