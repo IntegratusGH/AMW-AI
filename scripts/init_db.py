@@ -184,6 +184,9 @@ def _admin_master_connection_string() -> str:
         parts.append(f"UID={os.getenv('DB_ADMIN_USER', 'sa')}")
         parts.append(f"PWD={os.getenv('DB_ADMIN_PASSWORD', os.getenv('DB_PASSWORD', ''))}")
     parts.extend(_encryption_parts(driver))
+    # Bounded login timeout so a misconfigured/unreachable admin identity fails
+    # fast instead of hanging the installer custom action indefinitely.
+    parts.append("Connection Timeout=5")
     return ";".join(parts) + ";"
 
 

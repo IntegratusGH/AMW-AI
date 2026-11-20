@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 INSTALL_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(INSTALL_DIR))
 
@@ -71,6 +73,18 @@ def ensure_env() -> None:
         )
     else:
         log.info(".env already present at %s (left unchanged)", env)
+
+
+def load_env() -> None:
+    """Load the installed (ProgramData) .env into the process environment before
+    any DB step so provisioning/connection flags (e.g. DB_PROVISION_LOGIN) and
+    credentials are honored.  ``create_app`` loads it too, but that import
+    happens after the login/DB-provisioning steps, so without this the DB steps
+    would run with unset vars (defaults).  Dev fallback does not override."""
+    load_dotenv(PD / ".env")
+    load_dotenv(INSTALL_DIR / ".env")
+    log.info("Environment loaded from %s (dev fallback: %s).",
+             PD / ".env", INSTALL_DIR / ".env")
 
 
 def check_odbc() -> None:
@@ -156,6 +170,7 @@ def main() -> None:
     log_banner()
     _step("ensure_pd_permissions", ensure_pd_permissions)
     _step("ensure_env", ensure_env)
+    _step("load_env", load_env)
     _step("check_odbc", check_odbc)
     _step("log_config", log_config)
     _step("ensure_login", ensure_login)
