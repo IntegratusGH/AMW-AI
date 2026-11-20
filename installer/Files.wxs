@@ -349,6 +349,12 @@
           <Component Id="cmpdde64572bdaf0b4c16d0068e" Guid="*">
             <File Id="fildde64572bdaf0b4c16d0068e" Name="0037_cr_applied_template.py" KeyPath="yes" Source="$(var.PayloadDir)\migrations\versions\0037_cr_applied_template.py" />
           </Component>
+          <Component Id="cmpcb3a2ebbd48de202de7a1798" Guid="*">
+            <File Id="filcb3a2ebbd48de202de7a1798" Name="0038_ocr_text_anchors.py" KeyPath="yes" Source="$(var.PayloadDir)\migrations\versions\0038_ocr_text_anchors.py" />
+          </Component>
+          <Component Id="cmpe313633dc6cab48d4ef8bbe3" Guid="*">
+            <File Id="file313633dc6cab48d4ef8bbe3" Name="0039_template_validation_box2.py" KeyPath="yes" Source="$(var.PayloadDir)\migrations\versions\0039_template_validation_box2.py" />
+          </Component>
         </Directory>
       </Directory>
       <Directory Id="dirbcaba2af67421ef49a13b1c6" Name="ocr_models">
@@ -13170,6 +13176,8 @@
       <ComponentRef Id="cmpbe98eb7fec9b0f991444cd43" />
       <ComponentRef Id="cmp40e5771e4c51a24dae66cc64" />
       <ComponentRef Id="cmpdde64572bdaf0b4c16d0068e" />
+      <ComponentRef Id="cmpcb3a2ebbd48de202de7a1798" />
+      <ComponentRef Id="cmpe313633dc6cab48d4ef8bbe3" />
       <ComponentRef Id="cmp13091fc9878daffa6ef8fc2b" />
       <ComponentRef Id="cmpb0e40e7eb7f55704fe4f688c" />
       <ComponentRef Id="cmpcb58a1309c209bb0a5304a90" />
