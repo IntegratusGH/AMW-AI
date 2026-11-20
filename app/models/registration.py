@@ -480,6 +480,12 @@ class OcrTemplate(db.Model):
     # extraction every slip is registered to the reference via these anchors so
     # the value boxes track its actual offset/scale.
     ocr_anchors = db.Column(db.Text, nullable=True)
+    # JSON: up to 3 text/label calibration anchors --
+    # [{"box":[x0,y0,x1,y1], "text":"EXPECTED"}].  Each marks a fixed printed
+    # label; at extraction the label is located by OCR within its box and the
+    # matched positions solve the same similarity transform as ``ocr_anchors``,
+    # used when no image-patch anchors are set.
+    ocr_text_anchors = db.Column(db.Text, nullable=True)
     # JSON: ordered list of this template's own field definitions --
     # [{"key","label","type","role","box":[x0,y0,x1,y1]|null,"pp":{...}|null}].
     # Supersedes the fixed per-kind field lists so each template carries its own
@@ -489,13 +495,18 @@ class OcrTemplate(db.Model):
     # Template picker: validation + fallback chain.  When ``validate_enabled``
     # is set, processing OCRs ``validate_box`` (JSON normalized [x0,y0,x1,y1])
     # on the page using this template's image settings and only uses the
-    # template if the read text contains ``validate_text``; otherwise it falls
-    # back to ``fail_template_id`` and repeats.  If the chain is exhausted with
-    # no match, processing stops with "No matched template found.".
+    # template if the read text contains ``validate_text``.  A second, optional
+    # box (``validate_box2``/``validate_text2``) may also be configured; when it
+    # is, BOTH boxes must match for the template to be used (logical AND).
+    # Otherwise it falls back to ``fail_template_id`` and repeats.  If the chain
+    # is exhausted with no match, processing stops with "No matched template
+    # found.".
     validate_enabled = db.Column(db.Boolean, nullable=False, default=False,
                                  server_default=db.text("0"))
     validate_box = db.Column(db.Text, nullable=True)
     validate_text = db.Column(db.String(200), nullable=True)
+    validate_box2 = db.Column(db.Text, nullable=True)
+    validate_text2 = db.Column(db.String(200), nullable=True)
     fail_template_id = db.Column(
         db.Integer, db.ForeignKey("ocr_templates.id"), nullable=True)
     created_by = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)

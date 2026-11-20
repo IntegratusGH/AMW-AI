@@ -699,6 +699,10 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             # service restarted) is recoverable as incomplete rather than being
             # mistaken for a finished one by the startup orphan recovery.
             up.processed = False
+            # Assert "processing" here too (not only in the caller) so the worker
+            # owns its own lifecycle state; this keeps the UI correct even if the
+            # row was demoted to "error" just before the worker picked it up.
+            up.status = STATUS_PROCESSING
             RecordModel.query.filter_by(upload_id=upload_id).delete()
             import shutil
             shutil.rmtree(
@@ -738,6 +742,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             upload_pp = None
             upload_rects = None
             upload_anchors = None
+            upload_text_anchors = None
             # Extraction is driven by the upload's assigned OCR template: image
             # settings for both kinds, plus value boxes for CR.  No template =>
             # default extraction.
@@ -790,6 +795,12 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         json.loads(tpl.ocr_anchors)) or None
                 except (ValueError, TypeError):
                     upload_anchors = None
+            if tpl and getattr(tpl, "ocr_text_anchors", None):
+                try:
+                    upload_text_anchors = ocr.clean_text_anchors(
+                        json.loads(tpl.ocr_text_anchors)) or None
+                except (ValueError, TypeError):
+                    upload_text_anchors = None
             # Receipts are a single-page roll of many slips, so page-granular
             # progress never moves during the (long) slip OCR and the UI looks
             # stuck.  Report per-slip progress instead; rc_slip_base carries
@@ -814,6 +825,7 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         rule_set=page_rules.get(i + 1, "oldcrbook"),
                         pp=upload_pp, rects=upload_rects,
                         anchors=upload_anchors,
+                        text_anchors=upload_text_anchors,
                         progress=(_rc_progress if kind == "rc" else None),
                         resolve=(rc_resolver if kind == "rc" else None))
                     if kind == "cr":
@@ -3400,10 +3412,12 @@ def cr_ocr_test(upload_id: int):
     anchors = _cr_anchor_patches(
         up, data.get("ref_slip") or data.get("page") or 1,
         data.get("anchors")) or None
+    text_anchors = ocr.clean_text_anchors(data.get("text_anchors")) or None
     doc, total = ocr.open_document(up.stored_path)
     try:
         idx = max(1, min(total, int(data.get("page") or 1))) - 1
-        fields = ocr.test_cr_page(doc[idx], pp=pp, rects=rects, anchors=anchors)
+        fields = ocr.test_cr_page(doc[idx], pp=pp, rects=rects, anchors=anchors,
+                                  text_anchors=text_anchors)
         _apply_test_masks("cr", ocr.clean_fields(data.get("fields"), "cr"),
                           fields, doc[idx], None, pp)
     finally:
@@ -3422,19 +3436,26 @@ def cr_validate_read(upload_id: int):
     up = db.session.get(CRBookUpload, upload_id) or abort(404)
     data = request.get_json(silent=True) or {}
     box = _parse_box(data.get("box"))
-    if not box:
+    box2 = _parse_box(data.get("box2"))
+    if not box and not box2:
         return jsonify({"ok": False, "error": "Draw the validate box first."}), 400
     pp = ocr.clean_pp(data.get("pp"))
     doc, total = ocr.open_document(up.stored_path)
     try:
         idx = max(1, min(total, int(data.get("page") or 1))) - 1
-        text, conf = ocr.read_rect(doc[idx], box, pp=pp or None)
+        text, conf = ocr.read_rect(doc[idx], box, pp=pp or None) if box \
+            else ("", 0.0)
+        text2, conf2 = ocr.read_rect(doc[idx], box2, pp=pp or None) if box2 \
+            else ("", 0.0)
     finally:
         doc.close()
     expected = (data.get("text") or "").strip()
+    expected2 = (data.get("text2") or "").strip()
     matched = bool(expected) and _validate_contains(expected, text)
+    matched2 = bool(expected2) and _validate_contains(expected2, text2)
     return jsonify({"ok": True, "text": text or "", "confidence": conf,
-                    "matched": matched})
+                    "matched": matched, "text2": text2 or "",
+                    "confidence2": conf2, "matched2": matched2})
 
 
 @main_bp.route("/operations/registration-updater/cr/<int:upload_id>/ocr-boxes",
@@ -3475,38 +3496,57 @@ def _tpl_json(t: "OcrTemplate") -> dict:
     except (ValueError, TypeError):
         anchors = []
     try:
-        vbox = json.loads(t.validate_box) if getattr(t, "validate_box", None) else None
-        if not (isinstance(vbox, (list, tuple)) and len(vbox) == 4):
-            vbox = None
+        text_anchors = (ocr.clean_text_anchors(json.loads(t.ocr_text_anchors))
+                        if getattr(t, "ocr_text_anchors", None) else [])
     except (ValueError, TypeError):
-        vbox = None
+        text_anchors = []
+    def _vbox(attr):
+        try:
+            raw = getattr(t, attr, None)
+            b = json.loads(raw) if raw else None
+            if isinstance(b, (list, tuple)) and len(b) == 4:
+                return [float(n) for n in b]
+        except (ValueError, TypeError):
+            pass
+        return None
     return {"id": t.id, "name": t.name, "kind": t.kind or "cr",
             "pp": pp, "rects": rects,
             "fields": ocr.template_field_defs(t),
             "anchors": [a["box"] for a in anchors],
+            "text_anchors": text_anchors,
             "validate_enabled": bool(getattr(t, "validate_enabled", False)),
-            "validate_box": [float(n) for n in vbox] if vbox else None,
+            "validate_box": _vbox("validate_box"),
             "validate_text": getattr(t, "validate_text", None) or "",
+            "validate_box2": _vbox("validate_box2"),
+            "validate_text2": getattr(t, "validate_text2", None) or "",
             "fail_template_id": getattr(t, "fail_template_id", None)}
 
 
-def _clean_validation(data: dict, self_id=None):
-    """Parse the Template-picker validation fields from a request payload into
-    ``(enabled, box|None, text|None, fail_template_id|None)``.  The box is a
-    validated normalized ``[x0,y0,x1,y1]``; a fail template equal to the
-    template itself is dropped to avoid a trivial self-cycle."""
-    enabled = bool(data.get("validate_enabled"))
-    box = data.get("validate_box")
-    cbox = None
+def _clean_box(box):
+    """Validate/clamp a normalized ``[x0,y0,x1,y1]`` box from a request payload
+    into a rounded box, or ``None`` when malformed/degenerate."""
     if isinstance(box, (list, tuple)) and len(box) == 4:
         try:
             xs = [max(0.0, min(1.0, float(n))) for n in box]
             if xs[2] > xs[0] and xs[3] > xs[1]:
-                cbox = [round(xs[0], 4), round(xs[1], 4),
+                return [round(xs[0], 4), round(xs[1], 4),
                         round(xs[2], 4), round(xs[3], 4)]
         except (TypeError, ValueError):
-            cbox = None
+            return None
+    return None
+
+
+def _clean_validation(data: dict, self_id=None):
+    """Parse the Template-picker validation fields from a request payload into
+    ``(enabled, box|None, text|None, box2|None, text2|None,
+    fail_template_id|None)``.  Each box is a validated normalized
+    ``[x0,y0,x1,y1]``; a fail template equal to the template itself is dropped
+    to avoid a trivial self-cycle."""
+    enabled = bool(data.get("validate_enabled"))
+    cbox = _clean_box(data.get("validate_box"))
     text = (data.get("validate_text") or "").strip() or None
+    cbox2 = _clean_box(data.get("validate_box2"))
+    text2 = (data.get("validate_text2") or "").strip() or None
     fid = data.get("fail_template_id")
     try:
         fid = int(fid) if fid not in (None, "", 0, "0") else None
@@ -3514,16 +3554,43 @@ def _clean_validation(data: dict, self_id=None):
         fid = None
     if self_id is not None and fid == self_id:
         fid = None
-    return enabled, cbox, text, fid
+    return enabled, cbox, text, cbox2, text2, fid
 
 
 def _apply_validation(tpl, data) -> None:
     """Write the parsed Template-picker validation fields onto ``tpl``."""
-    enabled, box, text, fid = _clean_validation(data, self_id=tpl.id)
+    enabled, box, text, box2, text2, fid = _clean_validation(
+        data, self_id=tpl.id)
     tpl.validate_enabled = enabled
     tpl.validate_box = json.dumps(box) if box else None
     tpl.validate_text = text
+    tpl.validate_box2 = json.dumps(box2) if box2 else None
+    tpl.validate_text2 = text2
     tpl.fail_template_id = fid
+
+
+def _template_validate_pairs(t) -> list:
+    """Return template ``t``'s configured validation ``(box, expected_text)``
+    pairs in order.  A pair is included only when both its box and its text are
+    set, so a template may validate on one box or on two (box + box2); when two
+    are configured BOTH must match (the caller ANDs them)."""
+    pairs = []
+    for raw_box, raw_text in ((getattr(t, "validate_box", None),
+                               getattr(t, "validate_text", None)),
+                              (getattr(t, "validate_box2", None),
+                               getattr(t, "validate_text2", None))):
+        box = None
+        if raw_box:
+            try:
+                b = json.loads(raw_box)
+                if isinstance(b, (list, tuple)) and len(b) == 4:
+                    box = [float(n) for n in b]
+            except (ValueError, TypeError):
+                box = None
+        expected = (raw_text or "").strip()
+        if box and expected:
+            pairs.append((box, expected))
+    return pairs
 
 
 def _resolve_effective_template(kind, doc, base_tpl):
@@ -3554,16 +3621,8 @@ def _resolve_effective_template(kind, doc, base_tpl):
         seen.add(t.id)
         if not getattr(t, "validate_enabled", False):
             return t
-        box = None
-        if t.validate_box:
-            try:
-                b = json.loads(t.validate_box)
-                if isinstance(b, (list, tuple)) and len(b) == 4:
-                    box = [float(n) for n in b]
-            except (ValueError, TypeError):
-                box = None
-        expected = (t.validate_text or "").strip()
-        if not box or not expected:
+        pairs = _template_validate_pairs(t)
+        if not pairs:
             return t  # validation enabled but unconfigured -> use as-is
         if kind == "rc" and region is None:
             return t  # no slip detected to validate against -> use as-is
@@ -3571,8 +3630,8 @@ def _resolve_effective_template(kind, doc, base_tpl):
             pp = ocr.clean_pp(json.loads(t.ocr_pp)) if t.ocr_pp else None
         except (ValueError, TypeError):
             pp = None
-        text = _read(box, pp)
-        if _validate_contains(expected, text):
+        if all(_validate_contains(expected, _read(box, pp))
+               for box, expected in pairs):
             return t
         nxt_id = getattr(t, "fail_template_id", None)
         t = db.session.get(OcrTemplate, nxt_id) if nxt_id else None
@@ -3635,13 +3694,11 @@ def _make_rc_slip_resolver(base_tpl, report=None):
         except (ValueError, TypeError):
             return None
 
-    def _box(t):
-        if not t.validate_box:
+    def _text_anchors(t):
+        if not getattr(t, "ocr_text_anchors", None):
             return None
         try:
-            b = json.loads(t.validate_box)
-            return ([float(n) for n in b]
-                    if isinstance(b, (list, tuple)) and len(b) == 4 else None)
+            return ocr.clean_text_anchors(json.loads(t.ocr_text_anchors)) or None
         except (ValueError, TypeError):
             return None
 
@@ -3653,20 +3710,21 @@ def _make_rc_slip_resolver(base_tpl, report=None):
         seen: set[int] = set()
         while t is not None and t.id not in seen:
             seen.add(t.id)
-            box = _box(t)
-            expected = (t.validate_text or "").strip()
-            if (not getattr(t, "validate_enabled", False)
-                    or not box or not expected):
+            pairs = _template_validate_pairs(t)
+            if not getattr(t, "validate_enabled", False) or not pairs:
                 if report:
                     report(f"Using {t.name} \u2014 {_slip(idx, total)}\u2026")
-                return _pp(t), _rects(t), _anchors(t), t.name
+                return _pp(t), _rects(t), _anchors(t), _text_anchors(t), t.name
             if report:
                 report(f"Validating {t.name} \u2014 {_slip(idx, total)}\u2026")
-            text, _ = ocr.read_slip_rect(page, region, box, pp=_pp(t) or None)
-            if _validate_contains(expected, text):
+            pp = _pp(t)
+            if all(_validate_contains(
+                       expected,
+                       ocr.read_slip_rect(page, region, box, pp=pp or None)[0])
+                   for box, expected in pairs):
                 if report:
                     report(f"Validated {t.name} \u2014 {_slip(idx, total)}")
-                return _pp(t), _rects(t), _anchors(t), t.name
+                return _pp(t), _rects(t), _anchors(t), _text_anchors(t), t.name
             nxt = getattr(t, "fail_template_id", None)
             t = db.session.get(OcrTemplate, nxt) if nxt else None
         raise ocr.NoMatchTemplate("No matching template")
@@ -3766,13 +3824,15 @@ def cr_ocr_templates():
                         "error": "A template with that name already exists."}), 400
     pp = ocr.clean_pp(data.get("pp"))
     rects = ocr.clean_rects(data.get("rects"), kind)
-    v_enabled, v_box, v_text, v_fail = _clean_validation(data)
+    v_enabled, v_box, v_text, v_box2, v_text2, v_fail = _clean_validation(data)
     t = OcrTemplate(name=name, kind=kind, created_by=current_user.id,
                     ocr_pp=json.dumps(pp) if pp else None,
                     ocr_rects=json.dumps(rects) if rects else None,
                     validate_enabled=v_enabled,
                     validate_box=json.dumps(v_box) if v_box else None,
-                    validate_text=v_text, fail_template_id=v_fail)
+                    validate_text=v_text,
+                    validate_box2=json.dumps(v_box2) if v_box2 else None,
+                    validate_text2=v_text2, fail_template_id=v_fail)
     db.session.add(t)
     db.session.commit()
     _persist_fields(t, data, kind)
@@ -3962,9 +4022,11 @@ def cr_ocr_settings(upload_id: int):
     rects = ocr.clean_rects(data.get("rects"))
     anchors = ocr.clean_anchors(_cr_anchor_patches(
         up, data.get("ref_slip") or 1, data.get("anchors")))
+    text_anchors = ocr.clean_text_anchors(data.get("text_anchors"))
     tpl.ocr_pp = json.dumps(pp) if pp else None
     tpl.ocr_rects = json.dumps(rects) if rects else None
     tpl.ocr_anchors = json.dumps(anchors) if anchors else None
+    tpl.ocr_text_anchors = json.dumps(text_anchors) if text_anchors else None
     _apply_validation(tpl, data)
     _persist_fields(tpl, data, "cr")
     up.template_id = tpl.id
@@ -4137,13 +4199,15 @@ def rc_ocr_test(upload_id: int):
     # will use.
     anchors = _rc_anchor_patches(
         up, data.get("ref_slip") or 1, data.get("anchors")) or None
+    text_anchors = ocr.clean_text_anchors(data.get("text_anchors")) or None
     doc, total = ocr.open_document(up.stored_path)
     try:
         if 0 <= idx < len(slips):
             s = slips[idx]
             page = doc[s["page"]]
             fields = ocr.test_receipt_slip(page, s["k"],
-                                           pp=pp, rects=rects, anchors=anchors)
+                                           pp=pp, rects=rects, anchors=anchors,
+                                           text_anchors=text_anchors)
             region = ocr._slip_region_pts(page, s["y0"], s["y1"], s["zoom"])
         else:
             page = doc[0]
@@ -4169,27 +4233,35 @@ def rc_validate_read(upload_id: int):
     up = db.session.get(ReceiptUpload, upload_id) or abort(404)
     data = request.get_json(silent=True) or {}
     box = _parse_box(data.get("box"))
-    if not box:
+    box2 = _parse_box(data.get("box2"))
+    if not box and not box2:
         return jsonify({"ok": False, "error": "Draw the validate box first."}), 400
     pp = ocr.clean_pp(data.get("pp"))
     slips = _rc_slip_index(up)
     idx = int(data.get("slip") or 1) - 1
+    text = text2 = None
+    conf = conf2 = 0.0
     doc, total = ocr.open_document(up.stored_path)
     try:
         if 0 <= idx < len(slips):
             s = slips[idx]
             region = ocr._slip_region_pts(
                 doc[s["page"]], s["y0"], s["y1"], s["zoom"])
-            text, conf = ocr.read_slip_rect(
-                doc[s["page"]], region, box, pp=pp or None)
-        else:
-            text, conf = None, 0.0
+            if box:
+                text, conf = ocr.read_slip_rect(
+                    doc[s["page"]], region, box, pp=pp or None)
+            if box2:
+                text2, conf2 = ocr.read_slip_rect(
+                    doc[s["page"]], region, box2, pp=pp or None)
     finally:
         doc.close()
     expected = (data.get("text") or "").strip()
+    expected2 = (data.get("text2") or "").strip()
     matched = bool(expected) and _validate_contains(expected, text)
+    matched2 = bool(expected2) and _validate_contains(expected2, text2)
     return jsonify({"ok": True, "text": text or "", "confidence": conf,
-                    "matched": matched})
+                    "matched": matched, "text2": text2 or "",
+                    "confidence2": conf2, "matched2": matched2})
 
 
 @main_bp.route("/operations/registration-updater/rc/<int:upload_id>/ocr-settings",
@@ -4213,9 +4285,11 @@ def rc_ocr_settings(upload_id: int):
     rects = ocr.clean_rects(data.get("rects"), "rc")
     anchors = ocr.clean_anchors(_rc_anchor_patches(
         up, data.get("ref_slip") or 1, data.get("anchors")))
+    text_anchors = ocr.clean_text_anchors(data.get("text_anchors"))
     tpl.ocr_pp = json.dumps(pp) if pp else None
     tpl.ocr_rects = json.dumps(rects) if rects else None
     tpl.ocr_anchors = json.dumps(anchors) if anchors else None
+    tpl.ocr_text_anchors = json.dumps(text_anchors) if text_anchors else None
     _apply_validation(tpl, data)
     _persist_fields(tpl, data, "rc")
     up.template_id = tpl.id

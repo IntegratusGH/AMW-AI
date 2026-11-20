@@ -592,23 +592,30 @@
               Enable validation</label>
             <div class="val-row">
               <button type="button" class="btn btn-sm" data-val-box-btn
-                      title="Draw the region to read for validation">Validate box</button>
+                      title="Draw the first region to read for validation">Validate box 1</button>
               <input type="text" class="val-text" data-val-text
                      placeholder="Validate text / pattern" maxlength="200">
             </div>
             <div class="val-row">
+              <button type="button" class="btn btn-sm" data-val-box2-btn
+                      title="Draw the second region to read for validation (optional; both must match)">Validate box 2</button>
+              <input type="text" class="val-text" data-val-text2
+                     placeholder="Validate text / pattern (optional)" maxlength="200">
+            </div>
+            <div class="val-row">
               <button type="button" class="btn btn-sm" data-val-read
-                      title="OCR the validate box on the current document">Read box (current doc)</button>
+                      title="OCR the validate box(es) on the current document">Read box (current doc)</button>
               <span class="val-captured muted" data-val-captured>—</span>
             </div>
             <label class="tmpl-slider">If fail, try template
               <select data-val-fail>
                 <option value="">(none)</option>
               </select></label>
-            <p class="muted ocr-tab-placeholder">When enabled, the validate box is
-              OCR'd (with this template's image settings) before cropping; the
-              template is used only if the read text matches the validate
-              text/pattern, otherwise the fail template is tried. If none match,
+            <p class="muted ocr-tab-placeholder">When enabled, each configured
+              validate box is OCR'd (with this template's image settings) before
+              cropping; the template is used only if the read text matches the
+              validate text/pattern. If a second box is configured, BOTH boxes
+              must match (logical AND). Otherwise the fail template is tried. If none match,
               that slip is flagged “Error” and skipped, and processing continues
               with the next slip. Plain text is matched
               loosely (tolerates minor OCR errors). Wildcards: <code>*</code> any
@@ -1047,6 +1054,11 @@
   var anchorToggleBtn = modal.querySelector('[data-ocr-anchor-toggle]');
   var anchorAddBtn = modal.querySelector('[data-ocr-anchor-add]');
   var anchorHint = modal.querySelector('[data-ocr-anchor-hint]');
+  var calibAddBtn = modal.querySelector('[data-calib-add]');
+  var calibList = modal.querySelector('[data-calib-list]');
+  var calibCount = modal.querySelector('[data-calib-count]');
+  var calibPanel = modal.querySelector('#ocr-tab-calibration');
+  var calibCopySelect = modal.querySelector('[data-calib-copy]');
   var tplSelect = modal.querySelector('[data-ocr-tpl]');
   var tplSaveBtn = modal.querySelector('[data-ocr-tpl-save]');
   var tplAddBtn = modal.querySelector('[data-ocr-tpl-add]');
@@ -1062,6 +1074,8 @@
   var valEnabled = modal.querySelector('[data-val-enabled]');
   var valBoxBtn = modal.querySelector('[data-val-box-btn]');
   var valText = modal.querySelector('[data-val-text]');
+  var valBox2Btn = modal.querySelector('[data-val-box2-btn]');
+  var valText2 = modal.querySelector('[data-val-text2]');
   var valFail = modal.querySelector('[data-val-fail]');
   var valReadBtn = modal.querySelector('[data-val-read]');
   var valCaptured = modal.querySelector('[data-val-captured]');
@@ -1098,7 +1112,8 @@
   var templates = [], selectedId = null, currentPage = 1, totalPages = 1;
   var slipPages = [];
   var anchors = [], anchorMode = false, anchorRefSlip = 1;
-  var validateBox = null, validateMode = false;
+  var textAnchors = [], calibMode = false;
+  var validateBox = null, validateBox2 = null, validateMode = false;
   var fieldDefs = [], fieldCatalog = [], lists = [];
   var uid = null, timer = null;
   function url(tpl) { return tpl.replace(/\/0\//, '/' + uid + '/'); }
@@ -1200,7 +1215,7 @@
     fetch(url(TEST_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), fields: collectFields(), page: currentPage, slip: currentPage, anchors: collectAnchors(), ref_slip: anchorRefSlip })
+      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), fields: collectFields(), page: currentPage, slip: currentPage, anchors: collectAnchors(), ref_slip: anchorRefSlip, text_anchors: collectTextAnchors() })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         testBtn.disabled = false;
@@ -1211,24 +1226,35 @@
   testBtn && testBtn.addEventListener('click', runTest);
   function readValidateBox() {
     if (uid === null || !VALREAD_TPL) return;
-    var box = collectValidateBox();
-    if (!box) { if (valCaptured) { valCaptured.textContent = 'Draw the validate box first.'; valCaptured.className = 'val-captured bad'; } return; }
+    var box = collectValidateBox(), box2 = collectValidateBox2();
+    if (!box && !box2) { if (valCaptured) { valCaptured.textContent = 'Draw the validate box first.'; valCaptured.className = 'val-captured bad'; } return; }
     valReadBtn.disabled = true;
     if (valCaptured) { valCaptured.textContent = 'Reading\u2026'; valCaptured.className = 'val-captured muted'; }
     fetch(url(VALREAD_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ pp: collectPp(), box: box, slip: currentPage, page: currentPage, text: valText ? valText.value : '' })
+      body: JSON.stringify({ pp: collectPp(), box: box, box2: box2, slip: currentPage, page: currentPage,
+        text: valText ? valText.value : '', text2: valText2 ? valText2.value : '' })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         valReadBtn.disabled = false;
         if (!d || !d.ok) { if (valCaptured) { valCaptured.textContent = (d && d.error) || 'Read failed.'; valCaptured.className = 'val-captured bad'; } return; }
-        var t = d.text ? d.text : '(empty)';
-        var has = !!(valText && valText.value.trim());
-        var mark = has ? (d.matched ? ' \u2713 match' : ' \u2717 no match') : '';
+        var parts = [], allOk = true, anyText = false;
+        if (box) {
+          var has1 = !!(valText && valText.value.trim());
+          var mark1 = has1 ? (d.matched ? ' \u2713' : ' \u2717') : '';
+          parts.push('Box 1: ' + (d.text ? d.text : '(empty)') + mark1);
+          if (has1) { anyText = true; if (!d.matched) allOk = false; }
+        }
+        if (box2) {
+          var has2 = !!(valText2 && valText2.value.trim());
+          var mark2 = has2 ? (d.matched2 ? ' \u2713' : ' \u2717') : '';
+          parts.push('Box 2: ' + (d.text2 ? d.text2 : '(empty)') + mark2);
+          if (has2) { anyText = true; if (!d.matched2) allOk = false; }
+        }
         if (valCaptured) {
-          valCaptured.textContent = 'Captured: ' + t + mark;
-          valCaptured.className = 'val-captured ' + (has ? (d.matched ? 'ok' : 'bad') : 'muted');
+          valCaptured.textContent = parts.join('  |  ');
+          valCaptured.className = 'val-captured ' + (anyText ? (allOk ? 'ok' : 'bad') : 'muted');
         }
       }).catch(function () { valReadBtn.disabled = false; if (valCaptured) { valCaptured.textContent = 'Network error.'; valCaptured.className = 'val-captured bad'; } });
   }
@@ -1542,25 +1568,82 @@
     if (anchorHint) anchorHint.style.display = anchorMode ? '' : 'none';
     if (hintEl) hintEl.style.display = anchorMode ? 'none' : '';
   }
-  function renderValidateBox() {
-    if (!validateBox) return;
+  function wireTextAnchor(box, i) {
+    wireDrag(box, function () { return textAnchors[i].box; },
+             function (r) { textAnchors[i].box = r; });
+  }
+  function renderCalibAnchors() {
+    textAnchors.forEach(function (a, i) {
+      var box = document.createElement('div');
+      box.className = 'ocr-rect ocr-anchor ocr-calib';
+      positionBox(box, a.box);
+      var lab = document.createElement('span');
+      lab.className = 'ocr-rect__label';
+      lab.textContent = a.text ? a.text : ('Label ' + (i + 1));
+      box.appendChild(lab);
+      var del = document.createElement('span');
+      del.className = 'ocr-anchor__del'; del.textContent = '\u00d7';
+      del.title = 'Remove anchor';
+      del.addEventListener('pointerdown', function (e) {
+        e.stopPropagation(); e.preventDefault();
+        textAnchors.splice(i, 1); renderRects(); renderCalibPanel();
+      });
+      box.appendChild(del);
+      addHandles(box);
+      overlay.appendChild(box);
+      wireTextAnchor(box, i);
+    });
+  }
+  function renderCalibPanel() {
+    if (!calibList) return;
+    calibList.innerHTML = '';
+    textAnchors.forEach(function (a, i) {
+      var row = document.createElement('div');
+      row.className = 'calib-item';
+      row.innerHTML = '<span class="calib-item__n">' + (i + 1) + '</span>' +
+        '<input type="text" class="calib-item__text" placeholder="Exact label text" value="' + esc(a.text || '') + '">' +
+        '<button type="button" class="act-btn calib-item__del" title="Remove">\u00d7</button>';
+      row.querySelector('.calib-item__text').addEventListener('input', function () {
+        textAnchors[i].text = this.value; if (calibMode) renderRects();
+      });
+      row.querySelector('.calib-item__del').addEventListener('click', function () {
+        textAnchors.splice(i, 1); renderCalibPanel(); if (calibMode) renderRects();
+      });
+      calibList.appendChild(row);
+    });
+    if (calibCount) calibCount.textContent = textAnchors.length + ' / 3';
+    if (calibAddBtn) calibAddBtn.disabled = textAnchors.length >= 3;
+  }
+  function renderOneValidateBox(label, get, set) {
+    if (!get()) return;
     var box = document.createElement('div');
     box.className = 'ocr-rect ocr-val';
-    positionBox(box, validateBox);
+    positionBox(box, get());
     var lab = document.createElement('span');
-    lab.className = 'ocr-rect__label'; lab.textContent = 'Validate';
+    lab.className = 'ocr-rect__label'; lab.textContent = label;
     box.appendChild(lab);
     addHandles(box);
     overlay.appendChild(box);
-    wireDrag(box, function () { return validateBox; },
-             function (r) { validateBox = r; });
+    wireDrag(box, get, set);
+  }
+  function renderValidateBox() {
+    renderOneValidateBox('Validate 1', function () { return validateBox; },
+                         function (r) { validateBox = r; });
+    renderOneValidateBox('Validate 2', function () { return validateBox2; },
+                         function (r) { validateBox2 = r; });
   }
   function updateValidateUi() {
     if (valBoxBtn) valBoxBtn.classList.toggle('is-on', validateMode);
+    if (valBox2Btn) valBox2Btn.classList.toggle('is-on', validateMode);
   }
   function renderRects() {
+    // Derive calibration mode from the panel's active state so the overlay
+    // always matches the visible tab, regardless of click-handler ordering.
+    calibMode = !!(calibPanel && calibPanel.classList.contains('is-active'));
+    if (calibMode) { anchorMode = false; validateMode = false; }
     overlay.innerHTML = '';
-    if (validateMode) renderValidateBox();
+    if (calibMode) renderCalibAnchors();
+    else if (validateMode) renderValidateBox();
     else if (anchorMode) renderAnchors();
     else renderFields();
     updateAnchorUi();
@@ -1571,10 +1654,26 @@
       return [round4(r[0]), round4(r[1]), round4(r[2]), round4(r[3])];
     });
   }
+  function collectTextAnchors() {
+    return textAnchors
+      .filter(function (a) { return a.box; })
+      .map(function (a) {
+        return { box: [round4(a.box[0]), round4(a.box[1]),
+                       round4(a.box[2]), round4(a.box[3])],
+                 text: (a.text || '').trim() };
+      })
+      .filter(function (a) { return a.text; });
+  }
   function collectValidateBox() {
     return validateBox
       ? [round4(validateBox[0]), round4(validateBox[1]),
          round4(validateBox[2]), round4(validateBox[3])]
+      : null;
+  }
+  function collectValidateBox2() {
+    return validateBox2
+      ? [round4(validateBox2[0]), round4(validateBox2[1]),
+         round4(validateBox2[2]), round4(validateBox2[3])]
       : null;
   }
   function populateFailSelect() {
@@ -1588,6 +1687,19 @@
     });
     valFail.innerHTML = opts.join('');
     valFail.value = cur;
+  }
+  function populateCalibCopy() {
+    if (!calibCopySelect) return;
+    var opts = ['<option value="">Select a template\u2026</option>'];
+    templates.forEach(function (t) {
+      if (selectedId && t.id === selectedId) return;
+      if (t.kind && kind && t.kind !== kind) return;
+      var n = (t.text_anchors && t.text_anchors.length) || 0;
+      opts.push('<option value="' + t.id + '">' + esc(t.name) +
+                (n ? ' (' + n + ')' : ' (none)') + '</option>');
+    });
+    calibCopySelect.innerHTML = opts.join('');
+    calibCopySelect.value = '';
   }
   function loadBoxes() {
     if (uid === null) return;
@@ -1619,10 +1731,18 @@
     anchorMode = !anchorMode; if (anchorMode) validateMode = false; renderRects();
   });
   valBoxBtn && valBoxBtn.addEventListener('click', function () {
-    validateMode = !validateMode;
+    validateMode = !(validateMode && !!validateBox);
     if (validateMode) {
       anchorMode = false;
       if (!validateBox) validateBox = clampRect([0.30, 0.06, 0.70, 0.14]);
+    }
+    renderRects();
+  });
+  valBox2Btn && valBox2Btn.addEventListener('click', function () {
+    validateMode = !(validateMode && !!validateBox2);
+    if (validateMode) {
+      anchorMode = false;
+      if (!validateBox2) validateBox2 = clampRect([0.30, 0.16, 0.70, 0.24]);
     }
     renderRects();
   });
@@ -1632,6 +1752,34 @@
     anchors.push(clampRect([0.35, y, 0.65, y + 0.06]));
     anchorRefSlip = currentPage; renderRects();
   });
+  calibAddBtn && calibAddBtn.addEventListener('click', function () {
+    if (textAnchors.length >= 3) return;
+    var y = 0.10 + textAnchors.length * 0.12;
+    textAnchors.push({ box: clampRect([0.35, y, 0.65, y + 0.06]), text: '' });
+    renderCalibPanel(); renderRects();
+  });
+  calibCopySelect && calibCopySelect.addEventListener('change', function () {
+    var id = this.value ? parseInt(this.value, 10) : null;
+    this.value = '';
+    var t = id ? findTpl(id) : null;
+    if (!t) return;
+    var src = t.text_anchors || [];
+    if (!src.length) {
+      setStatus('\u201c' + t.name + '\u201d has no calibration anchors to copy.');
+      return;
+    }
+    textAnchors = JSON.parse(JSON.stringify(src));
+    renderCalibPanel(); renderRects();
+    setStatus('Copied ' + textAnchors.length + ' calibration anchor(s) from \u201c' +
+              t.name + '\u201d. Save to keep.');
+  });
+  // Repaint the overlay whenever the Calibration tab is shown/hidden.  Driven by
+  // the panel's is-active class (toggled by the shared tabs handler) so it works
+  // regardless of click-handler ordering.
+  if (calibPanel && window.MutationObserver) {
+    new MutationObserver(function () { renderRects(); })
+      .observe(calibPanel, { attributes: true, attributeFilter: ['class'] });
+  }
   function tplUpdUrl(id) { return TPLUPD_TPL.replace(/\/0$/, '/' + id); }
   function tplIndex(id) { for (var i = 0; i < templates.length; i++) { if (templates[i].id === id) return i; } return -1; }
   function findTpl(id) { var i = tplIndex(id); return i > -1 ? templates[i] : null; }
@@ -1652,6 +1800,7 @@
     tplSelect.innerHTML = opts.join('');
     tplSelect.value = selectedId ? String(selectedId) : '';
     populateFailSelect();
+    populateCalibCopy();
   }
   function loadTemplateIntoEditor(t) {
     var pp = (t && t.pp) || {};
@@ -1667,11 +1816,18 @@
     anchors = (t && t.anchors)
       ? JSON.parse(JSON.stringify(t.anchors)) : [];
     anchorRefSlip = 1;
+    textAnchors = (t && t.text_anchors)
+      ? JSON.parse(JSON.stringify(t.text_anchors)) : [];
+    calibMode = false;
+    renderCalibPanel();
     validateBox = (t && t.validate_box) ? t.validate_box.slice() : null;
+    validateBox2 = (t && t.validate_box2) ? t.validate_box2.slice() : null;
     validateMode = false;
     if (valEnabled) valEnabled.checked = !!(t && t.validate_enabled);
     if (valText) valText.value = (t && t.validate_text) || '';
+    if (valText2) valText2.value = (t && t.validate_text2) || '';
     populateFailSelect();
+    populateCalibCopy();
     if (valFail) valFail.value = (t && t.fail_template_id)
       ? String(t.fail_template_id) : '';
     renderRects();
@@ -1697,7 +1853,8 @@
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
       body: JSON.stringify({ pp: collectPp(), rects: collectRects(), fields: collectFields(),
         validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
-        validate_text: valText ? valText.value : '', fail_template_id: valFail ? valFail.value : '' })
+        validate_text: valText ? valText.value : '', validate_box2: collectValidateBox2(),
+        validate_text2: valText2 ? valText2.value : '', fail_template_id: valFail ? valFail.value : '' })
     }).then(function (r) { return r.json(); }).then(function (d) {
       tplSaveBtn.disabled = false;
       if (!d || !d.ok) { setStatus((d && d.error) || 'Save failed.'); return; }
@@ -1719,7 +1876,8 @@
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
       body: JSON.stringify({ name: name, kind: kind, pp: collectPp(), rects: collectRects(), fields: collectFields(),
         validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
-        validate_text: valText ? valText.value : '', fail_template_id: valFail ? valFail.value : '' })
+        validate_text: valText ? valText.value : '', validate_box2: collectValidateBox2(),
+        validate_text2: valText2 ? valText2.value : '', fail_template_id: valFail ? valFail.value : '' })
     }).then(function (r) { return r.json(); }).then(function (d) {
       tplCreateBtn.disabled = false;
       if (!d || !d.ok) { setStatus((d && d.error) || 'Create failed.'); return; }
@@ -1760,11 +1918,14 @@
     if (tplNewWrap) tplNewWrap.hidden = true;
     setZoom(1); overlay.innerHTML = ''; rects = {}; slipPages = [];
     anchors = []; anchorMode = false; anchorRefSlip = 1;
-    validateBox = null; validateMode = false;
+    textAnchors = []; calibMode = false;
+    if (calibList) calibList.innerHTML = '';
+    validateBox = null; validateBox2 = null; validateMode = false;
     fieldDefs = []; fieldCatalog = []; lists = [];
     if (fldBody) fldBody.innerHTML = '';
     if (valEnabled) valEnabled.checked = false;
     if (valText) valText.value = '';
+    if (valText2) valText2.value = '';
     if (valFail) valFail.value = '';
     setControls({});
     modal.hidden = false;
@@ -1812,9 +1973,10 @@
     fetch(url(SAVE_TPL), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
-      body: JSON.stringify({ template_id: selectedId, pp: collectPp(), rects: collectRects(), fields: collectFields(), reprocess: !!(reproc && reproc.checked), anchors: collectAnchors(), ref_slip: anchorRefSlip,
+      body: JSON.stringify({ template_id: selectedId, pp: collectPp(), rects: collectRects(), fields: collectFields(), reprocess: !!(reproc && reproc.checked), anchors: collectAnchors(), ref_slip: anchorRefSlip, text_anchors: collectTextAnchors(),
         validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
-        validate_text: valText ? valText.value : '', fail_template_id: valFail ? valFail.value : '' })
+        validate_text: valText ? valText.value : '', validate_box2: collectValidateBox2(),
+        validate_text2: valText2 ? valText2.value : '', fail_template_id: valFail ? valFail.value : '' })
     }).then(function (r) { return r.json(); })
       .then(function (d) {
         saveBtn.disabled = false;

@@ -1657,16 +1657,21 @@ def _pad_crop_to_canvas(png_bytes, target_w: int = _CROP_CANVAS_W,
 
 def _parse_cr_page(lines: list[dict], page=None, full_zoom: float = 3.0,
                    rule_set: str = "oldcrbook", rects: dict | None = None,
-                   anchors=None) -> dict:
+                   anchors=None, text_anchors=None) -> dict:
     rec: dict = {}
     # Anchor calibration (CR is page-granular, so the frame is the full page):
-    # register this page to the reference via the anchor patches and transform
-    # every value box through the resulting similarity transform before reading,
-    # so boxes track the page's actual offset/scale/rotation.
-    if rects and anchors and page is not None:
+    # register this page to the reference via the anchor patches (or text
+    # labels) and transform every value box through the resulting similarity
+    # transform before reading, so boxes track the page's actual offset/scale/
+    # rotation.  Image-patch anchors take precedence; text anchors are the
+    # fallback when no patch anchors are set.
+    if rects and page is not None and (anchors or text_anchors):
         _cz = _CALIB_ZOOM
         _W, _H = page.rect.width, page.rect.height
-        _M = calibrate_slip_affine(page, (0.0, 0.0, _W, _H), anchors)
+        _M = (calibrate_slip_affine(page, (0.0, 0.0, _W, _H), anchors)
+              if anchors else None)
+        if _M is None and text_anchors:
+            _M = calibrate_text_affine(page, (0.0, 0.0, _W, _H), text_anchors)
         if _M is not None:
             rects = {k: _apply_calib_norm(b, _M, _W * _cz, _H * _cz)
                      for k, b in rects.items()}
@@ -2015,7 +2020,8 @@ def open_document(path: str):
 
 def extract_cr_page(page, zoom: float = 3.0,
                     rule_set: str = "oldcrbook", pp=None,
-                    rects: dict | None = None, anchors=None) -> dict | None:
+                    rects: dict | None = None, anchors=None,
+                    text_anchors=None) -> dict | None:
     """OCR + parse a single CR-book page (one vehicle).  None if page is blank.
     ``rule_set`` selects the per-format extractor (see CR_RULE_SETS).  ``pp``
     is the upload-level image adjustment applied to the whole page and every
@@ -2030,7 +2036,8 @@ def extract_cr_page(page, zoom: float = 3.0,
         if not lines:
             return None
         return _parse_cr_page(lines, page=page, full_zoom=zoom,
-                              rule_set=rule_set, rects=rects, anchors=anchors)
+                              rule_set=rule_set, rects=rects, anchors=anchors,
+                              text_anchors=text_anchors)
     finally:
         _pp_ctx.pp = None
 
@@ -2130,7 +2137,7 @@ def detect_cr_field_boxes(page, pp=None, zoom: float = 3.0,
 
 def test_cr_page(page, pp=None, zoom: float = 3.0,
                  rule_set: str = "oldcrbook", rects: dict | None = None,
-                 anchors=None) -> list[dict]:
+                 anchors=None, text_anchors=None) -> list[dict]:
     """OCR one CR-book page with ``pp`` applied and return the display fields
     (see _CR_TEST_FIELDS) as ``{key,label,value,confidence}`` for the upload
     OCR-settings "Test OCR" button.  When ``rects`` is given each value is read
@@ -2141,7 +2148,8 @@ def test_cr_page(page, pp=None, zoom: float = 3.0,
         lines = _ocr(_render_page_png(page, zoom))
         rec = (_parse_cr_page(lines, page=page, full_zoom=zoom,
                               rule_set=rule_set, rects=rects,
-                              anchors=anchors) if lines else {})
+                              anchors=anchors,
+                              text_anchors=text_anchors) if lines else {})
     finally:
         _pp_ctx.pp = None
     out: list[dict] = []
@@ -2493,7 +2501,7 @@ def _real_segments(lines: list[dict]) -> list[list[dict]]:
 
 def _process_receipt_segment(page, seg: list[dict], zoom: float,
                              rects=None, pp=None, anchors=None,
-                             ybounds=None) -> dict:
+                             text_anchors=None, ybounds=None) -> dict:
     """Parse one receipt segment into a record.
 
     When ``rects`` is given (an assigned template's boxes), extraction is
@@ -2511,7 +2519,9 @@ def _process_receipt_segment(page, seg: list[dict], zoom: float,
     if rects:
         region = _slip_region_pts(page, y0_px, y1_px, zoom)
         vals, crops, confs = read_receipt_rects(page, region, rects, pp=pp,
-                                                anchors=anchors, seg=seg, zoom=zoom)
+                                                anchors=anchors,
+                                                text_anchors=text_anchors,
+                                                seg=seg, zoom=zoom)
         # Populate boxed fields from their box; clear every other extractable
         # field so nothing outside the template leaks in from label anchoring.
         for f in _RC_BOX_FIELDS:
@@ -2571,8 +2581,8 @@ def _receipt_error_segment(page, seg: list[dict], zoom: float,
 
 
 def extract_receipt_page(page, zoom: float = 2.0, pp=None,
-                         rects=None, anchors=None, progress=None,
-                         resolve=None) -> list[dict]:
+                         rects=None, anchors=None, text_anchors=None,
+                         progress=None, resolve=None) -> list[dict]:
     """OCR + parse one receipts page into its deposit-slip records.  Slip
     detection and label anchoring run on the RAW page so segmentation matches
     the OCR-settings popup (segment_document) and any drawn boxes align; ``pp``
@@ -2599,8 +2609,8 @@ def extract_receipt_page(page, zoom: float = 2.0, pp=None,
         if resolve is not None:
             region = _slip_region_pts(page, yb[0], yb[1], zoom)
             try:
-                pp_i, rects_i, anchors_i, applied_name = resolve(
-                    page, region, idx, n)
+                pp_i, rects_i, anchors_i, text_anchors_i, applied_name = \
+                    resolve(page, region, idx, n)
             except NoMatchTemplate as exc:
                 # No template in the picker chain matched this slip: record the
                 # error and move on so one unmatched slip never aborts the whole
@@ -2608,9 +2618,11 @@ def extract_receipt_page(page, zoom: float = 2.0, pp=None,
                 out.append(_receipt_error_segment(page, seg, zoom, yb, str(exc)))
                 continue
         else:
-            pp_i, rects_i, anchors_i = pp, rects, anchors
+            pp_i, rects_i, anchors_i, text_anchors_i = (
+                pp, rects, anchors, text_anchors)
         rec = _process_receipt_segment(page, seg, zoom, rects=rects_i,
-                                       pp=pp_i, anchors=anchors_i, ybounds=yb)
+                                       pp=pp_i, anchors=anchors_i,
+                                       text_anchors=text_anchors_i, ybounds=yb)
         rec["applied_template"] = applied_name
         out.append(rec)
     return out
@@ -3038,8 +3050,8 @@ def apply_field_mask(mask, value, text, list_lookup=None):
 
 
 def extract_page(kind: str, page, *, rule_set: str = "oldcrbook",
-                 pp=None, rects=None, anchors=None, progress=None,
-                 resolve=None) -> list[dict]:
+                 pp=None, rects=None, anchors=None, text_anchors=None,
+                 progress=None, resolve=None) -> list[dict]:
     """Unified per-page extractor dispatch (region strategy): returns the list
     of record dicts a page yields for either doc kind -- CR is page-granular
     (0/1 record per page), RC is segment-granular (one per detected slip).
@@ -3049,9 +3061,10 @@ def extract_page(kind: str, page, *, rule_set: str = "oldcrbook",
     Template picker chain."""
     if kind == "rc":
         return extract_receipt_page(page, pp=pp, rects=rects, anchors=anchors,
+                                    text_anchors=text_anchors,
                                     progress=progress, resolve=resolve)
     rec = extract_cr_page(page, rule_set=rule_set, pp=pp, rects=rects,
-                          anchors=anchors)
+                          anchors=anchors, text_anchors=text_anchors)
     return [rec] if rec else []
 
 
@@ -3302,6 +3315,35 @@ def clean_anchors(anchors) -> list[dict]:
     return out
 
 
+def clean_text_anchors(anchors) -> list[dict]:
+    """Validate a template's text anchors: a list (max 3) of
+    {box:[x0,y0,x1,y1], text:str}.  Boxes are clamped to [0,1]; entries with no
+    text or a too-small box are dropped."""
+    out: list[dict] = []
+    if not isinstance(anchors, list):
+        return out
+    for a in anchors:
+        if not isinstance(a, dict):
+            continue
+        try:
+            x0, y0, x1, y1 = (float(v) for v in a.get("box"))
+        except (TypeError, ValueError):
+            continue
+        text = (a.get("text") or "").strip()
+        if not text:
+            continue
+        x0, x1 = sorted((max(0.0, min(1.0, x0)), max(0.0, min(1.0, x1))))
+        y0, y1 = sorted((max(0.0, min(1.0, y0)), max(0.0, min(1.0, y1))))
+        if x1 - x0 < 0.005 or y1 - y0 < 0.005:
+            continue
+        out.append({"box": [round(x0, 4), round(y0, 4),
+                            round(x1, 4), round(y1, 4)],
+                    "text": text[:200]})
+        if len(out) >= 3:
+            break
+    return out
+
+
 def build_anchor_patches(page, region_pts, anchor_boxes,
                          zoom: float = _CALIB_ZOOM) -> list[dict]:
     """Crop patches for a list of normalized anchor boxes from a reference slip
@@ -3366,7 +3408,7 @@ def calibrate_slip_affine(page, region_pts, anchors,
         return None
     M, _ = cv2.estimateAffinePartial2D(
         np.float32(src), np.float32(dst), method=cv2.RANSAC)
-    return M
+    return M if _calib_transform_sane(M) else None
 
 
 def _apply_calib_norm(box, M, rw_px: float, rh_px: float):
@@ -3381,6 +3423,107 @@ def _apply_calib_norm(box, M, rw_px: float, rh_px: float):
     nx0, nx1 = sorted((float(tp[0, 0]) / rw_px, float(tp[1, 0]) / rw_px))
     ny0, ny1 = sorted((float(tp[0, 1]) / rh_px, float(tp[1, 1]) / rh_px))
     return [nx0, ny0, nx1, ny1]
+
+
+_TEXT_ANCHOR_MIN_RATIO = 0.6   # min fuzzy match to accept a located label
+# Sanity bounds on a solved calibration transform: a scan drifts/rotates only
+# slightly, so a large rotation or scale means the anchors were mis-located
+# (e.g. two near-identical labels cross-matched).  Such a transform is rejected
+# so the value boxes are read as-drawn instead of being shifted to garbage.
+_CALIB_MAX_ROT_DEG = 8.0
+_CALIB_MIN_SCALE = 0.85
+_CALIB_MAX_SCALE = 1.18
+
+
+def _calib_transform_sane(M) -> bool:
+    """True when a solved 2x3 similarity transform is within plausible drift
+    (small rotation + near-unit scale)."""
+    import math
+    if M is None:
+        return False
+    sc = math.hypot(float(M[0, 0]), float(M[1, 0]))
+    rot = abs(math.degrees(math.atan2(float(M[1, 0]), float(M[0, 0]))))
+    rot = min(rot, 360.0 - rot)
+    return (_CALIB_MIN_SCALE <= sc <= _CALIB_MAX_SCALE
+            and rot <= _CALIB_MAX_ROT_DEG)
+
+
+def _ocr_clip(page, cx0, cy0, cx1, cy1, zoom):
+    """Render one page sub-rectangle (PDF points) at ``zoom`` and OCR it; the
+    returned lines are in the clip's local pixel coords."""
+    import cv2
+    import numpy as np
+    import pymupdf
+    cx0, cy0 = max(cx0, 0.0), max(cy0, 0.0)
+    cx1, cy1 = min(cx1, page.rect.width), min(cy1, page.rect.height)
+    if cx1 <= cx0 or cy1 <= cy0:
+        return []
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom),
+                          clip=pymupdf.Rect(cx0, cy0, cx1, cy1))
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+        pix.height, pix.width, pix.n)
+    if pix.n == 4:
+        bgr = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+    elif pix.n == 1:
+        bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    else:
+        bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    ok, buf = cv2.imencode(".png", bgr)
+    if not ok:
+        return []
+    return _ocr(buf.tobytes())
+
+
+def calibrate_text_affine(page, region_pts, text_anchors,
+                          zoom: float = _CALIB_ZOOM):
+    """Locate each text anchor's expected label by OCR within its (padded) box
+    and solve a similarity transform (2x3) mapping reference-frame region pixels
+    -> this page/slip's region pixels (at ``zoom``).  Text counterpart of
+    ``calibrate_slip_affine``; returns None when fewer than 2 labels match.
+
+    Only each anchor's small padded search box is rendered/OCR'd -- not the whole
+    slip region -- so per-slip calibration cost stays low on large batches."""
+    import cv2
+    import numpy as np
+    tas = [a for a in (text_anchors or []) if (a.get("text") or "").strip()]
+    if len(tas) < 2:
+        return None
+    rx0, ry0, rx1, ry1 = region_pts
+    rw, rh = rx1 - rx0, ry1 - ry0
+    W, H = rw * zoom, rh * zoom
+    pad = _ANCHOR_SEARCH_PAD
+    src, dst = [], []
+    for a in tas:
+        x0, y0, x1, y1 = a["box"]
+        sx0 = rx0 + max(0.0, x0 - pad) * rw
+        sy0 = ry0 + max(0.0, y0 - pad) * rh
+        sx1 = rx0 + min(1.0, x1 + pad) * rw
+        sy1 = ry0 + min(1.0, y1 + pad) * rh
+        lines = _ocr_clip(page, sx0, sy0, sx1, sy1, zoom)
+        if not lines:
+            continue
+        want = _norm(a["text"])
+        best, best_sc = None, 0.0
+        for ln in lines:
+            got = _norm(ln["text"])
+            if not got:
+                continue
+            sc = (1.0 if want and (want == got or want in got or got in want)
+                  else _mask_ratio(want, got))
+            if sc > best_sc:
+                best, best_sc = ln, sc
+        if best is None or best_sc < _TEXT_ANCHOR_MIN_RATIO:
+            continue
+        # Match center (clip-local px) -> PDF points -> region-local px at zoom.
+        mpx = max(sx0, 0.0) + best["cx"] / zoom
+        mpy = max(sy0, 0.0) + best["cy"] / zoom
+        dst.append([(mpx - rx0) * zoom, (mpy - ry0) * zoom])
+        src.append([(x0 + x1) / 2.0 * W, (y0 + y1) / 2.0 * H])
+    if len(src) < 2:
+        return None
+    M, _ = cv2.estimateAffinePartial2D(
+        np.float32(src), np.float32(dst), method=cv2.RANSAC)
+    return M if _calib_transform_sane(M) else None
 
 
 def _rect_to_text_row(rect, seg, zoom: float):
@@ -3514,7 +3657,8 @@ def _refine_receipt_field(page, rect, name, pp=None):
 
 
 def read_receipt_rects(page, region_pts, rects, pp=None,
-                       anchors=None, seg=None, zoom: float = 2.0) -> tuple[dict, dict, dict]:
+                       anchors=None, text_anchors=None, seg=None,
+                       zoom: float = 2.0) -> tuple[dict, dict, dict]:
     """OCR each normalized rect (relative to one slip's ``region_pts`` in PDF
     points) and normalize per receipt field.  When ``anchors`` are given, a
     per-slip similarity transform (see calibrate_slip_affine) is applied to each
@@ -3537,6 +3681,8 @@ def read_receipt_rects(page, region_pts, rects, pp=None,
     _crop_zoom = _descreen_zoom(page, 4.0) if (pp and pp.get("fft")) else 4.0
     page_bgr = _page_bgr(page, pp, _crop_zoom) if pp else None
     M = calibrate_slip_affine(page, region_pts, anchors) if anchors else None
+    if M is None and text_anchors:
+        M = calibrate_text_affine(page, region_pts, text_anchors)
     cz = _CALIB_ZOOM
     for name, box in (rects or {}).items():
         try:
@@ -3615,7 +3761,7 @@ def read_slip_rect(page, region_pts, box, pp=None) -> tuple[str | None, float]:
 
 
 def test_receipt_slip(page, k: int, pp=None, zoom: float = 2.0,
-                      rects=None, anchors=None) -> list[dict]:
+                      rects=None, anchors=None, text_anchors=None) -> list[dict]:
     """Return the ``k``-th separated slip's fields (plus the page's slip count)
     for "Test OCR".  Segmentation runs on the RAW page so the tested slip's
     bounds match the popup's cached segmentation (segment_document, pp=None) and
@@ -3628,7 +3774,8 @@ def test_receipt_slip(page, k: int, pp=None, zoom: float = 2.0,
     fields = [{"key": "_count", "label": "Slips on page",
                "value": str(len(segs)), "confidence": None}]
     rec = (_process_receipt_segment(page, segs[k], zoom, rects=rects, pp=pp,
-                                    anchors=anchors, ybounds=bounds[k])
+                                    anchors=anchors, text_anchors=text_anchors,
+                                    ybounds=bounds[k])
            if 0 <= k < len(segs) else {})
     for key, label in _RC_TEST_FIELDS:
         v = rec.get(key)
