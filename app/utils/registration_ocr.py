@@ -2706,7 +2706,8 @@ def default_field_defs(kind: str) -> list[dict]:
 
 
 # Apply-mask rule identifiers stored on each field def.
-_MASK_TYPES = {"none", "pattern", "partial50", "partial75", "charcount"}
+_MASK_TYPES = {"none", "pattern", "partial50", "partial75", "charcount",
+               "numeric", "numeric_decimal", "exact"}
 
 
 def clean_fields(fields, kind: str = "cr") -> list[dict]:
@@ -3001,11 +3002,27 @@ def apply_field_mask(mask, value, text, list_lookup=None):
                      else keep raw + not ok.
       charcount   -> Value is a number N; trim an over-length read to its first
                      N chars (ok), keep an exact-length read (ok), and flag a
-                     too-short read (not ok - characters are never invented)."""
+                     too-short read (not ok - characters are never invented).
+      numeric     -> keep only the digits of the read; ok when any digit
+                     remains, else keep raw + not ok.
+      numeric_decimal-> keep only digits and the decimal point of the read; ok
+                     when at least one digit remains, else keep raw + not ok.
+      exact       -> snap to a Value entry only on a 100% (exact) match, else
+                     keep raw + not ok."""
     mask = (mask or "none").strip()
     text = "" if text is None else str(text).strip()
     if mask in ("", "none"):
         return (text or None), True
+    if mask == "numeric":
+        digits = re.sub(r"\D", "", text)
+        if digits:
+            return digits, True
+        return (text or None), False
+    if mask == "numeric_decimal":
+        kept = re.sub(r"[^0-9.]", "", text)
+        if re.search(r"\d", kept):
+            return kept, True
+        return (text or None), False
     if mask == "charcount":
         entries = _mask_entries(value, list_lookup)
         cand = entries[0] if entries else (value or "")
@@ -3036,8 +3053,8 @@ def apply_field_mask(mask, value, text, list_lookup=None):
             if sub is not None:
                 return sub, True
         return (text or None), False
-    if mask in ("partial50", "partial75"):
-        thr = 0.5 if mask == "partial50" else 0.75
+    if mask in ("partial50", "partial75", "exact"):
+        thr = {"partial50": 0.5, "partial75": 0.75, "exact": 1.0}[mask]
         best, score = None, 0.0
         for e in entries:
             r = _mask_ratio(text, e)

@@ -35,12 +35,16 @@ class AMWAIService(win32serviceutil.ServiceFramework):
         super().__init__(args)
         self.hWaitStop = win32event.CreateEvent(None, 0, 0, None)
         self.server = None
+        self.running = False
 
     def SvcStop(self):
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-        if self.server is not None:
-            # Ask the Waitress asyncore loop to shut down.
-            self.server.close()
+        # Signal the asyncore loop (running in the SvcDoRun thread) to exit; it
+        # performs the socket/thread teardown itself, so this (SCM) thread never
+        # touches the shared socket map.  Closing only the listening socket here
+        # would leave the loop spinning on open keep-alive connections and hang
+        # the service in STOP_PENDING.
+        self.running = False
         win32event.SetEvent(self.hWaitStop)
 
     def SvcDoRun(self):
@@ -69,7 +73,29 @@ class AMWAIService(win32serviceutil.ServiceFramework):
             self.server = create_server(
                 app, host=Config.HOST, port=Config.PORT, threads=8
             )
-            self.server.run()
+            # A single host/port yields a BaseWSGIServer (socket map in _map);
+            # multiple listen sockets yield a MultiSocketServer (map in .map).
+            loop_map = getattr(self.server, "_map", None)
+            if loop_map is None:
+                loop_map = self.server.map
+            self.running = True
+            self.ReportServiceStatus(win32service.SERVICE_RUNNING)
+            # Run the asyncore loop in short slices so a stop request is noticed
+            # promptly and the loop exits even while client keep-alive
+            # connections are still open (plain server.close() would leave those
+            # channels in the map and the loop would never return).
+            while self.running and loop_map:
+                self.server.asyncore.loop(
+                    timeout=1, count=1, map=loop_map,
+                    use_poll=self.server.adj.asyncore_use_poll,
+                )
+            # Graceful teardown: stop the worker threads, then close the
+            # listening socket, the trigger and every open client channel so the
+            # process can exit cleanly.
+            try:
+                self.server.task_dispatcher.shutdown()
+            finally:
+                self.server.asyncore.close_all(loop_map)
         except Exception as exc:  # pragma: no cover - background service
             # Surface startup/runtime failures to a file and the Event Viewer
             # (the file always works even before the event source exists).

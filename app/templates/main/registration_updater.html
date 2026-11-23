@@ -435,6 +435,7 @@
      data-rc-test-tpl="{{ url_for('main.rc_ocr_test', upload_id=0) }}"
      data-rc-init-tpl="{{ url_for('main.rc_ocr_init', upload_id=0) }}"
      data-rc-valread-tpl="{{ url_for('main.rc_validate_read', upload_id=0) }}"
+     data-rc-tpltest-tpl="{{ url_for('main.rc_template_test', upload_id=0) }}"
      data-lists-tpl="{{ url_for('main.ocr_lists') }}"
      data-listdel-tpl="{{ url_for('main.ocr_list_delete', lid=0) }}"
      data-fields-tpl="{{ url_for('main.ocr_fields') }}"
@@ -607,6 +608,13 @@
                       title="OCR the validate box(es) on the current document">Read box (current doc)</button>
               <span class="val-captured muted" data-val-captured>—</span>
             </div>
+            <div class="val-row" data-tpltest-row hidden>
+              <button type="button" class="btn btn-sm" data-tpltest-btn
+                      title="Run the currently loaded slip through the template chain from the start and list which templates match">Test template (current slip)</button>
+              <span class="val-captured muted" data-tpltest-status>—</span>
+            </div>
+            <div class="tpltest-results" data-tpltest-results hidden
+                 style="max-height:220px;overflow:auto;margin-top:8px"></div>
             <label class="tmpl-slider">If fail, try template
               <select data-val-fail>
                 <option value="">(none)</option>
@@ -1039,13 +1047,15 @@
   var URLS = {
     cr: { preview: ga('data-preview-tpl'), save: ga('data-save-tpl'),
           test: ga('data-test-tpl'), boxes: ga('data-boxes-tpl'),
-          init: ga('data-init-tpl'), valread: ga('data-valread-tpl') },
+          init: ga('data-init-tpl'), valread: ga('data-valread-tpl'),
+          tpltest: null },
     rc: { preview: ga('data-rc-preview-tpl'), save: ga('data-rc-save-tpl'),
           test: ga('data-rc-test-tpl'), boxes: null,
-          init: ga('data-rc-init-tpl'), valread: ga('data-rc-valread-tpl') }
+          init: ga('data-rc-init-tpl'), valread: ga('data-rc-valread-tpl'),
+          tpltest: ga('data-rc-tpltest-tpl') }
   };
   var kind = 'cr';
-  var PREVIEW_TPL, SAVE_TPL, TEST_TPL, BOXES_TPL, INIT_TPL, VALREAD_TPL;
+  var PREVIEW_TPL, SAVE_TPL, TEST_TPL, BOXES_TPL, INIT_TPL, VALREAD_TPL, TPLTEST_TPL;
   var CSRF = modal.getAttribute('data-csrf') || '';
   var stage = modal.querySelector('[data-ocr-stage]');
   var overlay = modal.querySelector('[data-ocr-overlay]');
@@ -1079,6 +1089,10 @@
   var valFail = modal.querySelector('[data-val-fail]');
   var valReadBtn = modal.querySelector('[data-val-read]');
   var valCaptured = modal.querySelector('[data-val-captured]');
+  var tplTestRow = modal.querySelector('[data-tpltest-row]');
+  var tplTestBtn = modal.querySelector('[data-tpltest-btn]');
+  var tplTestStatus = modal.querySelector('[data-tpltest-status]');
+  var tplTestResults = modal.querySelector('[data-tpltest-results]');
   var fldBody = modal.querySelector('[data-fld-body]');
   var fldNew = modal.querySelector('[data-fld-new]');
   var fldAddBtn = modal.querySelector('[data-fld-add]');
@@ -1094,7 +1108,8 @@
   var FIELDDEL_TPL = modal.getAttribute('data-fielddel-tpl');
   var MASK_OPTS = [['none', 'None'], ['pattern', 'Pattern'],
     ['partial50', '50% Partial Match'], ['partial75', '75% Partial Match'],
-    ['charcount', 'No of Characters']];
+    ['charcount', 'No of Characters'], ['numeric', 'Numeric entry'],
+    ['numeric_decimal', 'Numeric entry with decimals'], ['exact', '100% Match']];
   var TPLS_URL = modal.getAttribute('data-tpls-tpl');
   var TPLUPD_TPL = modal.getAttribute('data-tplupd-tpl');
   var TPLDEL_TPL = modal.getAttribute('data-tpldel-tpl');
@@ -1122,8 +1137,12 @@
     var u = URLS[kind];
     PREVIEW_TPL = u.preview; SAVE_TPL = u.save; TEST_TPL = u.test;
     BOXES_TPL = u.boxes; INIT_TPL = u.init; VALREAD_TPL = u.valread;
+    TPLTEST_TPL = u.tpltest;
     FIELDS = (kind === 'rc') ? FIELDS_RC : FIELDS_CR;
     if (detectBtn) detectBtn.style.display = (kind === 'rc') ? 'none' : '';
+    if (tplTestRow) tplTestRow.hidden = (kind !== 'rc');
+    if (tplTestResults) { tplTestResults.hidden = true; tplTestResults.innerHTML = ''; }
+    if (tplTestStatus) { tplTestStatus.textContent = '\u2014'; tplTestStatus.className = 'val-captured muted'; }
     if (hintEl) hintEl.style.display = '';
     if (anchorToggleBtn) anchorToggleBtn.style.display = '';
   }
@@ -1259,6 +1278,56 @@
       }).catch(function () { valReadBtn.disabled = false; if (valCaptured) { valCaptured.textContent = 'Network error.'; valCaptured.className = 'val-captured bad'; } });
   }
   valReadBtn && valReadBtn.addEventListener('click', readValidateBox);
+  function runTemplateTest() {
+    if (uid === null || !TPLTEST_TPL) return;
+    if (!selectedId) { if (tplTestStatus) { tplTestStatus.textContent = 'Select or save a template first.'; tplTestStatus.className = 'val-captured bad'; } return; }
+    tplTestBtn.disabled = true;
+    if (tplTestStatus) { tplTestStatus.textContent = 'Testing slip ' + currentPage + '\u2026'; tplTestStatus.className = 'val-captured muted'; }
+    if (tplTestResults) { tplTestResults.hidden = true; tplTestResults.innerHTML = ''; }
+    fetch(url(TPLTEST_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ template_id: selectedId, slip: currentPage })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        tplTestBtn.disabled = false;
+        if (!d || !d.ok) { if (tplTestStatus) { tplTestStatus.textContent = (d && d.error) || 'Test failed.'; tplTestStatus.className = 'val-captured bad'; } return; }
+        if (tplTestStatus) {
+          tplTestStatus.textContent = 'Slip ' + d.slip + ' \u2014 ' + (d.matched ? ('matched ' + d.matched) : 'no template matched');
+          tplTestStatus.className = 'val-captured ' + (d.matched ? 'ok' : 'bad');
+        }
+        if (tplTestResults) {
+          tplTestResults.innerHTML = '';
+          var tbl = document.createElement('table');
+          tbl.className = 'table';
+          tbl.innerHTML = '<thead><tr><th>Order</th><th>Template</th><th>Validate reads</th><th>Result</th></tr></thead>';
+          var tb = document.createElement('tbody');
+          (d.chain || []).forEach(function (row, i) {
+            var tr = document.createElement('tr');
+            var c1 = document.createElement('td'); c1.textContent = (i + 1);
+            var c2 = document.createElement('td'); c2.textContent = row.name;
+            var c3 = document.createElement('td');
+            if (!row.validate_enabled || !(row.reads && row.reads.length)) {
+              c3.textContent = '(no validation)';
+            } else {
+              c3.textContent = row.reads.map(function (rd) {
+                return 'Box ' + rd.box + ': ' + (rd.text || '(empty)') + (rd.ok ? ' \u2713' : ' \u2717');
+              }).join('  |  ');
+            }
+            var c4 = document.createElement('td');
+            if (row.used) { c4.textContent = '\u2713 Used'; c4.className = 'ok'; }
+            else if (row.matched) { c4.textContent = 'Matched'; c4.className = 'ok'; }
+            else { c4.textContent = '\u2717 No match'; c4.className = 'bad'; }
+            tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4);
+            tb.appendChild(tr);
+          });
+          tbl.appendChild(tb);
+          tplTestResults.appendChild(tbl);
+          tplTestResults.hidden = false;
+        }
+      }).catch(function () { tplTestBtn.disabled = false; if (tplTestStatus) { tplTestStatus.textContent = 'Network error.'; tplTestStatus.className = 'val-captured bad'; } });
+  }
+  tplTestBtn && tplTestBtn.addEventListener('click', runTemplateTest);
   function saveList() {
     var name = (listName.value || '').trim();
     if (!name) { setStatus('Enter a list name.'); listName.focus(); return; }

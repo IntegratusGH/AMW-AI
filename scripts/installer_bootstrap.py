@@ -87,6 +87,19 @@ def load_env() -> None:
              PD / ".env", INSTALL_DIR / ".env")
 
 
+def check_runtime() -> None:
+    """Verify the embeddable runtime's standard library (python314.zip) is
+    present.  The service's pythonservice.exe boots from the same runtime and
+    cannot start without it ("Failed to import encodings module"); failing here
+    turns a silent stopped service into a loud install-time rollback."""
+    stdlib = INSTALL_DIR / "runtime" / "python314.zip"
+    if not stdlib.exists() or stdlib.stat().st_size == 0:
+        log.error("Runtime stdlib missing or empty: %s. Reinstall; if it keeps "
+                  "disappearing, exclude the AMW-AI folder from antivirus.", stdlib)
+        sys.exit(3)
+    log.info("Runtime stdlib present: %s (%d bytes).", stdlib, stdlib.stat().st_size)
+
+
 def check_odbc() -> None:
     import pyodbc
 
@@ -168,6 +181,7 @@ def _step(name: str, func, *args):
 
 def main() -> None:
     log_banner()
+    _step("check_runtime", check_runtime)
     _step("ensure_pd_permissions", ensure_pd_permissions)
     _step("ensure_env", ensure_env)
     _step("load_env", load_env)

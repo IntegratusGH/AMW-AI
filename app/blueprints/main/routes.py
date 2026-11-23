@@ -2942,9 +2942,10 @@ def upload_records(kind: str, upload_id: int):
     else:
         visible = set(canon_cols)
     # Flag each field cell whose stored confidence is below its template
-    # minimum-confidence (receipts fall back to the global default when a field
-    # sets none) or whose value fails its Apply-mask, so the operator sees which
-    # cells to check.  CR rows follow the stored needs_review flag (an operator
+    # minimum-confidence (with no template assigned, receipts fall back to the
+    # global default; a template's explicit per-field minimum - including 0,
+    # meaning "do not review on confidence" - is always honored) or whose value
+    # fails its Apply-mask, so the operator sees which cells to check.  CR rows follow the stored needs_review flag (an operator
     # Save clears it); receipts have no per-row verify, so a live flag also
     # marks them for review.
     # Only fields the template actually selects (captured) are reviewed; a
@@ -2960,6 +2961,8 @@ def upload_records(kind: str, upload_id: int):
         for r in records:
             flags: set = set()
             reasons: list = []
+            conf_flags: set = set()
+            conf_reasons: list = []
             try:
                 fconf = json.loads(r.field_confidence) if r.field_confidence else {}
             except (ValueError, TypeError):
@@ -2977,14 +2980,16 @@ def upload_records(kind: str, upload_id: int):
                 if (restrict and key not in captured_keys) or cf is None:
                     continue
                 mc = min_conf_by_key.get(key, 0.0)
-                if kind == "rc" and mc <= 0:
+                if kind == "rc" and mc <= 0 and not restrict:
                     mc = _RC_CONF_MIN
                 if mc > 0 and cf < mc:
                     flags.add(key)
-                    reasons.append(
-                        "%s: confidence %d%% below %d%%" % (
-                            label_by_key.get(key, key),
-                            round(cf * 100), round(mc * 100)))
+                    conf_flags.add(key)
+                    msg = "%s: confidence %d%% below %d%%" % (
+                        label_by_key.get(key, key),
+                        round(cf * 100), round(mc * 100))
+                    reasons.append(msg)
+                    conf_reasons.append(msg)
             # CR exposes its critical reads as dedicated *_confidence columns;
             # seed those so the three always have a percent for display.
             if kind == "cr":
@@ -3031,13 +3036,19 @@ def upload_records(kind: str, upload_id: int):
                 r._reasons = (reasons or ["Flagged for review during processing"]) \
                     if r.needs_review else []
             else:
-                r._review = bool(flags) or bool(r.needs_review)
-                r._flags = flags
-                r._reasons = (reasons or ["Flagged for review during processing"]) \
-                    if r._review else []
+                # Receipts have no per-row verify: the Review badge is driven
+                # purely by field confidence - OK when every captured field reads
+                # at or above its minimum, Check when any is below it.  Each
+                # field's template minimum applies; a field left at 0 is not
+                # reviewed on confidence, and the global 75% default is used only
+                # when no template is assigned.  Mask/format and blank-value
+                # checks are not applied to the receipt Review badge.
+                r._review = bool(conf_flags)
+                r._flags = conf_flags
+                r._reasons = conf_reasons if r._review else []
     # thead structural columns per kind (cr: Pg/Review/Template/Save/Image = 5;
-    # rc: Review/Rec No/Template/Dup/Conf/Image = 6) plus visible + extra cols.
-    col_count = (6 if kind == "rc" else 5) + len(visible) + len(extra_fields)
+    # rc: Review/Rec No/Template/Dup/Conf/Save/Image = 7) plus visible + extra.
+    col_count = (7 if kind == "rc" else 5) + len(visible) + len(extra_fields)
     return render_template(
         "main/registration_records.html", kind=kind, upload=up,
         records=records, extra_fields=extra_fields,
@@ -3203,6 +3214,78 @@ def cr_edit_record(upload_id: int, record_id: int):
     db.session.commit()
     flash("Record updated.", "success")
     return redirect(url_for("main.upload_records", kind="cr", upload_id=upload_id))
+
+
+# Receipt record typed columns the operator may edit inline on the records page.
+_RC_EDIT_STR = ("slip_no", "receipt_no", "receipt_date", "receipt_time",
+                "vehicle_no", "application_no")
+_RC_EDIT_NUM = ("total_amount", "bank_charges", "bank_total")
+
+
+@main_bp.route("/operations/registration-updater/rc/<int:upload_id>"
+               "/record/<int:record_id>/edit", methods=["POST"])
+@login_required
+def rc_edit_record(upload_id: int, record_id: int):
+    """Save an operator's correction of a receipt record's captured values - the
+    receipt analogue of cr_edit_record.  Updates the canonical typed columns and
+    the template-driven field_values JSON, marks each saved field as
+    operator-verified (100% confidence) so its cell and the row's Review badge
+    read OK, and clears needs_review."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    rec = db.session.get(ReceiptRecord, record_id) or abort(404)
+    if rec.upload_id != upload_id:
+        abort(404)
+    try:
+        fv = json.loads(rec.field_values) if rec.field_values else {}
+    except (ValueError, TypeError):
+        fv = {}
+    try:
+        fconf = json.loads(rec.field_confidence) if rec.field_confidence else {}
+    except (ValueError, TypeError):
+        fconf = {}
+
+    def _verify(key, value):
+        # A saved non-empty value is operator-verified: 100% confidence so the
+        # cell and the row's confidence-driven Review badge read OK.
+        if value not in (None, ""):
+            fconf[key] = 1.0
+
+    for key in _RC_EDIT_STR:
+        if key not in request.form:
+            continue
+        val = (request.form.get(key) or "").strip()[:40] or None
+        setattr(rec, key, val)
+        fv[key] = val or ""
+        _verify(key, val)
+    for key in _RC_EDIT_NUM:
+        if key not in request.form:
+            continue
+        raw = (request.form.get(key) or "").strip()
+        num = None
+        if raw:
+            try:
+                num = Decimal(re.sub(r"[^0-9.\-]", "", raw) or "0")
+            except (InvalidOperation, ValueError):
+                num = None
+        setattr(rec, key, num)
+        fv[key] = ("%.2f" % num) if num is not None else ""
+        _verify(key, raw)
+    # Any remaining submitted field is a template-driven extra, stored only in
+    # the field_values JSON.
+    for key in request.form:
+        if key in ("csrf_token",) or key in _RC_EDIT_STR or key in _RC_EDIT_NUM:
+            continue
+        val = (request.form.get(key) or "").strip()
+        fv[key] = val
+        _verify(key, val)
+
+    rec.field_values = json.dumps(fv)
+    rec.field_confidence = json.dumps(fconf)
+    rec.needs_review = False
+    record_audit("rc_record_edited", f"record_id={record_id}")
+    db.session.commit()
+    flash("Record updated.", "success")
+    return redirect(url_for("main.upload_records", kind="rc", upload_id=upload_id))
 
 
 def _require_trainer() -> None:
@@ -4262,6 +4345,78 @@ def rc_validate_read(upload_id: int):
     return jsonify({"ok": True, "text": text or "", "confidence": conf,
                     "matched": matched, "text2": text2 or "",
                     "confidence2": conf2, "matched2": matched2})
+
+
+@main_bp.route("/operations/registration-updater/rc/<int:upload_id>/template-test",
+               methods=["POST"])
+@login_required
+def rc_template_test(upload_id: int):
+    """Walk the Template-picker chain for the CURRENTLY loaded slip: starting
+    from the chain head, OCR each template's validate box(es) on that slip and
+    list which templates match, marking the first match (the template that would
+    be used).  Backs the Template picker tab's 'Test template' button."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(ReceiptUpload, upload_id) or abort(404)
+    data = request.get_json(silent=True) or {}
+    tid = data.get("template_id")
+    base = (db.session.get(OcrTemplate, int(tid))
+            if tid not in (None, "", 0, "0") else None)
+    if base is None and getattr(up, "template_id", None):
+        base = db.session.get(OcrTemplate, up.template_id)
+    if base is None or base.kind != "rc":
+        return jsonify({"ok": False,
+                        "error": "Select or save a receipt template first."}), 400
+    slips = _rc_slip_index(up)
+    idx = int(data.get("slip") or 1) - 1
+    if not (0 <= idx < len(slips)):
+        return jsonify({"ok": False, "error": "No slip loaded to test."}), 400
+    s = slips[idx]
+    chain: list = []
+    matched_name = None
+    doc, _total = ocr.open_document(up.stored_path)
+    try:
+        page = doc[s["page"]]
+        region = ocr._slip_region_pts(page, s["y0"], s["y1"], s["zoom"])
+        t = _chain_head(base, "rc")
+        seen: set[int] = set()
+        while t is not None and t.id not in seen:
+            seen.add(t.id)
+            pairs = _template_validate_pairs(t)
+            entry = {"name": t.name, "reads": [], "matched": False,
+                     "used": False,
+                     "validate_enabled": bool(
+                         getattr(t, "validate_enabled", False))}
+            if not entry["validate_enabled"] or not pairs:
+                # No validation configured -> used as-is; the chain stops here.
+                entry["matched"] = entry["used"] = True
+                matched_name = t.name
+                chain.append(entry)
+                break
+            try:
+                pp = ocr.clean_pp(json.loads(t.ocr_pp)) if t.ocr_pp else None
+            except (ValueError, TypeError):
+                pp = None
+            all_ok = True
+            for bi, (box, expected) in enumerate(pairs, start=1):
+                text = ocr.read_slip_rect(page, region, box, pp=pp or None)[0]
+                ok = _validate_contains(expected, text)
+                entry["reads"].append({"box": bi, "text": text or "",
+                                        "expected": expected, "ok": ok})
+                if not ok:
+                    all_ok = False
+            entry["matched"] = all_ok
+            chain.append(entry)
+            if all_ok:
+                entry["used"] = True
+                matched_name = t.name
+                break
+            nxt = getattr(t, "fail_template_id", None)
+            t = db.session.get(OcrTemplate, nxt) if nxt else None
+    finally:
+        doc.close()
+    return jsonify({"ok": True, "slip": idx + 1,
+                    "matched": matched_name, "chain": chain})
 
 
 @main_bp.route("/operations/registration-updater/rc/<int:upload_id>/ocr-settings",
