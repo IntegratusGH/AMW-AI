@@ -749,25 +749,21 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             tpl = up.template if getattr(up, "template_id", None) else None
             # Template picker.  Receipts resolve the template PER SLIP (each slip
             # restarts from the assigned template and walks the validation/
-            # fallback chain), so build a per-slip resolver; CR resolves once for
-            # the page.  Either path raises "No Match Template" when nothing
-            # validates.
+            # fallback chain), so build a per-slip resolver.  CR now resolves the
+            # template PER PAGE too (inside the loop below), restarting from the
+            # chain head each page; resolving once here applied the first page's
+            # template to every record.
             def _rc_report(msg: str) -> None:
                 up.progress_message = msg[:200]
                 db.session.commit()
 
             rc_resolver = None
+            cr_head = None
             if tpl is not None:
                 if kind == "rc":
                     rc_resolver = _make_rc_slip_resolver(tpl, report=_rc_report)
                 else:
-                    tpl = _resolve_effective_template(
-                        kind, doc, _chain_head(tpl, "cr"))
-            # CR resolves one template per document (via the picker chain), so
-            # tag every record with its name for View Records (receipts set
-            # this per slip during extraction).
-            cr_applied_name = (
-                tpl.name if (kind == "cr" and tpl is not None) else None)
+                    cr_head = _chain_head(tpl, "cr")
             if tpl and tpl.ocr_pp:
                 try:
                     upload_pp = ocr.clean_pp(json.loads(tpl.ocr_pp)) or None
@@ -818,14 +814,26 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
 
             try:
                 for i in range(total):
+                    # Per-page template settings.  CR restarts from the chain
+                    # head and resolves the template for THIS page (receipts do
+                    # the per-slip equivalent inside the extractor via resolve).
+                    pg_pp, pg_rects = upload_pp, upload_rects
+                    pg_anchors = upload_anchors
+                    pg_text_anchors = upload_text_anchors
+                    cr_applied_name = None
+                    if kind == "cr" and cr_head is not None:
+                        eff = _resolve_cr_page_template(cr_head, doc[i])
+                        (pg_pp, pg_rects, pg_anchors,
+                         pg_text_anchors) = _cr_template_settings(eff)
+                        cr_applied_name = eff.name
                     # Unified per-page extractor dispatch (region strategy):
                     # CR yields 0/1 record per page, RC one per detected slip.
                     page_recs = ocr.extract_page(
                         kind, doc[i],
                         rule_set=page_rules.get(i + 1, "oldcrbook"),
-                        pp=upload_pp, rects=upload_rects,
-                        anchors=upload_anchors,
-                        text_anchors=upload_text_anchors,
+                        pp=pg_pp, rects=pg_rects,
+                        anchors=pg_anchors,
+                        text_anchors=pg_text_anchors,
                         progress=(_rc_progress if kind == "rc" else None),
                         resolve=(rc_resolver if kind == "rc" else None))
                     if kind == "cr":
@@ -3721,6 +3729,56 @@ def _resolve_effective_template(kind, doc, base_tpl):
     raise ValueError("No Match Template")
 
 
+def _cr_template_settings(t):
+    """Parse a CR template's stored image settings into the tuple the page
+    extractor expects: ``(pp, rects, anchors, text_anchors)``."""
+    from app.utils import registration_ocr as ocr
+
+    def _parse(attr, cleaner, *args):
+        raw = getattr(t, attr, None)
+        if not raw:
+            return None
+        try:
+            return cleaner(json.loads(raw), *args) or None
+        except (ValueError, TypeError):
+            return None
+
+    return (_parse("ocr_pp", ocr.clean_pp),
+            _parse("ocr_rects", ocr.clean_rects, "cr"),
+            _parse("ocr_anchors", ocr.clean_anchors),
+            _parse("ocr_text_anchors", ocr.clean_text_anchors))
+
+
+def _resolve_cr_page_template(head, page):
+    """Resolve the CR Template-picker chain for a SINGLE page: starting at the
+    chain head, OCR each validation-enabled template's validate box(es) on this
+    page and return the first that matches (templates without validation are used
+    as-is).  Falls back to the head when nothing matches, so extraction still
+    proceeds (CR has no per-record error channel).  This is the per-page analogue
+    of the receipt per-slip resolver.  Cycle-safe."""
+    from app.utils import registration_ocr as ocr
+    t = head
+    seen: set[int] = set()
+    while t is not None and t.id not in seen:
+        seen.add(t.id)
+        if not getattr(t, "validate_enabled", False):
+            return t
+        pairs = _template_validate_pairs(t)
+        if not pairs:
+            return t
+        try:
+            pp = ocr.clean_pp(json.loads(t.ocr_pp)) if t.ocr_pp else None
+        except (ValueError, TypeError):
+            pp = None
+        if all(_validate_contains(expected,
+                                  ocr.read_rect(page, box, pp=pp or None)[0])
+               for box, expected in pairs):
+            return t
+        nxt = getattr(t, "fail_template_id", None)
+        t = db.session.get(OcrTemplate, nxt) if nxt else None
+    return head
+
+
 def _chain_head(base_tpl, kind):
     """Return the head of ``base_tpl``'s validation/fallback chain by following
     predecessors (templates of ``kind`` whose ``fail_template_id`` points at the
@@ -4400,6 +4458,73 @@ def rc_template_test(upload_id: int):
             all_ok = True
             for bi, (box, expected) in enumerate(pairs, start=1):
                 text = ocr.read_slip_rect(page, region, box, pp=pp or None)[0]
+                ok = _validate_contains(expected, text)
+                entry["reads"].append({"box": bi, "text": text or "",
+                                        "expected": expected, "ok": ok})
+                if not ok:
+                    all_ok = False
+            entry["matched"] = all_ok
+            chain.append(entry)
+            if all_ok:
+                entry["used"] = True
+                matched_name = t.name
+                break
+            nxt = getattr(t, "fail_template_id", None)
+            t = db.session.get(OcrTemplate, nxt) if nxt else None
+    finally:
+        doc.close()
+    return jsonify({"ok": True, "slip": idx + 1,
+                    "matched": matched_name, "chain": chain})
+
+
+@main_bp.route("/operations/registration-updater/cr/<int:upload_id>/template-test",
+               methods=["POST"])
+@login_required
+def cr_template_test(upload_id: int):
+    """Walk the Template-picker chain for the CURRENTLY loaded CR page: starting
+    from the chain head, OCR each template's validate box(es) on that page and
+    list which templates match, marking the first match (the template that would
+    be used).  The CR analogue of rc_template_test."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    from app.utils import registration_ocr as ocr
+    up = db.session.get(CRBookUpload, upload_id) or abort(404)
+    data = request.get_json(silent=True) or {}
+    tid = data.get("template_id")
+    base = (db.session.get(OcrTemplate, int(tid))
+            if tid not in (None, "", 0, "0") else None)
+    if base is None and getattr(up, "template_id", None):
+        base = db.session.get(OcrTemplate, up.template_id)
+    if base is None or base.kind != "cr":
+        return jsonify({"ok": False,
+                        "error": "Select or save a CR template first."}), 400
+    chain: list = []
+    matched_name = None
+    doc, total = ocr.open_document(up.stored_path)
+    try:
+        idx = max(1, min(total, int(data.get("slip") or 1))) - 1
+        page = doc[idx]
+        t = _chain_head(base, "cr")
+        seen: set[int] = set()
+        while t is not None and t.id not in seen:
+            seen.add(t.id)
+            pairs = _template_validate_pairs(t)
+            entry = {"name": t.name, "reads": [], "matched": False,
+                     "used": False,
+                     "validate_enabled": bool(
+                         getattr(t, "validate_enabled", False))}
+            if not entry["validate_enabled"] or not pairs:
+                # No validation configured -> used as-is; the chain stops here.
+                entry["matched"] = entry["used"] = True
+                matched_name = t.name
+                chain.append(entry)
+                break
+            try:
+                pp = ocr.clean_pp(json.loads(t.ocr_pp)) if t.ocr_pp else None
+            except (ValueError, TypeError):
+                pp = None
+            all_ok = True
+            for bi, (box, expected) in enumerate(pairs, start=1):
+                text = ocr.read_rect(page, box, pp=pp or None)[0]
                 ok = _validate_contains(expected, text)
                 entry["reads"].append({"box": bi, "text": text or "",
                                         "expected": expected, "ok": ok})

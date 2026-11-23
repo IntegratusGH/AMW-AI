@@ -430,6 +430,7 @@
      data-boxes-tpl="{{ url_for('main.cr_ocr_boxes', upload_id=0) }}"
      data-init-tpl="{{ url_for('main.cr_ocr_init', upload_id=0) }}"
      data-valread-tpl="{{ url_for('main.cr_validate_read', upload_id=0) }}"
+     data-cr-tpltest-tpl="{{ url_for('main.cr_template_test', upload_id=0) }}"
      data-rc-preview-tpl="{{ url_for('main.rc_ocr_preview', upload_id=0) }}"
      data-rc-save-tpl="{{ url_for('main.rc_ocr_settings', upload_id=0) }}"
      data-rc-test-tpl="{{ url_for('main.rc_ocr_test', upload_id=0) }}"
@@ -557,8 +558,10 @@
           <section class="tab-panel" id="ocr-tab-field" role="tabpanel">
             <p class="muted ocr-tab-help">Tick a field to capture it with a box in
               this template (drag it into place on the image). “Apply mask”
-              refines the OCR read using “Value” — a fixed text or a
-              <code>[List name]</code>.</p>
+              refines the OCR read using “Value” — a fixed text, a
+              <code>[List name]</code>, or a date format for the
+              <strong>Date</strong> mask (e.g. <code>DD/MM/YYYY</code>,
+              <code>MM/DD/YYYY</code>, <code>DD-MM-YYYY</code>).</p>
             <div class="fld-wrap">
               <table class="fld-table" data-fld-table>
                 <thead><tr><th title="Capture with a box"></th><th>Field</th>
@@ -1048,7 +1051,7 @@
     cr: { preview: ga('data-preview-tpl'), save: ga('data-save-tpl'),
           test: ga('data-test-tpl'), boxes: ga('data-boxes-tpl'),
           init: ga('data-init-tpl'), valread: ga('data-valread-tpl'),
-          tpltest: null },
+          tpltest: ga('data-cr-tpltest-tpl') },
     rc: { preview: ga('data-rc-preview-tpl'), save: ga('data-rc-save-tpl'),
           test: ga('data-rc-test-tpl'), boxes: null,
           init: ga('data-rc-init-tpl'), valread: ga('data-rc-valread-tpl'),
@@ -1109,7 +1112,8 @@
   var MASK_OPTS = [['none', 'None'], ['pattern', 'Pattern'],
     ['partial50', '50% Partial Match'], ['partial75', '75% Partial Match'],
     ['charcount', 'No of Characters'], ['numeric', 'Numeric entry'],
-    ['numeric_decimal', 'Numeric entry with decimals'], ['exact', '100% Match']];
+    ['numeric_decimal', 'Numeric entry with decimals'], ['exact', '100% Match'],
+    ['date', 'Date']];
   var TPLS_URL = modal.getAttribute('data-tpls-tpl');
   var TPLUPD_TPL = modal.getAttribute('data-tplupd-tpl');
   var TPLDEL_TPL = modal.getAttribute('data-tpldel-tpl');
@@ -1140,7 +1144,7 @@
     TPLTEST_TPL = u.tpltest;
     FIELDS = (kind === 'rc') ? FIELDS_RC : FIELDS_CR;
     if (detectBtn) detectBtn.style.display = (kind === 'rc') ? 'none' : '';
-    if (tplTestRow) tplTestRow.hidden = (kind !== 'rc');
+    if (tplTestRow) tplTestRow.hidden = !TPLTEST_TPL;
     if (tplTestResults) { tplTestResults.hidden = true; tplTestResults.innerHTML = ''; }
     if (tplTestStatus) { tplTestStatus.textContent = '\u2014'; tplTestStatus.className = 'val-captured muted'; }
     if (hintEl) hintEl.style.display = '';

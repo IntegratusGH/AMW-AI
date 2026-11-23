@@ -2707,7 +2707,7 @@ def default_field_defs(kind: str) -> list[dict]:
 
 # Apply-mask rule identifiers stored on each field def.
 _MASK_TYPES = {"none", "pattern", "partial50", "partial75", "charcount",
-               "numeric", "numeric_decimal", "exact"}
+               "numeric", "numeric_decimal", "exact", "date"}
 
 
 def clean_fields(fields, kind: str = "cr") -> list[dict]:
@@ -2989,6 +2989,19 @@ def _mask_ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _parse_date_format(fmt):
+    """Parse a user date format (e.g. ``DD/MM/YYYY``) into ``(tokens, sep)``:
+    ``tokens`` is the ordered list of ``DD``/``MM``/``YY``/``YYYY`` and ``sep``
+    the separator to emit between components.  Returns ``(None, None)`` when the
+    format is not a day/month/year triple."""
+    f = (fmt or "").strip().upper()
+    tokens = re.findall(r"YYYY|YY|MM|DD", f)
+    if len(tokens) != 3 or {t[0] for t in tokens} != {"Y", "M", "D"}:
+        return None, None
+    seps = re.findall(r"[^A-Z0-9]", f)
+    return tokens, (seps[0] if seps else "/")
+
+
 def apply_field_mask(mask, value, text, list_lookup=None):
     """Refine an OCR ``text`` for a field per its ``mask`` + ``value``.  Returns
     ``(new_text, ok)``; ``ok`` False means the value is uncertain and the record
@@ -3008,7 +3021,11 @@ def apply_field_mask(mask, value, text, list_lookup=None):
       numeric_decimal-> keep only digits and the decimal point of the read; ok
                      when at least one digit remains, else keep raw + not ok.
       exact       -> snap to a Value entry only on a 100% (exact) match, else
-                     keep raw + not ok."""
+                     keep raw + not ok.
+      date        -> Value is a target date format (e.g. DD/MM/YYYY, MM/DD/YYYY,
+                     DD-MM-YYYY, YYYY-MM-DD); parse the read's day/month/year in
+                     that order and re-emit it in that format.  ok when a valid
+                     calendar date is parsed, else keep raw + not ok."""
     mask = (mask or "none").strip()
     text = "" if text is None else str(text).strip()
     if mask in ("", "none"):
@@ -3033,6 +3050,48 @@ def apply_field_mask(mask, value, text, list_lookup=None):
         if len(text) > n:
             return (text[:n] or None), True
         return (text or None), (len(text) == n)
+    if mask == "date":
+        tokens, sep = _parse_date_format(value)
+        if tokens is None:
+            # No usable target format -> nothing to enforce, keep the raw read.
+            return (text or None), True
+        nums = re.findall(r"\d+", text)
+        comps = None
+        if len(nums) == 3:
+            comps = nums
+        elif len(nums) == 1:
+            # One unbroken run of digits (e.g. DDMMYYYY) -> split by token width.
+            widths = [4 if t == "YYYY" else 2 for t in tokens]
+            s = nums[0]
+            if len(s) == sum(widths):
+                comps, i = [], 0
+                for w in widths:
+                    comps.append(s[i:i + w])
+                    i += w
+        if not comps:
+            return (text or None), False
+        day = month = year = None
+        for tok, part in zip(tokens, comps):
+            try:
+                n = int(part)
+            except ValueError:
+                return (text or None), False
+            if tok[0] == "D":
+                day = n
+            elif tok[0] == "M":
+                month = n
+            else:  # year token
+                if len(part) <= 2:
+                    n = 2000 + n if n < 70 else 1900 + n
+                year = n
+        import datetime as _dt
+        try:
+            _dt.date(year, month, day)
+        except (ValueError, TypeError):
+            return (text or None), False
+        emit = {"DD": f"{day:02d}", "MM": f"{month:02d}",
+                "YYYY": f"{year:04d}", "YY": f"{year % 100:02d}"}
+        return sep.join(emit[tok] for tok in tokens), True
     entries = _mask_entries(value, list_lookup)
     if not entries:
         return (text or None), True
