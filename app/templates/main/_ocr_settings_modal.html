@@ -137,7 +137,10 @@
               refines the OCR read using “Value” — a fixed text, a
               <code>[List name]</code>, or a date format for the
               <strong>Date</strong> mask (e.g. <code>DD/MM/YYYY</code>,
-              <code>MM/DD/YYYY</code>, <code>DD-MM-YYYY</code>).</p>
+              <code>MM/DD/YYYY</code>, <code>DD-MM-YYYY</code>).
+              <strong>Apply mask, Value and Min %</strong> are shared by every
+              template of this document type — changing them here updates all
+              templates; only the tick and box position are per-template.</p>
             <div class="fld-wrap">
               <table class="fld-table" data-fld-table>
                 <thead><tr><th title="Capture with a box"></th><th>Field</th>
@@ -690,24 +693,27 @@
   function buildFieldDefs(t) {
     // Start from the records-table catalog (canonical + custom columns), then
     // overlay this template's per-field capture/mask/value/box settings.
+    // Apply mask / Value / Min % are shared across templates: take them from the
+    // catalog (the global per-field store), not from this template's JSON.
     var cat = (fieldCatalog || []).map(function (d) {
       return { key: d.key, label: d.label, type: d.type, role: d.role,
-               canonical: !!d.canonical, box: null, pp: null,
-               capture: false, mask: 'none', value: '', min_conf: 0 };
+               canonical: !!d.canonical, box: null, pp: null, capture: false,
+               mask: d.mask || 'none', value: d.value || '',
+               min_conf: (typeof d.min_conf === 'number') ? d.min_conf : 0 };
     });
     var byKey = {}; cat.forEach(function (d) { byKey[d.key] = d; });
+    // Overlay only this template's per-field data (capture tick + box); the
+    // shared mask/value/min_conf from the catalog are left untouched.
     ((t && t.fields) || []).forEach(function (f) {
       var d = byKey[f.key];
       if (!d) {
         d = { key: f.key, label: f.label || f.key, type: f.type || 'text',
               role: f.role || f.key, canonical: false, box: null, pp: null,
-              capture: false, mask: 'none', value: '', min_conf: 0 };
+              capture: false, mask: f.mask || 'none', value: f.value || '',
+              min_conf: (typeof f.min_conf === 'number') ? f.min_conf : 0 };
         byKey[f.key] = d; cat.push(d);
       }
       d.capture = !!f.capture || !!f.box;
-      d.mask = f.mask || 'none';
-      d.value = f.value || '';
-      d.min_conf = (typeof f.min_conf === 'number') ? f.min_conf : (d.min_conf || 0);
       if (f.box) d.box = f.box.slice();
     });
     // ocr_rects is authoritative for the built-in value boxes (it is what the

@@ -67,6 +67,7 @@ from app.models import (
     Module,
     OcrCorrection,
     OcrCustomField,
+    OcrFieldSetting,
     OcrList,
     OcrTemplate,
     RCAutoFile,
@@ -399,7 +400,34 @@ def _persist_fields(tpl, data: dict, kind: str) -> None:
             d["capture"] = True
         if d.get("capture") and d["key"] not in _canonical_keys(kind):
             ensure_record_column(kind, d["key"], d.get("label"))
+    # Mask / Value / Min % are shared across all templates of the kind: persist
+    # them to the global store so an edit here applies everywhere (the JSON copy
+    # above is kept only as a fallback).
+    _save_global_field_settings(kind, defs)
     tpl.fields = json.dumps(defs) if defs else None
+
+
+def _save_global_field_settings(kind: str, defs: list) -> None:
+    """Upsert the shared mask/value/min_conf for every field in a save payload
+    into ``ocr_field_settings`` (keyed by kind + key), so field settings are
+    common to all templates of the kind regardless of which capture the field."""
+    for d in defs:
+        key = str(d.get("key") or "").strip()
+        if not key:
+            continue
+        mask = str(d.get("mask") or "none").strip()
+        value = (str(d.get("value") or "").strip() or None)
+        try:
+            mc = max(0.0, min(1.0, float(d.get("min_conf") or 0.0)))
+        except (TypeError, ValueError):
+            mc = 0.0
+        row = OcrFieldSetting.query.filter_by(kind=kind, key=key).first()
+        if row is None:
+            row = OcrFieldSetting(kind=kind, key=key)
+            db.session.add(row)
+        row.mask = mask
+        row.value = value
+        row.min_conf = round(mc, 3)
 
 
 def _list_lookup(name: str):
@@ -450,7 +478,8 @@ def _field_catalog(kind: str) -> list:
     ordered = order + [k for k in data_keys if k not in order]
     cat = [{"key": k, "label": ocr.field_label(kind, k),
             "type": ocr.field_type(k), "role": k, "box": None, "pp": None,
-            "capture": False, "mask": "none", "value": "", "canonical": True}
+            "capture": False, "mask": "none", "value": "", "min_conf": 0.0,
+            "canonical": True}
            for k in ordered]
     seen = set(ordered)
     for c in (OcrCustomField.query.filter_by(kind=kind)
@@ -460,7 +489,17 @@ def _field_catalog(kind: str) -> list:
         seen.add(c.key)
         cat.append({"key": c.key, "label": c.label or c.key, "type": "text",
                     "role": c.key, "box": None, "pp": None, "capture": False,
-                    "mask": "none", "value": "", "canonical": False})
+                    "mask": "none", "value": "", "min_conf": 0.0,
+                    "canonical": False})
+    # Overlay the shared mask/value/min_conf so the Field-setting tab shows the
+    # common settings for every field, even those a template does not capture.
+    shared = ocr.global_field_settings(kind)
+    for c in cat:
+        s = shared.get(c["key"])
+        if s is not None:
+            c["mask"] = s["mask"]
+            c["value"] = s["value"]
+            c["min_conf"] = s["min_conf"]
     return cat
 
 

@@ -570,6 +570,39 @@ class OcrCustomField(db.Model):
         return f"<OcrCustomField {self.kind}:{self.key}>"
 
 
+class OcrFieldSetting(db.Model):
+    """Field settings shared by every template of a document ``kind``.  The
+    'Apply mask', 'Value' and 'Min %' of a field live here (keyed by ``kind`` +
+    ``key``) so editing them in any template applies to all templates, whether
+    or not a given template captures the field.  Per-template data (the capture
+    tick, box position, per-field image settings and label) stays in
+    ``OcrTemplate.fields``."""
+
+    __tablename__ = "ocr_field_settings"
+
+    id = db.Column(db.Integer, primary_key=True)
+    kind = db.Column(db.String(4), nullable=False, default="cr")
+    key = db.Column(db.String(64), nullable=False)
+    # Apply-mask rule id (see registration_ocr._MASK_TYPES); 'none' = off.
+    mask = db.Column(db.String(32), nullable=False, default="none",
+                     server_default="none")
+    # Mask operand: a literal, a ``[List name]``, a char count, or date format.
+    value = db.Column(db.String(255), nullable=True)
+    # Minimum OCR confidence (0..1); a captured read below this is flagged for
+    # review.  0 = never flag on confidence.
+    min_conf = db.Column(db.Float, nullable=False, default=0.0,
+                         server_default="0")
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow,
+                           onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("kind", "key", name="uq_ocr_field_kind_key"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<OcrFieldSetting {self.kind}:{self.key} mask={self.mask}>"
+
+
 class CRAutoSetting(db.Model):
     """Singleton settings for the automated CR-book folder watcher: the server
     folder scanned (recursively) for new PDFs and whether the watcher is on."""

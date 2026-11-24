@@ -2832,16 +2832,62 @@ def fields_from_rects(kind: str, rects, pp=None) -> list[dict]:
     return clean_fields(defs, kind)
 
 
+def global_field_settings(kind: str) -> dict:
+    """Shared {key: {mask, value, min_conf}} for a doc kind, from the
+    ``ocr_field_settings`` store.  Cached per app-context (settings are static
+    during a processing run) and silently empty when called outside an app
+    context or before the table exists, so callers fall back to the per-template
+    JSON values."""
+    try:
+        from flask import g, has_app_context
+    except Exception:
+        return {}
+    if not has_app_context():
+        return {}
+    cache = getattr(g, "_ocr_field_settings", None)
+    if cache is None:
+        cache = g._ocr_field_settings = {}
+    if kind in cache:
+        return cache[kind]
+    out: dict = {}
+    try:
+        from app.models.registration import OcrFieldSetting
+        for r in OcrFieldSetting.query.filter_by(kind=kind).all():
+            out[r.key] = {"mask": r.mask or "none",
+                          "value": r.value or "",
+                          "min_conf": float(r.min_conf or 0.0)}
+    except Exception:
+        out = {}
+    cache[kind] = out
+    return out
+
+
+def _overlay_field_settings(defs: list[dict], kind: str) -> list[dict]:
+    """Overlay the shared mask/value/min_conf (authoritative) onto field defs so
+    every template reflects the common per-field settings."""
+    shared = global_field_settings(kind)
+    if shared:
+        for d in defs:
+            s = shared.get(d.get("key"))
+            if s is not None:
+                d["mask"] = s["mask"]
+                d["value"] = s["value"]
+                d["min_conf"] = s["min_conf"]
+    return defs
+
+
 def template_field_defs(template) -> list[dict]:
     """Return a template's field defs: parse its ``fields`` JSON when present,
-    else derive them from the legacy ``ocr_rects`` + built-ins."""
+    else derive them from the legacy ``ocr_rects`` + built-ins.  The shared
+    per-field mask/value/min_conf (from ``ocr_field_settings``) are overlaid so
+    they are common across all templates of the kind."""
     kind = getattr(template, "kind", "cr") or "cr"
     raw = getattr(template, "fields", None)
     if raw:
         try:
             defs = clean_fields(json.loads(raw), kind)
             if defs:
-                return defs
+                return _overlay_field_settings(defs, kind)
         except (ValueError, TypeError):
             pass
     rects = {}
@@ -2851,7 +2897,7 @@ def template_field_defs(template) -> list[dict]:
             rects = clean_rects(json.loads(raw_rects), kind)
         except (ValueError, TypeError):
             rects = {}
-    return fields_from_rects(kind, rects)
+    return _overlay_field_settings(fields_from_rects(kind, rects), kind)
 
 
 # ===== Apply-mask refinement =============================================
