@@ -1367,23 +1367,45 @@ def _start_processing(kind: str, upload_id: int) -> None:
     ).start()
 
 
-# --- Sequential bulk re-processing -----------------------------------------
-# "Reprocess all" must run uploads strictly one-at-a-time (never in parallel),
-# so instead of a thread per upload the work is pushed onto a shared FIFO that
-# a single worker thread drains.  A re-upload of the same file deletes its
-# earlier upload (receipts), which can remove an id still queued here;
-# _run_processing tolerates a missing upload, so such ids are simply skipped.
+# --- Parallel bulk re-processing -------------------------------------------
+# "Reprocess all" pushes uploads onto a shared FIFO drained by a BOUNDED POOL of
+# worker threads, so several documents OCR at once (each worker builds its own
+# OCR engine).  Receipts and CR books feed the SAME pool, so clicking both never
+# exceeds the worker cap.  Worker count auto-sizes from the CPU (cap 6; override
+# with the REPROCESS_WORKERS env var) and each engine's onnxruntime threads are
+# capped to ~= cores / workers to avoid oversubscribing the CPU.  A re-upload of
+# the same file deletes its earlier upload (receipts), which can remove an id
+# still queued here; _run_processing tolerates a missing upload, so such ids are
+# simply skipped.
 _REPROCESS_LOCK = threading.Lock()
 _REPROCESS_PENDING: list[tuple[str, int]] = []
-_reprocess_worker_active = False
+_reprocess_workers_active = 0
 
 
-def _reprocess_worker(app) -> None:  # pragma: no cover - background worker
-    global _reprocess_worker_active
+def _reprocess_worker_count() -> int:
+    """Parallel worker count: REPROCESS_WORKERS env override, else min(6, cpu-1),
+    at least 1."""
+    cpu = os.cpu_count() or 1
+    env = (os.getenv("REPROCESS_WORKERS", "") or "").strip()
+    if env:
+        try:
+            n = int(env)
+            if n > 0:
+                return n
+        except ValueError:
+            pass
+    return max(1, min(6, cpu - 1))
+
+
+def _reprocess_worker(app, intra_threads: int) -> None:  # pragma: no cover
+    global _reprocess_workers_active
+    from app.utils import registration_ocr as ocr
+    # Cap this worker's OCR engine threads so workers x threads ~= cores.
+    ocr.set_thread_engine_threads(intra_threads)
     while True:
         with _REPROCESS_LOCK:
             if not _REPROCESS_PENDING:
-                _reprocess_worker_active = False
+                _reprocess_workers_active -= 1
                 return
             kind, upload_id = _REPROCESS_PENDING.pop(0)
         try:
@@ -1396,17 +1418,20 @@ def _reprocess_worker(app) -> None:  # pragma: no cover - background worker
 
 
 def _enqueue_reprocess(kind: str, upload_ids: list[int]) -> None:
-    """Queue uploads for sequential re-processing, starting the single worker
-    thread only if one is not already draining the queue."""
-    global _reprocess_worker_active
+    """Queue uploads for parallel re-processing, topping the shared worker pool
+    up to its cap (never beyond it, even across both kinds)."""
+    global _reprocess_workers_active
     app = current_app._get_current_object()
+    workers = _reprocess_worker_count()
+    intra = max(1, (os.cpu_count() or 1) // workers)
     with _REPROCESS_LOCK:
         _REPROCESS_PENDING.extend((kind, uid) for uid in upload_ids)
-        if _reprocess_worker_active:
-            return
-        _reprocess_worker_active = True
-    threading.Thread(
-        target=_reprocess_worker, args=(app,), daemon=True).start()
+        want = min(workers, len(_REPROCESS_PENDING))
+        to_start = max(0, want - _reprocess_workers_active)
+        _reprocess_workers_active += to_start
+    for _ in range(to_start):
+        threading.Thread(
+            target=_reprocess_worker, args=(app, intra), daemon=True).start()
 
 
 # ===== CR-book format detection (runs on upload, before Process) ==========
@@ -3111,9 +3136,10 @@ def process_upload(kind: str, upload_id: int):
     "/operations/registration-updater/<kind>/reprocess-all", methods=["POST"])
 @login_required
 def reprocess_all(kind: str):
-    """Re-run OCR on every uploaded document of ``kind``, strictly one at a time
-    (queued, never parallel).  CR books still awaiting format review and any
-    upload already processing are skipped."""
+    """Re-run OCR on every uploaded document of ``kind`` using a bounded pool of
+    parallel workers (shared with the other kind, so running both at once never
+    exceeds the cap).  CR books still awaiting format review and any upload
+    already processing are skipped."""
     _require_module(REGISTRATION_UPDATER_KEY)
     if kind not in _DOC_KINDS:
         abort(404)
@@ -3139,8 +3165,9 @@ def reprocess_all(kind: str):
         return redirect(url_for("main.registration_updater", tab=kind))
     record_audit(f"{kind}_reprocess_all", f"count={len(ids)}")
     _enqueue_reprocess(kind, ids)
-    flash(f"Reprocessing {len(ids)} {noun} upload(s) one at a time in the "
-          f"background. Refresh to see progress.", "success")
+    flash(f"Reprocessing {len(ids)} {noun} upload(s) in parallel in the "
+          f"background ({_reprocess_worker_count()} at a time). Refresh to see "
+          f"progress.", "success")
     return redirect(url_for("main.registration_updater", tab=kind))
 
 

@@ -17,10 +17,61 @@ import re
 import threading
 from decimal import Decimal, InvalidOperation
 
-# Heavy engines are created lazily and shared; OCR is serialised with a lock
-# (one document is processed at a time in a background thread).
-_engine = None
-_engine_lock = threading.Lock()
+# Each worker thread builds its OWN RapidOCR engine (thread-local), so bulk
+# "Reprocess all" can OCR several documents at once without serialising on a
+# shared engine.  Only engine *creation* is serialised (to avoid first-time
+# onnxruntime init races); inference then runs lock-free on the thread's engine.
+# A pool worker may cap its engine's onnxruntime intra-op threads via
+# set_thread_engine_threads() so N parallel engines stay within the core count;
+# interactive single-document processing never sets it and keeps the full-core
+# default.
+_engine_tls = threading.local()
+_engine_create_lock = threading.Lock()
+_ort_patched = False
+
+
+def set_thread_engine_threads(n: int) -> None:
+    """Cap the onnxruntime intra-op thread count of the OCR engine built by the
+    CALLING thread afterwards (0 = onnxruntime's default, all cores)."""
+    _engine_tls.intra_threads = max(0, int(n or 0))
+
+
+def _patch_ort_threads() -> None:
+    """Make RapidOCR's ORT sessions honour the calling thread's requested
+    intra-op thread count by swapping the SessionOptions it instantiates for a
+    subclass that sets the thread counts.  Best-effort and applied once (under
+    the creation lock); any failure falls back to default threading."""
+    global _ort_patched
+    if _ort_patched:
+        return
+    _ort_patched = True
+    try:
+        import onnxruntime as ort
+        import rapidocr_onnxruntime.utils as _ru
+        _orig_init = _ru.OrtInferSession.__init__
+
+        def _init(self, config):
+            n = int(getattr(_engine_tls, "intra_threads", 0) or 0)
+            if n <= 0:
+                _orig_init(self, config)
+                return
+            _real_so = ort.SessionOptions
+
+            class _SO(_real_so):
+                def __init__(s):
+                    super().__init__()
+                    s.intra_op_num_threads = n
+                    s.inter_op_num_threads = 1
+
+            _ru.SessionOptions = _SO
+            try:
+                _orig_init(self, config)
+            finally:
+                _ru.SessionOptions = _real_so
+
+        _ru.OrtInferSession.__init__ = _init
+    except Exception:  # pragma: no cover - leave default threading on any failure
+        pass
 
 
 # Higher-accuracy PP-OCRv4 ONNX models (offline).  Loaded from OCR_MODELS_DIR
@@ -32,17 +83,18 @@ _MODELS_DIR = os.getenv("OCR_MODELS_DIR") or os.path.join(
 
 
 def _get_engine():
-    global _engine
-    if _engine is None:
-        with _engine_lock:
-            if _engine is None:
-                from rapidocr_onnxruntime import RapidOCR
-                det = os.path.join(_MODELS_DIR, "ch_PP-OCRv4_det_infer.onnx")
-                rec = os.path.join(_MODELS_DIR, "ch_PP-OCRv4_rec_infer.onnx")
-                kw = ({"det_model_path": det, "rec_model_path": rec}
-                      if os.path.isfile(det) and os.path.isfile(rec) else {})
-                _engine = RapidOCR(**kw)
-    return _engine
+    eng = getattr(_engine_tls, "engine", None)
+    if eng is None:
+        with _engine_create_lock:
+            _patch_ort_threads()
+            from rapidocr_onnxruntime import RapidOCR
+            det = os.path.join(_MODELS_DIR, "ch_PP-OCRv4_det_infer.onnx")
+            rec = os.path.join(_MODELS_DIR, "ch_PP-OCRv4_rec_infer.onnx")
+            kw = ({"det_model_path": det, "rec_model_path": rec}
+                  if os.path.isfile(det) and os.path.isfile(rec) else {})
+            eng = RapidOCR(**kw)
+        _engine_tls.engine = eng
+    return eng
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +241,7 @@ def _render_page_png(page, zoom: float) -> bytes:
 def _ocr(png_bytes: bytes) -> list[dict]:
     """Return OCR lines as dicts: text, score, x0/y0/x1/y1, cx/cy."""
     engine = _get_engine()
-    with _engine_lock:
-        result, _ = engine(png_bytes)
+    result, _ = engine(png_bytes)
     lines: list[dict] = []
     for item in (result or []):
         box, text, score = item[0], item[1], item[2]
@@ -256,8 +307,7 @@ def _get_recognizer():
 def _rec_only(img) -> list[tuple[str, float]]:
     """Recognition-only on a single-line crop (skips detection entirely)."""
     rec = _get_recognizer()
-    with _engine_lock:
-        res = rec([img])
+    res = rec([img])
     items = res[0] if isinstance(res, tuple) and res and isinstance(res[0], list) else res
     out: list[tuple[str, float]] = []
     for it in (items or []):
