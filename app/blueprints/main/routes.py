@@ -53,6 +53,7 @@ from app.models import (
     STATUS_ERROR,
     STATUS_PENDING,
     STATUS_PROCESSING,
+    STATUS_QUEUED,
     Category,
     CRAutoFile,
     CRAutoSetting,
@@ -3051,8 +3052,8 @@ def process_upload(kind: str, upload_id: int):
     if kind not in _DOC_KINDS:
         abort(404)
     up = db.session.get(_DOC_KINDS[kind]["upload_model"], upload_id) or abort(404)
-    if up.status == STATUS_PROCESSING:
-        flash("This file is already being processed.", "info")
+    if up.status in (STATUS_PROCESSING, STATUS_QUEUED):
+        flash("This file is already being processed or queued.", "info")
         return redirect(url_for("main.registration_updater", tab=kind))
     if kind == "cr" and up.review_status != REVIEW_READY:
         flash("Resolve the CR-book format review before processing.", "info")
@@ -3081,15 +3082,16 @@ def reprocess_all(kind: str):
     noun = _DOC_KINDS[kind]["noun"]
     ids: list[int] = []
     for up in UploadModel.query.order_by(UploadModel.id.asc()).all():
-        if up.status == STATUS_PROCESSING:
+        if up.status in (STATUS_PROCESSING, STATUS_QUEUED):
             continue  # already running or queued
         if kind == "cr" and up.review_status != REVIEW_READY:
             continue  # awaiting format detection / review
-        up.status = STATUS_PROCESSING
-        up.processed = False
+        # Mark as QUEUED (not PROCESSING) and leave the prior run's records /
+        # counts untouched: the worker resets them when it actually reaches the
+        # item, and the watchdogs skip "queued" so a long batch is never demoted
+        # to a false "error" while waiting its turn.
+        up.status = STATUS_QUEUED
         up.error = None
-        up.progress_done = 0
-        up.progress_total = 0
         up.progress_message = "Queued for reprocessing\u2026"
         ids.append(up.id)
     db.session.commit()
@@ -4376,7 +4378,8 @@ def cr_ocr_settings(upload_id: int):
                  f"upload_id={upload_id} template_id={tpl.id} "
                  f"pp={sorted(pp)} rects={sorted(rects)} anchors={len(anchors)}")
     started = False
-    if bool(data.get("reprocess")) and up.status != STATUS_PROCESSING \
+    if bool(data.get("reprocess")) \
+            and up.status not in (STATUS_PROCESSING, STATUS_QUEUED) \
             and up.review_status == REVIEW_READY:
         up.status = STATUS_PROCESSING
         up.error = None
@@ -4779,7 +4782,8 @@ def rc_ocr_settings(upload_id: int):
                  f"upload_id={upload_id} template_id={tpl.id} "
                  f"pp={sorted(pp)} anchors={len(anchors)}")
     started = False
-    if bool(data.get("reprocess")) and up.status != STATUS_PROCESSING:
+    if bool(data.get("reprocess")) \
+            and up.status not in (STATUS_PROCESSING, STATUS_QUEUED):
         up.status = STATUS_PROCESSING
         up.error = None
         db.session.commit()

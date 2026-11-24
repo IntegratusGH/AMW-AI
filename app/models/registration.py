@@ -17,9 +17,15 @@ from app.extensions import db
 # Processing lifecycle for an uploaded document.
 STATUS_PENDING = "pending"
 STATUS_PROCESSING = "processing"
+# Waiting its turn in a sequential bulk "reprocess all" run.  Distinct from
+# "processing" so the orphan-recovery and stall-sweeper watchdogs (which demote
+# stuck "processing" uploads to "error") never touch items that are merely
+# queued behind a long batch.
+STATUS_QUEUED = "queued"
 STATUS_DONE = "done"
 STATUS_ERROR = "error"
-UPLOAD_STATUSES = (STATUS_PENDING, STATUS_PROCESSING, STATUS_DONE, STATUS_ERROR)
+UPLOAD_STATUSES = (STATUS_PENDING, STATUS_PROCESSING, STATUS_QUEUED,
+                   STATUS_DONE, STATUS_ERROR)
 
 # CR-book format pre-check (runs on upload, before the heavy OCR/Process step).
 REVIEW_PENDING = "pending"        # not checked yet

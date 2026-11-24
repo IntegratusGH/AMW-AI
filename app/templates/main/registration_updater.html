@@ -10,6 +10,7 @@
       <div class="progress"><div class="progress-bar" style="width:{{ pct|round(0,'floor') }}%"></div></div>
       <span class="proc-msg">{{ u.progress_message or 'Processing…' }}</span>
     </div>
+  {% elif u.status == 'queued' %}<span class="badge badge-info" title="Waiting its turn in the re-process queue">Queued&hellip;</span>
   {% elif u.processed %}<span class="badge badge-success" title="{{ u.progress_message }}">Processed</span>
   {% elif u.status == 'error' %}<span class="badge badge-danger" title="{{ u.error }}">Error</span>
   {% else %}<span class="badge badge-muted">Pending</span>{% endif %}
@@ -833,19 +834,23 @@
       return '<div class="proc"><div class="progress"><div class="progress-bar" style="width:' + pct +
              '%"></div></div><span class="proc-msg">' + esc(u.message || 'Processing\u2026') + '</span></div>';
     }
+    if (u.status === 'queued') return badge('badge-info', 'Queued\u2026', 'Waiting its turn in the re-process queue');
     if (u.status === 'error') return badge('badge-danger', 'Error', esc(u.message || ''));
     if (u.processed) return badge('badge-success', 'Processed', esc(u.message || ''));
     return badge('badge-muted', 'Pending');
   }
   function anyActive() {
-    return document.querySelector('tr[data-status="processing"], tr[data-review="detecting"]') !== null;
+    return document.querySelector('tr[data-status="processing"], tr[data-status="queued"], tr[data-review="detecting"]') !== null;
   }
   function poll() {
     fetch(STATUS_URL, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         var reload = false;
+        var serverActive = false;
         (d.uploads || []).forEach(function (u) {
+          if (u.status === 'processing' || u.status === 'queued' ||
+              (u.kind === 'cr' && u.review === 'detecting')) serverActive = true;
           var row = document.querySelector('tr[data-kind="' + u.kind + '"][data-id="' + u.id + '"]');
           if (!row) return;
           var prev = row.getAttribute('data-status');
@@ -864,11 +869,12 @@
           row.setAttribute('data-status', u.status);
           if (u.kind === 'cr' && u.review) row.setAttribute('data-review', u.review);
         });
-        // During a bulk "reprocess all" many rows are queued as processing;
-        // reload only once the whole batch is finished so action buttons and
-        // counts refresh without interrupting the run after every file.
-        if (reload && !anyActive()) { window.location.reload(); return; }
-        if (anyActive()) setTimeout(poll, 2500);
+        // During a bulk "reprocess all" many rows are queued; reload only once
+        // the whole batch is finished (per the server, which also accounts for
+        // uploads removed mid-run) so buttons/counts refresh without
+        // interrupting the run after every file.
+        if (reload && !serverActive) { window.location.reload(); return; }
+        if (serverActive) setTimeout(poll, 2500);
       })
       .catch(function () { setTimeout(poll, 5000); });
   }

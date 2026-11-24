@@ -77,7 +77,7 @@ def _recover_orphaned_uploads(app: Flask) -> None:
 
     from app.models.registration import (
         CRBookUpload, ReceiptUpload, STATUS_DONE, STATUS_ERROR,
-        STATUS_PROCESSING,
+        STATUS_PENDING, STATUS_PROCESSING, STATUS_QUEUED,
     )
 
     with app.app_context():
@@ -87,6 +87,8 @@ def _recover_orphaned_uploads(app: Flask) -> None:
                 return
             fixed = 0
             for model in (CRBookUpload, ReceiptUpload):
+                # Interrupted mid-run (was actively processing): recover to its
+                # prior terminal state, or error if it had not completed before.
                 for up in model.query.filter_by(status=STATUS_PROCESSING).all():
                     if up.processed:
                         up.status = STATUS_DONE
@@ -95,6 +97,18 @@ def _recover_orphaned_uploads(app: Flask) -> None:
                         up.error = ("Processing was interrupted (service "
                                     "restart). Re-process to retry.")
                         up.progress_message = "Interrupted \u2014 re-process to retry."
+                    fixed += 1
+                # Queued for a bulk re-process that never started before the
+                # restart: the previous run's records are untouched, so restore
+                # the prior result instead of flagging a false error.
+                for up in model.query.filter_by(status=STATUS_QUEUED).all():
+                    if up.processed or (up.captured_records or 0) > 0:
+                        up.status = STATUS_DONE
+                        up.processed = True
+                    else:
+                        up.status = STATUS_PENDING
+                    up.error = None
+                    up.progress_message = None
                     fixed += 1
             if fixed:
                 db.session.commit()
