@@ -1113,43 +1113,48 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         setattr(rec_obj, attr, fn)
                 db.session.commit()
 
-            # Slip-No replace/dedup (mirrors CR's Registration-No pass): a receipt
-            # whose Slip No already exists is treated as an update — the
-            # previously stored record (an earlier upload, or earlier in this same
-            # batch) is removed and this one kept in its place, counted as a
-            # duplicate rather than a fresh capture.  This gives receipts the same
-            # "re-process/re-upload replaces, never accumulates" behaviour as CR.
+            # Same-file replacement (receipts): a re-upload / re-process of the
+            # SAME physical file supersedes the earlier one.  Bank deposit-slip
+            # serials (slip_no) are REUSED across different deposit books, so
+            # receipts must never dedup across different files -- only the same
+            # file is replaced.  The file is identified by (source_name,
+            # source_mtime) (the upload identity) with a filename fallback; each
+            # matching prior upload (and its crops) is removed outright.
             if kind == "rc" and rc_pending:
-                up.progress_message = "Replacing existing slip numbers\u2026"
+                up.progress_message = "Replacing previous upload of this file\u2026"
                 db.session.commit()
-                prior_by_slip: dict[str, list] = {}
-                for other in (RecordModel.query
-                              .filter(RecordModel.upload_id != upload_id,
-                                      RecordModel.slip_no.isnot(None))
-                              .all()):
-                    k = (other.slip_no or "").strip().upper()
-                    if k:
-                        prior_by_slip.setdefault(k, []).append(other)
+                if up.source_name and up.source_mtime:
+                    priors = (UploadModel.query
+                              .filter(UploadModel.id != upload_id,
+                                      UploadModel.source_name == up.source_name,
+                                      UploadModel.source_mtime == up.source_mtime)
+                              .all())
+                else:
+                    priors = (UploadModel.query
+                              .filter(UploadModel.id != upload_id,
+                                      UploadModel.filename == up.filename)
+                              .all())
+                for old_up in priors:
+                    for old_rec in RecordModel.query.filter_by(
+                            upload_id=old_up.id).all():
+                        _delete_rc_crops(app, old_rec)
+                    shutil.rmtree(
+                        os.path.join(app.config["RECEIPT_CROP_DIR"],
+                                     str(old_up.id)), ignore_errors=True)
+                    db.session.delete(old_up)  # cascade-deletes its records
+                # Intra-file dedup: a slip number repeated WITHIN this one file is
+                # an OCR double-read, so flag the later row for review (kept, not
+                # deleted -- nothing is lost).  Slip serials are unique within a
+                # single deposit book, so this rarely fires.
                 duplicates = 0
-                kept_by_slip: dict[str, object] = {}
+                seen_slip: set[str] = set()
                 for rec_obj, r in rc_pending:
                     key = (rec_obj.slip_no or "").strip().upper()
-                    if not key:
-                        rec_obj.is_duplicate = False
-                        continue
-                    replaced = False
-                    for old in prior_by_slip.pop(key, []):
-                        _delete_rc_crops(app, old)
-                        db.session.delete(old)
-                        replaced = True
-                    earlier = kept_by_slip.get(key)
-                    if earlier is not None:
-                        _delete_rc_crops(app, earlier)
-                        db.session.delete(earlier)
-                        replaced = True
-                    rec_obj.is_duplicate = replaced
-                    kept_by_slip[key] = rec_obj
-                    if replaced:
+                    is_dup = bool(key) and key in seen_slip
+                    if key:
+                        seen_slip.add(key)
+                    rec_obj.is_duplicate = is_dup
+                    if is_dup:
                         duplicates += 1
                 db.session.flush()
                 up.duplicate_records = duplicates
