@@ -1327,6 +1327,48 @@ def _start_processing(kind: str, upload_id: int) -> None:
     ).start()
 
 
+# --- Sequential bulk re-processing -----------------------------------------
+# "Reprocess all" must run uploads strictly one-at-a-time (never in parallel),
+# so instead of a thread per upload the work is pushed onto a shared FIFO that
+# a single worker thread drains.  A re-upload of the same file deletes its
+# earlier upload (receipts), which can remove an id still queued here;
+# _run_processing tolerates a missing upload, so such ids are simply skipped.
+_REPROCESS_LOCK = threading.Lock()
+_REPROCESS_PENDING: list[tuple[str, int]] = []
+_reprocess_worker_active = False
+
+
+def _reprocess_worker(app) -> None:  # pragma: no cover - background worker
+    global _reprocess_worker_active
+    while True:
+        with _REPROCESS_LOCK:
+            if not _REPROCESS_PENDING:
+                _reprocess_worker_active = False
+                return
+            kind, upload_id = _REPROCESS_PENDING.pop(0)
+        try:
+            _run_processing(app, kind, upload_id)
+        except Exception:
+            with app.app_context():
+                current_app.logger.exception(
+                    "Reprocess-all worker failed on %s upload %s",
+                    kind, upload_id)
+
+
+def _enqueue_reprocess(kind: str, upload_ids: list[int]) -> None:
+    """Queue uploads for sequential re-processing, starting the single worker
+    thread only if one is not already draining the queue."""
+    global _reprocess_worker_active
+    app = current_app._get_current_object()
+    with _REPROCESS_LOCK:
+        _REPROCESS_PENDING.extend((kind, uid) for uid in upload_ids)
+        if _reprocess_worker_active:
+            return
+        _reprocess_worker_active = True
+    threading.Thread(
+        target=_reprocess_worker, args=(app,), daemon=True).start()
+
+
 # ===== CR-book format detection (runs on upload, before Process) ==========
 def _load_sig(raw: str | None) -> dict:
     try:
@@ -3022,6 +3064,42 @@ def process_upload(kind: str, upload_id: int):
     _start_processing(kind, upload_id)
     flash("Processing started (OCR runs in the background). Refresh to see "
           "results.", "success")
+    return redirect(url_for("main.registration_updater", tab=kind))
+
+
+@main_bp.route(
+    "/operations/registration-updater/<kind>/reprocess-all", methods=["POST"])
+@login_required
+def reprocess_all(kind: str):
+    """Re-run OCR on every uploaded document of ``kind``, strictly one at a time
+    (queued, never parallel).  CR books still awaiting format review and any
+    upload already processing are skipped."""
+    _require_module(REGISTRATION_UPDATER_KEY)
+    if kind not in _DOC_KINDS:
+        abort(404)
+    UploadModel = _DOC_KINDS[kind]["upload_model"]
+    noun = _DOC_KINDS[kind]["noun"]
+    ids: list[int] = []
+    for up in UploadModel.query.order_by(UploadModel.id.asc()).all():
+        if up.status == STATUS_PROCESSING:
+            continue  # already running or queued
+        if kind == "cr" and up.review_status != REVIEW_READY:
+            continue  # awaiting format detection / review
+        up.status = STATUS_PROCESSING
+        up.processed = False
+        up.error = None
+        up.progress_done = 0
+        up.progress_total = 0
+        up.progress_message = "Queued for reprocessing\u2026"
+        ids.append(up.id)
+    db.session.commit()
+    if not ids:
+        flash("No uploads are available to reprocess.", "info")
+        return redirect(url_for("main.registration_updater", tab=kind))
+    record_audit(f"{kind}_reprocess_all", f"count={len(ids)}")
+    _enqueue_reprocess(kind, ids)
+    flash(f"Reprocessing {len(ids)} {noun} upload(s) one at a time in the "
+          f"background. Refresh to see progress.", "success")
     return redirect(url_for("main.registration_updater", tab=kind))
 
 
