@@ -1103,7 +1103,13 @@
   function gotoPage(p) { currentPage = Math.max(1, Math.min(totalPages, p)); setPageLabel(); loadPreview(); }
   function populateTplSelect() {
     var opts = ['<option value="">(no template)</option>'];
-    templates.forEach(function (t) { opts.push('<option value="' + t.id + '">' + esc(t.name) + '</option>'); });
+    // Display the dropdown sorted by name (numeric-aware so Receipt2 precedes
+    // Receipt10); the underlying templates array order is left unchanged.
+    var sorted = templates.slice().sort(function (a, b) {
+      return String(a.name || '').localeCompare(String(b.name || ''),
+        undefined, { numeric: true, sensitivity: 'base' });
+    });
+    sorted.forEach(function (t) { opts.push('<option value="' + t.id + '">' + esc(t.name) + '</option>'); });
     tplSelect.innerHTML = opts.join('');
     tplSelect.value = selectedId ? String(selectedId) : '';
     populateFailSelect();
