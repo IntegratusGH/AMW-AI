@@ -312,6 +312,19 @@ def _delete_cr_crops(app, rec) -> None:
                 pass
 
 
+def _delete_rc_crops(app, rec) -> None:
+    """Remove the cropped image/value-region files belonging to a receipt record."""
+    crop_dir = os.path.join(app.config["RECEIPT_CROP_DIR"], str(rec.upload_id))
+    names = [getattr(rec, "image_crop", None)]
+    names.extend(getattr(rec, attr, None) for attr in _RC_CROP_ATTR.values())
+    for fn in names:
+        if fn:
+            try:
+                os.remove(os.path.join(crop_dir, fn))
+            except OSError:
+                pass
+
+
 # ===== User-added (custom) record columns ================================
 # Non-canonical fields defined in the Field-setting tab get a real NVARCHAR
 # column on the kind's records table, created on demand and tracked in
@@ -823,12 +836,6 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 else f"Starting OCR on {total} page(s)\u2026")
             db.session.commit()
 
-            key_col = getattr(RecordModel, key_field)
-            seen = {
-                (v[0] or "").strip().upper()
-                for v in db.session.query(key_col).filter(key_col.isnot(None)).all()
-                if v[0]
-            }
             captured = 0
             duplicates = 0
             cr_pending = []  # (rec_obj, data) kept for the batch template pass
@@ -904,8 +911,9 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                 up.progress_total = total_est or 1
                 up.progress_done = rc_slip_base + done_in_page
                 up.progress_message = (
-                    f"Reading slip {rc_slip_base + done_in_page} "
-                    f"of {total_est}\u2026")
+                    f"Reading slip {rc_slip_base + done_in_page} of {total_est} "
+                    f"\u2014 {rc_slip_base + done_in_page} {noun}(s) captured, "
+                    f"{duplicates} duplicate(s)")
                 db.session.commit()
 
             try:
@@ -940,18 +948,12 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                     for r in page_recs:
                         if kind == "rc":
                             r["segment_no"] = captured + 1
-                        # CR duplicates are resolved by Registration No in a
-                        # dedicated replace pass after batch correction; here
-                        # only receipts dedup (by slip no) inline.
-                        if kind == "rc":
-                            key = (str(r.get(key_field) or "")).strip().upper()
-                            is_dup = bool(key) and key in seen
-                            if key:
-                                seen.add(key)
-                            if is_dup:
-                                duplicates += 1
-                        else:
-                            is_dup = False
+                        # Both kinds resolve duplicates in a dedicated replace
+                        # pass after extraction (CR by Registration No, RC by
+                        # Slip No): the prior record is deleted and this one kept
+                        # in its place, so re-processing/re-uploading never
+                        # accumulates duplicate rows.
+                        is_dup = False
                         rec_obj = RecordModel(upload_id=upload_id, is_duplicate=is_dup)
                         _assign_columns(rec_obj, r)
                         db.session.add(rec_obj)
@@ -1109,6 +1111,51 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
                         with open(os.path.join(crop_dir, fn), "wb") as fh:
                             fh.write(fpng)
                         setattr(rec_obj, attr, fn)
+                db.session.commit()
+
+            # Slip-No replace/dedup (mirrors CR's Registration-No pass): a receipt
+            # whose Slip No already exists is treated as an update — the
+            # previously stored record (an earlier upload, or earlier in this same
+            # batch) is removed and this one kept in its place, counted as a
+            # duplicate rather than a fresh capture.  This gives receipts the same
+            # "re-process/re-upload replaces, never accumulates" behaviour as CR.
+            if kind == "rc" and rc_pending:
+                up.progress_message = "Replacing existing slip numbers\u2026"
+                db.session.commit()
+                prior_by_slip: dict[str, list] = {}
+                for other in (RecordModel.query
+                              .filter(RecordModel.upload_id != upload_id,
+                                      RecordModel.slip_no.isnot(None))
+                              .all()):
+                    k = (other.slip_no or "").strip().upper()
+                    if k:
+                        prior_by_slip.setdefault(k, []).append(other)
+                duplicates = 0
+                kept_by_slip: dict[str, object] = {}
+                for rec_obj, r in rc_pending:
+                    key = (rec_obj.slip_no or "").strip().upper()
+                    if not key:
+                        rec_obj.is_duplicate = False
+                        continue
+                    replaced = False
+                    for old in prior_by_slip.pop(key, []):
+                        _delete_rc_crops(app, old)
+                        db.session.delete(old)
+                        replaced = True
+                    earlier = kept_by_slip.get(key)
+                    if earlier is not None:
+                        _delete_rc_crops(app, earlier)
+                        db.session.delete(earlier)
+                        replaced = True
+                    rec_obj.is_duplicate = replaced
+                    kept_by_slip[key] = rec_obj
+                    if replaced:
+                        duplicates += 1
+                db.session.flush()
+                up.duplicate_records = duplicates
+                up.captured_records = (
+                    RecordModel.query.filter_by(upload_id=upload_id).count())
+                captured = up.captured_records
                 db.session.commit()
 
             # Custom (user-added) field capture + Apply-mask refinement.  Reads
