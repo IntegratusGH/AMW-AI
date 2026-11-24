@@ -3083,6 +3083,36 @@ def _mask_ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+# Visual OCR glyph-confusion fold for Apply-mask text/list matching.  Folding
+# both the read and each Value entry to one representative per confusion class
+# lets a read that differs from an entry only by systematic misreads (B<->6,
+# G<->6, L<->1, I<->1, O/D/Q<->0, S<->5, Z<->2, A<->4) still snap to that
+# entry's clean value.  Applied case-insensitively and only as a fallback after
+# a direct match fails, so clean reads are never altered.
+_MATCH_FOLD = str.maketrans({
+    "O": "0", "D": "0", "Q": "0",
+    "I": "1", "L": "1",
+    "Z": "2",
+    "A": "4",
+    "S": "5",
+    "B": "6", "G": "6",
+})
+
+
+def _match_fold(s: str) -> str:
+    return (s or "").strip().upper().translate(_MATCH_FOLD)
+
+
+def _mask_ratio_folded(a: str, b: str) -> float:
+    """Similarity of two strings after glyph-confusion folding (see
+    ``_MATCH_FOLD``), used to recover a text/list match from a confusable read."""
+    from difflib import SequenceMatcher
+    fa, fb = _match_fold(a), _match_fold(b)
+    if not fa and not fb:
+        return 1.0
+    return SequenceMatcher(None, fa, fb).ratio()
+
+
 def _parse_date_format(fmt):
     """Parse a user date format (e.g. ``DD/MM/YYYY``) into ``(tokens, sep)``:
     ``tokens`` is the ordered list of ``DD``/``MM``/``YY``/``YYYY`` and ``sep``
@@ -3283,6 +3313,17 @@ def apply_field_mask(mask, value, text, list_lookup=None):
                 best, score = e, r
         if best is not None and score >= thr:
             return best, True
+        # Fallback: retry on glyph-confusion-folded forms so a read that differs
+        # from an entry only by systematic OCR confusions (B<->6, L<->1, O<->0,
+        # S<->5, ...) still snaps to that entry's clean value.  For exact
+        # (threshold 1.0) the folded forms must be identical.
+        fbest, fscore = None, 0.0
+        for e in entries:
+            r = _mask_ratio_folded(text, e)
+            if r > fscore:
+                fbest, fscore = e, r
+        if fbest is not None and fscore >= thr:
+            return fbest, True
         return (text or None), False
     return (text or None), True
 
