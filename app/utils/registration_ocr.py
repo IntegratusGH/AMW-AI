@@ -1906,6 +1906,11 @@ def read_rect(page, box, pp=None) -> tuple[str | None, float]:
     return text, round(float(conf), 3)
 
 
+# Whole-page preprocessing steps (frequency descreen / background removal) that
+# need full-page context; layered over a tiny isolated crop they destroy glyphs,
+# so refinement sweeps strip them from the base.
+_CROP_HOSTILE_PP = {"fft", "removebg"}
+
 # Curated preprocessing sweep, layered over a box's own adjustments, tried when
 # a pattern read fails - each entry optimises the crop a different way so a
 # faint / low-contrast / coloured value can still be recovered.
@@ -1973,6 +1978,49 @@ def refine_to_pattern(page, box, mask_value, list_lookup=None, base_pp=None,
                 sub = _mask_like_extract(p, cand)
                 if sub is not None:
                     return sub, round(min(float(w), 1.0), 3), True
+    if best_text is None:
+        return None, 0.0, False
+    return best_text, round(min(max(best_w, 0.0), 1.0), 3), False
+
+
+def refine_to_date(page, box, mask_value, base_pp=None, region_pts=None):
+    """Date-driven crop optimisation: re-OCR a boxed value across the image-pp
+    sweep (and higher zooms) and return the date the most variants agree on
+    after the Date mask normalises each reading -- recovering a guilloche-
+    obscured date the plain pass misread instead of only flagging it.  The vote
+    across variants guards against a single variant's spurious-but-valid date.
+    Returns ``(value, confidence, matched)``; when no variant yields a valid
+    date, ``value`` is the strongest raw reading and ``matched`` is False."""
+    if page is None or box is None:
+        return None, 0.0, False
+    rect = _rect_for_box(page, box, region_pts)
+    base = clean_pp(base_pp) if base_pp else {}
+    # fft (descreen) and removebg operate on the whole page; on a tiny isolated
+    # date crop they corrupt the glyphs and skew the vote, so drop them here.
+    base = {k: v for k, v in base.items() if k not in _CROP_HOSTILE_PP}
+    best_text, best_w = None, -1.0
+    counts: dict[str, int] = {}
+    weights: dict[str, float] = {}
+    for delta in _PATTERN_PP_SWEEP:
+        variant = clean_pp({**base, **delta}) if delta else dict(base)
+        try:
+            raw = _rec_candidates(page, rect, zooms=(6, 9, 12), pp=variant)
+        except Exception:
+            continue
+        for t, w in raw:
+            cand = (t or "").strip()
+            if not cand:
+                continue
+            if w > best_w:
+                best_text, best_w = cand, w
+            val, ok = apply_field_mask("date", mask_value, cand, None)
+            if ok and val:
+                counts[val] = counts.get(val, 0) + 1
+                weights[val] = weights.get(val, 0.0) + float(w)
+    if counts:
+        best = max(counts, key=lambda v: (counts[v], weights[v]))
+        conf = round(min(weights[best] / counts[best], 1.0), 3)
+        return best, conf, True
     if best_text is None:
         return None, 0.0, False
     return best_text, round(min(max(best_w, 0.0), 1.0), 3), False
@@ -3002,6 +3050,32 @@ def _parse_date_format(fmt):
     return tokens, (seps[0] if seps else "/")
 
 
+# OCR letter->digit confusions for date components (extends the serial-tail map
+# with the stroke-similar "L"->"1"); applied only inside runs that carry a digit.
+_DATE_DIGIT_MAP = str.maketrans({**_DIGIT_MAP, "L": "1"})
+
+
+def _recover_year(ys, cur_year):
+    """Recover an impossible 4-digit OCR year by fixing the common 2->7 misread
+    (a printed ``2`` recognised as the stroke-similar ``7``).  Tries every subset
+    of the ``7`` positions, keeps valid 19xx/20xx years <= ``cur_year`` and
+    returns the most recent one (or None when none is reachable).  Called only
+    for an out-of-range year, so a correctly read year keeping a legitimate 7 is
+    never touched."""
+    import itertools
+    pos = [i for i, c in enumerate(ys) if c == "7"]
+    best = None
+    for r in range(1, len(pos) + 1):
+        for combo in itertools.combinations(pos, r):
+            lst = list(ys)
+            for i in combo:
+                lst[i] = "2"
+            n = int("".join(lst))
+            if lst[0] in ("1", "2") and 1900 <= n <= cur_year:
+                best = n if best is None else max(best, n)
+    return best
+
+
 def apply_field_mask(mask, value, text, list_lookup=None):
     """Refine an OCR ``text`` for a field per its ``mask`` + ``value``.  Returns
     ``(new_text, ok)``; ``ok`` False means the value is uncertain and the record
@@ -3023,9 +3097,14 @@ def apply_field_mask(mask, value, text, list_lookup=None):
       exact       -> snap to a Value entry only on a 100% (exact) match, else
                      keep raw + not ok.
       date        -> Value is a target date format (e.g. DD/MM/YYYY, MM/DD/YYYY,
-                     DD-MM-YYYY, YYYY-MM-DD); parse the read's day/month/year in
-                     that order and re-emit it in that format.  ok when a valid
-                     calendar date is parsed, else keep raw + not ok."""
+                     DD-MM-YYYY, YYYY-MM-DD).  The read is split on its
+                     separators, common OCR letter<->digit confusions are
+                     corrected, label noise is dropped, and the day/month/year
+                     are mapped per the format's token order and re-emitted with
+                     its separator (zero-padded; 2-digit years expanded).  ok
+                     only when the result is a real calendar date in range
+                     (day 1-31, month 1-12, year 1900..current); otherwise keep
+                     raw + not ok so the record is flagged for review."""
     mask = (mask or "none").strip()
     text = "" if text is None else str(text).strip()
     if mask in ("", "none"):
@@ -3055,43 +3134,80 @@ def apply_field_mask(mask, value, text, list_lookup=None):
         if tokens is None:
             # No usable target format -> nothing to enforce, keep the raw read.
             return (text or None), True
-        nums = re.findall(r"\d+", text)
-        comps = None
-        if len(nums) == 3:
-            comps = nums
-        elif len(nums) == 1:
-            # One unbroken run of digits (e.g. DDMMYYYY) -> split by token width.
-            widths = [4 if t == "YYYY" else 2 for t in tokens]
-            s = nums[0]
-            if len(s) == sum(widths):
-                comps, i = [], 0
-                for w in widths:
-                    comps.append(s[i:i + w])
-                    i += w
-        if not comps:
-            return (text or None), False
-        day = month = year = None
-        for tok, part in zip(tokens, comps):
-            try:
-                n = int(part)
-            except ValueError:
-                return (text or None), False
-            if tok[0] == "D":
-                day = n
-            elif tok[0] == "M":
-                month = n
-            else:  # year token
-                if len(part) <= 2:
-                    n = 2000 + n if n < 70 else 1900 + n
-                year = n
+        widths = [4 if t == "YYYY" else 2 for t in tokens]
+        total = sum(widths)
+        year_idx = next(i for i, t in enumerate(tokens) if t[0] == "Y")
+        year_w = widths[year_idx]
+        # Identify the numeric groups: split the read on its separators (any
+        # non-alphanumeric run), keep runs carrying a digit and map common OCR
+        # letter->digit confusions inside each (e.g. "2O26"->"2026", "1l"->"11").
+        # Pure-letter runs (labels such as "Date") are dropped.
+        runs = []
+        for r in re.findall(r"[A-Za-z0-9]+", (text or "").upper()):
+            if any(c.isdigit() for c in r):
+                d = r.translate(_DATE_DIGIT_MAP)
+                if d.isdigit():
+                    runs.append(d)
+        # Candidate day/month/year triples, most date-like first: an exact
+        # single-run split (DDMMYYYY), then run-triples whose year group has the
+        # expected width, a merged two-run split, and finally any run-triple.
+        pref, rest = [], []
+        for i in range(len(runs) - 2):
+            tri = runs[i:i + 3]
+            (pref if len(tri[year_idx]) == year_w else rest).append(tri)
+        candidates = []
+        if len(runs) == 1 and len(runs[0]) == total:
+            candidates.append([runs[0][sum(widths[:j]):sum(widths[:j + 1])]
+                               for j in range(3)])
+        candidates += pref
+        if len(runs) == 2 and sum(len(x) for x in runs) == total:
+            s = "".join(runs)
+            candidates.append([s[sum(widths[:j]):sum(widths[:j + 1])]
+                               for j in range(3)])
+        candidates += rest
         import datetime as _dt
-        try:
-            _dt.date(year, month, day)
-        except (ValueError, TypeError):
-            return (text or None), False
-        emit = {"DD": f"{day:02d}", "MM": f"{month:02d}",
-                "YYYY": f"{year:04d}", "YY": f"{year % 100:02d}"}
-        return sep.join(emit[tok] for tok in tokens), True
+        today = _dt.date.today()
+        for parts in candidates:
+            day = month = year = None
+            yraw = None
+            bad = False
+            for tok, part in zip(tokens, parts):
+                if not part.isdigit():
+                    bad = True
+                    break
+                n = int(part)
+                if tok[0] == "D":
+                    day = n
+                elif tok[0] == "M":
+                    month = n
+                elif len(part) == 4:
+                    year, yraw = n, part
+                elif len(part) == 2:
+                    year = 2000 + n if n < 70 else 1900 + n
+                else:  # 1- or 3-digit year -> not a reliable read
+                    bad = True
+                    break
+            if bad:
+                continue
+            # Recover a 4-digit year that OCR'd out of range (the dominant 2->7
+            # confusion in these printed CR dates); never alters an in-range year.
+            if yraw is not None and not (1900 <= year <= today.year):
+                ry = _recover_year(yraw, today.year)
+                if ry is not None:
+                    year = ry
+            # Requested range gates: day<=31, month<=12, year<=current year.
+            if not (day and month and 1 <= day <= 31 and 1 <= month <= 12
+                    and 1900 <= year <= today.year):
+                continue
+            try:
+                _dt.date(year, month, day)  # reject impossible dates (e.g. 31/02)
+            except (ValueError, TypeError):
+                continue
+            emit = {"DD": f"{day:02d}", "MM": f"{month:02d}",
+                    "YYYY": f"{year:04d}", "YY": f"{year % 100:02d}"}
+            return sep.join(emit[tok] for tok in tokens), True
+        # No candidate yielded a valid in-range date -> flag for review.
+        return (text or None), False
     entries = _mask_entries(value, list_lookup)
     if not entries:
         return (text or None), True

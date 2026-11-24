@@ -482,6 +482,15 @@ def _apply_test_masks(kind, defs, fields, page, region, pp):
                     val, ok = rv, True
                     if rc:
                         f["confidence"] = rc
+            if not ok and d.get("mask") == "date" and d.get("box"):
+                rv, rc, rok = ocr.refine_to_date(
+                    page, d["box"], d.get("value"),
+                    base_pp=(d.get("pp") or pp),
+                    region_pts=(region if kind == "rc" else None))
+                if rok and rv:
+                    val, ok = rv, True
+                    if rc:
+                        f["confidence"] = rc
             f["value"] = val or ""
             f["mask_ok"] = ok
     if kind == "rc" and not region:
@@ -511,10 +520,61 @@ def _apply_test_masks(kind, defs, fields, page, region, pp):
                     val, ok = rv, True
                     if rc:
                         conf = rc
+            if not ok and d.get("mask") == "date":
+                rv, rc, rok = ocr.refine_to_date(
+                    page, d["box"], d.get("value"),
+                    base_pp=fpp,
+                    region_pts=(region if kind == "rc" else None))
+                if rok and rv:
+                    val, ok = rv, True
+                    if rc:
+                        conf = rc
         fields.append({"key": d["key"], "label": d["label"], "value": val or "",
                        "confidence": round(float(conf), 3) if conf else None,
                        "mask_ok": ok})
     return fields
+
+
+def _test_select_and_crop(kind, defs, fields, page, region, pp):
+    """Reduce a Test-OCR result to only the template-selected (capture) fields
+    and attach each one's value-region crop as a data URL -- rendered exactly
+    like the stored View-Records crop (a whole-page pp render then slice for CR;
+    the slip-region pipeline for RC) -- so the test mirrors what processing
+    persists.  Order is preserved."""
+    from app.utils import registration_ocr as ocr
+    by_key = {d["key"]: d for d in defs}
+    pbgr_cache: dict = {}
+    out = []
+    for f in fields:
+        d = by_key.get(f["key"])
+        if not d or not d.get("capture"):
+            continue
+        box = d.get("box")
+        if box:
+            fpp = d.get("pp") or pp
+            png = None
+            try:
+                if kind == "cr":
+                    cz = (ocr._descreen_zoom(page, 5.0)
+                          if (fpp and fpp.get("fft")) else 5.0)
+                    ck = json.dumps(fpp, sort_keys=True) if fpp else ""
+                    pbgr = pbgr_cache.get(ck)
+                    if pbgr is None and fpp:
+                        pbgr = ocr._page_bgr(page, fpp, cz)
+                        pbgr_cache[ck] = pbgr
+                    png = ocr.crop_box_png(page, box, disp_zoom=cz,
+                                           page_bgr=pbgr)
+                elif region is not None:
+                    _v, crops, _c = ocr.read_receipt_rects(
+                        page, region, {f["key"]: box}, pp=fpp)
+                    png = crops.get(f["key"])
+            except Exception:
+                png = None
+            if png:
+                f["crop"] = ("data:image/png;base64,"
+                             + base64.b64encode(png).decode())
+        out.append(f)
+    return out
 
 
 def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
@@ -570,11 +630,15 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
     # The head template plus every applied template present in this batch, so
     # their capture columns exist and their defs are cached up front.
     templates_by_name = {getattr(tpl, "name", None): tpl}
-    if kind == "rc":
-        for nm in {r.applied_template for r in recs if r.applied_template}:
-            if nm not in templates_by_name:
-                templates_by_name[nm] = OcrTemplate.query.filter_by(
-                    name=nm).first()
+    # Each record is captured with its OWN applied template (CR resolves a
+    # template per page via the fallback chain, receipts per slip), which may
+    # differ from the upload's head template and carry different field boxes;
+    # load them so capture reads the box that actually matched each record.
+    for nm in {getattr(r, "applied_template", None) for r in recs
+               if getattr(r, "applied_template", None)}:
+        if nm not in templates_by_name:
+            templates_by_name[nm] = OcrTemplate.query.filter_by(
+                name=nm).first()
     for t in templates_by_name.values():
         for d in _defs_for(t)[0]:
             ensure_record_column(kind, d["key"], d.get("label"))
@@ -600,11 +664,11 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
                 s = slips[idx]
                 page = doc[s["page"]]
                 region = ocr._slip_region_pts(page, s["y0"], s["y1"], s["zoom"])
-            # Use the record's applied template (receipts) so a slip that matched
-            # a richer template captures all of its fields; CR uses the single
-            # resolved template.
-            rt = ((templates_by_name.get(getattr(rec, "applied_template", None))
-                   if kind == "rc" else tpl) or tpl)
+            # Use the record's OWN applied template so each record is captured
+            # with the boxes/pp of the template that actually matched it (CR per
+            # page, receipts per slip), not the upload's head template.
+            rt = (templates_by_name.get(getattr(rec, "applied_template", None))
+                  or tpl)
             cap_defs, mask_defs, conf_only_defs, tpp = _defs_for(rt)
             flagged = False
             # Per-record cache of whole-page pp renders (keyed by pp) so each
@@ -623,6 +687,13 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
                 if not ok and d.get("mask") == "pattern":
                     rv, _rc, rok = ocr.refine_to_pattern(
                         page, d["box"], d.get("value"), _list_lookup,
+                        base_pp=fpp,
+                        region_pts=(region if kind == "rc" else None))
+                    if rok and rv:
+                        val, ok = rv, True
+                if not ok and d.get("mask") == "date":
+                    rv, _rc, rok = ocr.refine_to_date(
+                        page, d["box"], d.get("value"),
                         base_pp=fpp,
                         region_pts=(region if kind == "rc" else None))
                     if rok and rv:
@@ -672,6 +743,13 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
                 if not ok and d.get("mask") == "pattern" and d.get("box"):
                     rv, _rc, rok = ocr.refine_to_pattern(
                         page, d["box"], d.get("value"), _list_lookup,
+                        base_pp=(d.get("pp") or tpp),
+                        region_pts=(region if kind == "rc" else None))
+                    if rok and rv:
+                        val, ok = rv, True
+                if not ok and d.get("mask") == "date" and d.get("box"):
+                    rv, _rc, rok = ocr.refine_to_date(
+                        page, d["box"], d.get("value"),
                         base_pp=(d.get("pp") or tpp),
                         region_pts=(region if kind == "rc" else None))
                     if rok and rv:
@@ -3498,10 +3576,11 @@ def cr_ocr_test(upload_id: int):
     doc, total = ocr.open_document(up.stored_path)
     try:
         idx = max(1, min(total, int(data.get("page") or 1))) - 1
+        defs = ocr.clean_fields(data.get("fields"), "cr")
         fields = ocr.test_cr_page(doc[idx], pp=pp, rects=rects, anchors=anchors,
                                   text_anchors=text_anchors)
-        _apply_test_masks("cr", ocr.clean_fields(data.get("fields"), "cr"),
-                          fields, doc[idx], None, pp)
+        _apply_test_masks("cr", defs, fields, doc[idx], None, pp)
+        fields = _test_select_and_crop("cr", defs, fields, doc[idx], None, pp)
     finally:
         doc.close()
     return jsonify({"ok": True, "fields": fields})
@@ -4345,8 +4424,9 @@ def rc_ocr_test(upload_id: int):
             page = doc[0]
             fields = ocr.test_receipt_page(page, pp=pp)
             region = ocr.first_slip_region(page)
-        _apply_test_masks("rc", ocr.clean_fields(data.get("fields"), "rc"),
-                          fields, page, region, pp)
+        defs = ocr.clean_fields(data.get("fields"), "rc")
+        _apply_test_masks("rc", defs, fields, page, region, pp)
+        fields = _test_select_and_crop("rc", defs, fields, page, region, pp)
     finally:
         doc.close()
     return jsonify({"ok": True, "fields": fields})

@@ -227,6 +227,10 @@ select.input { appearance: auto; }
 .badge-warning { background: rgba(217,138,31,.16); color: var(--warning); }
 .badge-danger { background: rgba(214,69,69,.15); color: var(--danger); }
 .badge-info { background: rgba(58,123,217,.15); color: var(--info); }
+/* A review badge rendered as a button: opens the OCR Settings popup on click. */
+button.badge-btn { border: 0; cursor: pointer; font: inherit; font-size: 12px;
+  font-weight: 600; line-height: inherit; }
+button.badge-btn:hover { filter: brightness(1.08); text-decoration: underline; }
 
 /* ---- CR-book format review --------------------------------------------- */
 .review-card { display: flex; gap: 20px; align-items: flex-start; }
@@ -677,6 +681,13 @@ select.input { appearance: auto; }
 .tmpl-check { display: inline-flex; align-items: center; gap: 6px;
   font-size: .85rem; color: var(--text); }
 .tmpl-modal__panel--wide { width: min(980px, 94vw); }
+/* OCR Settings popup: keep the header/footer fixed and scroll only the body. */
+[data-ocr-modal] .tmpl-modal__panel { width: min(1400px, 96vw);
+  overflow: hidden; }
+[data-ocr-modal] .tmpl-modal__head,
+[data-ocr-modal] .tmpl-modal__foot { flex: 0 0 auto; }
+[data-ocr-modal] .tmpl-modal__body { flex: 1 1 auto; overflow-y: auto;
+  min-height: 0; }
 .ocr-tpl { display: flex; align-items: center; gap: 4px; margin-left: auto;
   margin-right: 8px; flex-wrap: wrap; }
 .ocr-tpl select { min-width: 150px; max-width: 220px; padding: 3px 6px;
@@ -755,13 +766,18 @@ select.input { appearance: auto; }
   pointer-events: auto; }
 .ocr-toolbar .btn-sm.is-on { background: #d97706; color: #fff;
   border-color: #d97706; }
+.ocr-results { overflow-x: auto; min-width: 0; }
+.tmpl-modal__body > .ocr-results { grid-column: 1 / -1; }
 .ocr-results table { width: 100%; border-collapse: collapse; font-size: .82rem; }
 .ocr-results th, .ocr-results td { text-align: left; padding: 4px 8px;
-  border-bottom: 1px solid var(--border); vertical-align: top; }
+  border-bottom: 1px solid var(--border); vertical-align: middle; }
 .ocr-results th { color: var(--text-muted); font-weight: 600;
-  white-space: nowrap; width: 34%; }
+  white-space: nowrap; }
 .ocr-results td.val { font-family: monospace; word-break: break-word; }
 .ocr-results td.conf { text-align: right; white-space: nowrap; width: 66px; }
+.ocr-results td.crop { width: 1px; white-space: nowrap; }
+.ocr-test-crop { display: block; border: 1px solid var(--border);
+  background: #fff; image-rendering: crisp-edges; }
 @media (max-width: 560px) {
   .tmpl-modal__body { grid-template-columns: 1fr; }
 }

@@ -48,7 +48,7 @@
       {% for r in records %}
       <tr class="{{ 'row-review' if r._review else '' }}" data-search="{{ r.registration_no or '' }}">
         <td>{{ r.page_no or '' }}</td>
-        <td>{% if r._review %}<span class="badge badge-warning" title="{{ r._reasons|join('; ') }}">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
+        <td>{% if r._review %}<button type="button" class="badge badge-warning badge-btn" data-ocr-open data-uid="{{ upload.id }}" data-kind="{{ kind }}" data-ocr-page="{{ r.page_no or 1 }}" title="{{ r._reasons|join('; ') }} — click to open OCR settings">Check</button>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
         <td>{{ r.applied_template or '—' }}</td>
         {% if 'registration_no' in visible %}<td class="{{ cell_cls(r, 'registration_no') }}" title="confidence {{ conf_pct_text(r, 'registration_no') }}">
           {% if r.reg_crop %}<img class="val-crop" loading="lazy" alt="Reg No scan"
@@ -110,7 +110,7 @@
     <tbody>
       {% for r in records %}
       <tr class="{{ 'row-review' if r._review else '' }}" data-search="{{ r.vehicle_no or '' }}">
-        <td>{% if r.error %}<span class="badge badge-danger" title="{{ r.error }}">Unmatched Template</span>{% elif r._review %}<span class="badge badge-warning" title="{{ r._reasons|join('; ') }}">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
+        <td>{% if r.error %}<button type="button" class="badge badge-danger badge-btn" data-ocr-open data-uid="{{ upload.id }}" data-kind="{{ kind }}" data-ocr-page="{{ r.segment_no or 1 }}" title="{{ r.error }} — click to open OCR settings">Unmatched Template</button>{% elif r._review %}<button type="button" class="badge badge-warning badge-btn" data-ocr-open data-uid="{{ upload.id }}" data-kind="{{ kind }}" data-ocr-page="{{ r.segment_no or 1 }}" title="{{ r._reasons|join('; ') }} — click to open OCR settings">Check</button>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
         <td class="mono">{{ r.id }}</td>
         <td>{{ r.applied_template or '—' }}</td>
         {% if 'slip_no' in visible %}<td class="mono {{ cell_cls(r, 'slip_no') }}" title="confidence {{ conf_pct_text(r, 'slip_no') }}">{% if r.slip_crop %}<img class="val-crop" loading="lazy" alt="Slip No scan"
@@ -157,6 +157,7 @@
 </div>
 
 {% if kind in ['cr', 'rc'] %}{% include "main/_image_viewer.html" %}{% endif %}
+{% if kind in ['cr', 'rc'] %}{% include "main/_ocr_settings_modal.html" %}{% endif %}
 
 <script>
 (function () {

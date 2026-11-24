@@ -1,0 +1,1298 @@
+{% from "main/_icons.html" import icon %}
+{# CR upload OCR-settings popup (image adjustments applied to the whole book) #}
+<div class="tmpl-modal" data-ocr-modal hidden
+     data-preview-tpl="{{ url_for('main.cr_ocr_preview', upload_id=0) }}"
+     data-save-tpl="{{ url_for('main.cr_ocr_settings', upload_id=0) }}"
+     data-test-tpl="{{ url_for('main.cr_ocr_test', upload_id=0) }}"
+     data-boxes-tpl="{{ url_for('main.cr_ocr_boxes', upload_id=0) }}"
+     data-init-tpl="{{ url_for('main.cr_ocr_init', upload_id=0) }}"
+     data-valread-tpl="{{ url_for('main.cr_validate_read', upload_id=0) }}"
+     data-cr-tpltest-tpl="{{ url_for('main.cr_template_test', upload_id=0) }}"
+     data-rc-preview-tpl="{{ url_for('main.rc_ocr_preview', upload_id=0) }}"
+     data-rc-save-tpl="{{ url_for('main.rc_ocr_settings', upload_id=0) }}"
+     data-rc-test-tpl="{{ url_for('main.rc_ocr_test', upload_id=0) }}"
+     data-rc-init-tpl="{{ url_for('main.rc_ocr_init', upload_id=0) }}"
+     data-rc-valread-tpl="{{ url_for('main.rc_validate_read', upload_id=0) }}"
+     data-rc-tpltest-tpl="{{ url_for('main.rc_template_test', upload_id=0) }}"
+     data-lists-tpl="{{ url_for('main.ocr_lists') }}"
+     data-listdel-tpl="{{ url_for('main.ocr_list_delete', lid=0) }}"
+     data-fields-tpl="{{ url_for('main.ocr_fields') }}"
+     data-fielddel-tpl="{{ url_for('main.ocr_field_delete', key='__KEY__') }}"
+     data-tpls-tpl="{{ url_for('main.cr_ocr_templates') }}"
+     data-tplupd-tpl="{{ url_for('main.cr_ocr_template_update', tid=0) }}"
+     data-tpldel-tpl="{{ url_for('main.cr_ocr_template_delete', tid=0) }}"
+     data-csrf="{{ csrf_token() }}">
+  <div class="tmpl-modal__backdrop" data-ocr-close></div>
+  <div class="tmpl-modal__panel tmpl-modal__panel--wide" role="dialog"
+       aria-modal="true" aria-label="OCR image settings">
+    <div class="tmpl-modal__head">
+      <h3>OCR settings</h3>
+      <div class="ocr-tpl">
+        <select data-ocr-tpl aria-label="OCR template">
+          <option value="">(no template)</option>
+        </select>
+        <button type="button" class="btn btn-icon" data-ocr-tpl-save
+                title="Save to selected template">{{ icon('save', 16) }}</button>
+        <button type="button" class="btn btn-icon" data-ocr-tpl-add
+                title="Save as new template">{{ icon('plus', 16) }}</button>
+        <button type="button" class="btn btn-icon" data-ocr-tpl-del
+                title="Delete selected template">{{ icon('trash', 16) }}</button>
+        <span class="ocr-tpl-new" data-ocr-tpl-newwrap hidden>
+          <input type="text" data-ocr-tpl-name placeholder="New template name"
+                 maxlength="120">
+          <button type="button" class="btn btn-icon" data-ocr-tpl-create
+                  title="Create">{{ icon('check', 16) }}</button>
+          <button type="button" class="btn btn-icon" data-ocr-tpl-cancel
+                  title="Cancel">{{ icon('x', 16) }}</button>
+        </span>
+      </div>
+      <button type="button" class="btn btn-icon" data-ocr-close
+              title="Close">{{ icon('x', 16) }}</button>
+    </div>
+    <div class="tmpl-modal__body">
+      <div class="tmpl-preview">
+        <div class="ocr-toolbar">
+          <button type="button" class="btn btn-sm" data-ocr-page="prev"
+                  title="Previous record">{{ icon('chevron-left', 14) }}</button>
+          <span class="ocr-pagelabel" data-ocr-pagelabel>1/1</span>
+          <button type="button" class="btn btn-sm" data-ocr-page="next"
+                  title="Next record">{{ icon('chevron-right', 14) }}</button>
+          <span class="ocr-toolbar__sep"></span>
+          <button type="button" class="btn btn-sm" data-ocr-zoom="out" title="Zoom out">−</button>
+          <span class="ocr-zoomlabel" data-ocr-zoomlabel>100%</span>
+          <button type="button" class="btn btn-sm" data-ocr-zoom="in" title="Zoom in">+</button>
+          <button type="button" class="btn btn-sm" data-ocr-zoom="fit" title="Fit">Fit</button>
+          <button type="button" class="btn btn-sm" data-ocr-detect
+                  title="Auto-detect value positions">Detect positions</button>
+          <button type="button" class="btn btn-sm" data-ocr-anchor-toggle
+                  title="Define calibration anchors (receipts)"
+                  style="display:none;">Anchors</button>
+          <button type="button" class="btn btn-sm" data-ocr-anchor-add
+                  title="Add a calibration anchor"
+                  style="display:none;">+ anchor</button>
+        </div>
+        <div class="ocr-viewport" data-ocr-viewport>
+          <div class="ocr-stage" data-ocr-stage>
+            <img data-ocr-img alt="record preview">
+            <div class="ocr-overlay" data-ocr-overlay></div>
+          </div>
+        </div>
+        <p class="muted" data-ocr-hint style="font-size:.78rem;margin:2px 0 0;">Drag boxes to
+          move, drag a corner to resize. Boxes are cropped &amp; OCR'd per field.</p>
+        <p class="muted" data-ocr-anchor-hint
+           style="font-size:.78rem;margin:2px 0 0;display:none;">Place up to 3
+          anchors on fixed, always-printed marks (e.g. a header word). Every
+          page/slip is aligned to these before its value boxes are read. The
+          current page/slip is the reference.</p>
+      </div>
+      <div class="tmpl-settings">
+        <div class="tabs ocr-tabs" data-tabs>
+          <div class="tab-bar" role="tablist">
+            <button class="tab-btn is-active" type="button" role="tab"
+                    data-tab-target="ocr-tab-image">Image setting</button>
+            <button class="tab-btn" type="button" role="tab"
+                    data-tab-target="ocr-tab-field">Field setting</button>
+            <button class="tab-btn" type="button" role="tab"
+                    data-tab-target="ocr-tab-position">Position setting</button>
+            <button class="tab-btn" type="button" role="tab"
+                    data-tab-target="ocr-tab-template">Template picker</button>
+          </div>
+          <section class="tab-panel is-active" id="ocr-tab-image" role="tabpanel">
+        <label class="tmpl-slider">Brightness <span data-out="brightness">0</span>
+          <input type="range" data-pp="brightness" min="-100" max="100" step="1" value="0"></label>
+        <label class="tmpl-slider">Contrast <span data-out="contrast">0</span>
+          <input type="range" data-pp="contrast" min="-100" max="100" step="1" value="0"></label>
+        <label class="tmpl-slider">Sharpness <span data-out="sharpness">0</span>
+          <input type="range" data-pp="sharpness" min="0" max="3" step="0.1" value="0"></label>
+        <label class="tmpl-slider">Gamma <span data-out="gamma">1.0</span>
+          <input type="range" data-pp="gamma" min="0.2" max="3" step="0.05" value="1"></label>
+        <label class="tmpl-slider">Remove pattern (morph) <span data-out="morph">0</span>
+          <input type="range" data-pp="morph" min="0" max="7" step="1" value="0"></label>
+        <label class="tmpl-slider">Black-text level (colour) <span data-out="colorkeep_v">130</span>
+          <input type="range" data-pp="colorkeep_v" min="0" max="255" step="5" value="130"></label>
+        <div class="tmpl-checks">
+          <label class="tmpl-check"><input type="checkbox" data-pp="removebg"> Remove background</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="clahe"> Local contrast (CLAHE)</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="autocontrast"> Auto-contrast</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="colorkeep"> Keep black text (colour)</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="fft"> Remove guilloche (FFT)</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="grayscale"> Grayscale</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="denoise"> Denoise</label>
+          <label class="tmpl-check"><input type="checkbox" data-pp="invert"> Invert</label>
+        </div>
+        <label class="tmpl-slider">Threshold (binarize)
+          <select data-pp="threshold">
+            <option value="off">Off</option>
+            <option value="auto">Auto (Otsu)</option>
+            <option value="adaptive">Adaptive (uneven light)</option>
+            <option value="fixed">Fixed…</option>
+          </select></label>
+        <label class="tmpl-slider" data-thval-wrap hidden>Threshold value
+          <span data-out="thval">128</span>
+          <input type="range" data-thval min="0" max="255" step="1" value="128"></label>
+          </section>
+          <section class="tab-panel" id="ocr-tab-field" role="tabpanel">
+            <p class="muted ocr-tab-help">Tick a field to capture it with a box in
+              this template (drag it into place on the image). “Apply mask”
+              refines the OCR read using “Value” — a fixed text, a
+              <code>[List name]</code>, or a date format for the
+              <strong>Date</strong> mask (e.g. <code>DD/MM/YYYY</code>,
+              <code>MM/DD/YYYY</code>, <code>DD-MM-YYYY</code>).</p>
+            <div class="fld-wrap">
+              <table class="fld-table" data-fld-table>
+                <thead><tr><th title="Capture with a box"></th><th>Field</th>
+                  <th>Apply mask</th><th>Value</th>
+                  <th title="Minimum OCR confidence %. A captured field read below this is flagged for review in the records view; blank never flags on confidence.">Min&nbsp;%</th>
+                  <th></th></tr></thead>
+                <tbody data-fld-body></tbody>
+              </table>
+            </div>
+            <div class="fld-add">
+              <input type="text" data-fld-new placeholder="New field label" maxlength="60">
+              <button type="button" class="btn btn-sm" data-fld-add>+ Add field</button>
+            </div>
+            <div class="fld-lists">
+              <h5 class="fld-lists__title">Lists
+                <span class="muted">— referenced as [name] in Value</span></h5>
+              <div class="fld-lists__row">
+                <select data-list-picker><option value="">(new list)</option></select>
+                <input type="text" data-list-name placeholder="List name" maxlength="120">
+                <button type="button" class="btn btn-sm" data-list-save>Save list</button>
+                <button type="button" class="btn btn-sm btn-danger" data-list-del>Delete</button>
+              </div>
+              <textarea data-list-items rows="5" placeholder="One item per line"></textarea>
+              <p class="muted fld-lists__hint" data-list-hint></p>
+            </div>
+          </section>
+          <section class="tab-panel" id="ocr-tab-position" role="tabpanel">
+            <p class="muted ocr-tab-placeholder">Position settings will appear here.</p>
+          </section>
+          <section class="tab-panel" id="ocr-tab-template" role="tabpanel">
+            <label class="tmpl-check"><input type="checkbox" data-val-enabled>
+              Enable validation</label>
+            <div class="val-row">
+              <button type="button" class="btn btn-sm" data-val-box-btn
+                      title="Draw the first region to read for validation">Validate box 1</button>
+              <input type="text" class="val-text" data-val-text
+                     placeholder="Validate text / pattern" maxlength="200">
+            </div>
+            <div class="val-row">
+              <button type="button" class="btn btn-sm" data-val-box2-btn
+                      title="Draw the second region to read for validation (optional; both must match)">Validate box 2</button>
+              <input type="text" class="val-text" data-val-text2
+                     placeholder="Validate text / pattern (optional)" maxlength="200">
+            </div>
+            <div class="val-row">
+              <button type="button" class="btn btn-sm" data-val-read
+                      title="OCR the validate box(es) on the current document">Read box (current doc)</button>
+              <span class="val-captured muted" data-val-captured>—</span>
+            </div>
+            <div class="val-row" data-tpltest-row hidden>
+              <button type="button" class="btn btn-sm" data-tpltest-btn
+                      title="Run the currently loaded slip through the template chain from the start and list which templates match">Test template (current slip)</button>
+              <span class="val-captured muted" data-tpltest-status>—</span>
+            </div>
+            <div class="tpltest-results" data-tpltest-results hidden
+                 style="max-height:220px;overflow:auto;margin-top:8px"></div>
+            <label class="tmpl-slider">If fail, try template
+              <select data-val-fail>
+                <option value="">(none)</option>
+              </select></label>
+            <p class="muted ocr-tab-placeholder">When enabled, each configured
+              validate box is OCR'd (with this template's image settings) before
+              cropping; the template is used only if the read text matches the
+              validate text/pattern. If a second box is configured, BOTH boxes
+              must match (logical AND). Otherwise the fail template is tried. If none match,
+              that slip is flagged “Error” and skipped, and processing continues
+              with the next slip. Plain text is matched
+              loosely (tolerates minor OCR errors). Wildcards: <code>*</code> any
+              run, <code>?</code> one letter, <code>#</code> one digit,
+              <code>[abc]</code>/<code>[a-c]</code> a set/range, <code>[!abc]</code>
+              excludes; combine patterns with <code>and</code>/<code>or</code>/<code>not</code>
+              (e.g. <code>*cash* or *cheque*</code>).</p>
+          </section>
+        </div>
+      </div>
+      <div class="ocr-results" data-ocr-results hidden></div>
+    </div>
+    <div class="tmpl-modal__foot">
+      <label class="checkbox" style="margin-right:auto;">
+        <input type="checkbox" data-ocr-reprocess checked><span>Re-process now</span></label>
+      <span class="tmpl-status" data-ocr-status></span>
+      <button type="button" class="btn" data-ocr-reset>Reset</button>
+      <button type="button" class="btn" data-ocr-test>Test OCR</button>
+      <button type="button" class="btn btn-primary" data-ocr-save>Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var modal = document.querySelector('[data-ocr-modal]');
+  if (!modal) return;
+  var img = modal.querySelector('[data-ocr-img]');
+  var controls = Array.prototype.slice.call(modal.querySelectorAll('[data-pp]'));
+  var thval = modal.querySelector('[data-thval]');
+  var thWrap = modal.querySelector('[data-thval-wrap]');
+  var reproc = modal.querySelector('[data-ocr-reprocess]');
+  var saveBtn = modal.querySelector('[data-ocr-save]');
+  var resetBtn = modal.querySelector('[data-ocr-reset]');
+  var testBtn = modal.querySelector('[data-ocr-test]');
+  var results = modal.querySelector('[data-ocr-results]');
+  var statusEl = modal.querySelector('[data-ocr-status]');
+  function ga(a) { return modal.getAttribute(a); }
+  var URLS = {
+    cr: { preview: ga('data-preview-tpl'), save: ga('data-save-tpl'),
+          test: ga('data-test-tpl'), boxes: ga('data-boxes-tpl'),
+          init: ga('data-init-tpl'), valread: ga('data-valread-tpl'),
+          tpltest: ga('data-cr-tpltest-tpl') },
+    rc: { preview: ga('data-rc-preview-tpl'), save: ga('data-rc-save-tpl'),
+          test: ga('data-rc-test-tpl'), boxes: null,
+          init: ga('data-rc-init-tpl'), valread: ga('data-rc-valread-tpl'),
+          tpltest: ga('data-rc-tpltest-tpl') }
+  };
+  var kind = 'cr';
+  var PREVIEW_TPL, SAVE_TPL, TEST_TPL, BOXES_TPL, INIT_TPL, VALREAD_TPL, TPLTEST_TPL;
+  var CSRF = modal.getAttribute('data-csrf') || '';
+  var stage = modal.querySelector('[data-ocr-stage]');
+  var overlay = modal.querySelector('[data-ocr-overlay]');
+  var zoomLabel = modal.querySelector('[data-ocr-zoomlabel]');
+  var detectBtn = modal.querySelector('[data-ocr-detect]');
+  var anchorToggleBtn = modal.querySelector('[data-ocr-anchor-toggle]');
+  var anchorAddBtn = modal.querySelector('[data-ocr-anchor-add]');
+  var anchorHint = modal.querySelector('[data-ocr-anchor-hint]');
+  var calibAddBtn = modal.querySelector('[data-calib-add]');
+  var calibList = modal.querySelector('[data-calib-list]');
+  var calibCount = modal.querySelector('[data-calib-count]');
+  var calibPanel = modal.querySelector('#ocr-tab-calibration');
+  var calibCopySelect = modal.querySelector('[data-calib-copy]');
+  var tplSelect = modal.querySelector('[data-ocr-tpl]');
+  var tplSaveBtn = modal.querySelector('[data-ocr-tpl-save]');
+  var tplAddBtn = modal.querySelector('[data-ocr-tpl-add]');
+  var tplDelBtn = modal.querySelector('[data-ocr-tpl-del]');
+  var tplNewWrap = modal.querySelector('[data-ocr-tpl-newwrap]');
+  var tplNameInput = modal.querySelector('[data-ocr-tpl-name]');
+  var tplCreateBtn = modal.querySelector('[data-ocr-tpl-create]');
+  var tplCancelBtn = modal.querySelector('[data-ocr-tpl-cancel]');
+  var pagePrev = modal.querySelector('[data-ocr-page="prev"]');
+  var pageNext = modal.querySelector('[data-ocr-page="next"]');
+  var pageLabel = modal.querySelector('[data-ocr-pagelabel]');
+  var hintEl = modal.querySelector('[data-ocr-hint]');
+  var valEnabled = modal.querySelector('[data-val-enabled]');
+  var valBoxBtn = modal.querySelector('[data-val-box-btn]');
+  var valText = modal.querySelector('[data-val-text]');
+  var valBox2Btn = modal.querySelector('[data-val-box2-btn]');
+  var valText2 = modal.querySelector('[data-val-text2]');
+  var valFail = modal.querySelector('[data-val-fail]');
+  var valReadBtn = modal.querySelector('[data-val-read]');
+  var valCaptured = modal.querySelector('[data-val-captured]');
+  var tplTestRow = modal.querySelector('[data-tpltest-row]');
+  var tplTestBtn = modal.querySelector('[data-tpltest-btn]');
+  var tplTestStatus = modal.querySelector('[data-tpltest-status]');
+  var tplTestResults = modal.querySelector('[data-tpltest-results]');
+  var fldBody = modal.querySelector('[data-fld-body]');
+  var fldNew = modal.querySelector('[data-fld-new]');
+  var fldAddBtn = modal.querySelector('[data-fld-add]');
+  var listPicker = modal.querySelector('[data-list-picker]');
+  var listName = modal.querySelector('[data-list-name]');
+  var listItems = modal.querySelector('[data-list-items]');
+  var listSaveBtn = modal.querySelector('[data-list-save]');
+  var listDelBtn = modal.querySelector('[data-list-del]');
+  var listHint = modal.querySelector('[data-list-hint]');
+  var LISTS_URL = modal.getAttribute('data-lists-tpl');
+  var LISTDEL_TPL = modal.getAttribute('data-listdel-tpl');
+  var FIELDS_URL = modal.getAttribute('data-fields-tpl');
+  var FIELDDEL_TPL = modal.getAttribute('data-fielddel-tpl');
+  var MASK_OPTS = [['none', 'None'], ['pattern', 'Pattern'],
+    ['partial50', '50% Partial Match'], ['partial75', '75% Partial Match'],
+    ['charcount', 'No of Characters'], ['numeric', 'Numeric entry'],
+    ['numeric_decimal', 'Numeric entry with decimals'], ['exact', '100% Match'],
+    ['date', 'Date']];
+  var TPLS_URL = modal.getAttribute('data-tpls-tpl');
+  var TPLUPD_TPL = modal.getAttribute('data-tplupd-tpl');
+  var TPLDEL_TPL = modal.getAttribute('data-tpldel-tpl');
+  var FIELDS_CR = [['registration_no', 'Reg No'], ['chassis_no', 'Chassis No'],
+    ['engine_no', 'Engine No'], ['absolute_owner', 'Absolute Owner'],
+    ['class_of_vehicle', 'Class'], ['fuel_type', 'Fuel'],
+    ['cylinder_capacity', 'CC'], ['year_of_manufacture', 'Year'],
+    ['colour', 'Colour']];
+  var FIELDS_RC = [['receipt_no', 'Receipt No'], ['vehicle_no', 'Vehicle No'],
+    ['receipt_date', 'Date'], ['total_amount', 'Total'],
+    ['bank_charges', 'Charges'], ['bank_total', 'Bank Total'],
+    ['slip_no', 'Slip No']];
+  var FIELDS = FIELDS_CR;
+  var rects = {}, zoom = 1;
+  var templates = [], selectedId = null, currentPage = 1, totalPages = 1;
+  var slipPages = [];
+  var anchors = [], anchorMode = false, anchorRefSlip = 1;
+  var textAnchors = [], calibMode = false;
+  var validateBox = null, validateBox2 = null, validateMode = false;
+  var fieldDefs = [], fieldCatalog = [], lists = [];
+  var uid = null, timer = null;
+  function url(tpl) { return tpl.replace(/\/0\//, '/' + uid + '/'); }
+  function setKind(k) {
+    kind = (k === 'rc') ? 'rc' : 'cr';
+    var u = URLS[kind];
+    PREVIEW_TPL = u.preview; SAVE_TPL = u.save; TEST_TPL = u.test;
+    BOXES_TPL = u.boxes; INIT_TPL = u.init; VALREAD_TPL = u.valread;
+    TPLTEST_TPL = u.tpltest;
+    FIELDS = (kind === 'rc') ? FIELDS_RC : FIELDS_CR;
+    if (detectBtn) detectBtn.style.display = (kind === 'rc') ? 'none' : '';
+    if (tplTestRow) tplTestRow.hidden = !TPLTEST_TPL;
+    if (tplTestResults) { tplTestResults.hidden = true; tplTestResults.innerHTML = ''; }
+    if (tplTestStatus) { tplTestStatus.textContent = '\u2014'; tplTestStatus.className = 'val-captured muted'; }
+    if (hintEl) hintEl.style.display = '';
+    if (anchorToggleBtn) anchorToggleBtn.style.display = '';
+  }
+  function neutralFor(k) { if (k === 'gamma') return 1; if (k === 'colorkeep_v') return 130; return 0; }
+  function collectPp() {
+    var pp = {};
+    controls.forEach(function (c) {
+      var k = c.getAttribute('data-pp');
+      if (c.type === 'checkbox') { if (c.checked) pp[k] = true; }
+      else if (k === 'threshold') {
+        if (c.value === 'auto') pp.threshold = 'auto';
+        else if (c.value === 'adaptive') pp.threshold = 'adaptive';
+        else if (c.value === 'fixed') pp.threshold = parseInt(thval.value, 10);
+      } else {
+        var n = parseFloat(c.value);
+        if (!isNaN(n) && n !== neutralFor(k)) pp[k] = n;
+      }
+    });
+    if (!pp.colorkeep) delete pp.colorkeep_v;
+    return pp;
+  }
+  function setControls(pp) {
+    pp = pp || {};
+    controls.forEach(function (c) {
+      var k = c.getAttribute('data-pp');
+      if (c.type === 'checkbox') { c.checked = !!pp[k]; }
+      else if (k === 'threshold') {
+        var v = pp.threshold;
+        c.value = (v === undefined || v === null || v === '' || v === 'off') ? 'off'
+          : (v === 'auto' ? 'auto' : (v === 'adaptive' ? 'adaptive' : 'fixed'));
+      } else {
+        c.value = (pp[k] !== undefined && pp[k] !== null) ? pp[k] : neutralFor(k);
+      }
+    });
+    thval.value = (typeof pp.threshold === 'number') ? pp.threshold : 128;
+    syncThreshold(); syncOut();
+  }
+  function syncThreshold() {
+    var sel = modal.querySelector('[data-pp="threshold"]');
+    if (thWrap) thWrap.hidden = !(sel && sel.value === 'fixed');
+  }
+  function syncOut() {
+    modal.querySelectorAll('[data-out]').forEach(function (s) {
+      var k = s.getAttribute('data-out');
+      if (k === 'thval') { s.textContent = thval.value; return; }
+      var c = modal.querySelector('[data-pp="' + k + '"]');
+      if (!c) return;
+      s.textContent = (k === 'gamma') ? parseFloat(c.value).toFixed(2) : c.value;
+    });
+  }
+  function setStatus(t) { if (statusEl) statusEl.textContent = t || ''; }
+  function loadPreview() {
+    if (uid === null) return;
+    setStatus('Rendering\u2026');
+    fetch(url(PREVIEW_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ pp: collectPp(), page: currentPage, slip: currentPage })
+    }).then(function (r) { return r.blob(); })
+      .then(function (b) { img.src = URL.createObjectURL(b); setStatus(''); })
+      .catch(function () { setStatus('Preview failed.'); });
+  }
+  function debounced() { clearTimeout(timer); timer = setTimeout(loadPreview, 250); }
+  controls.forEach(function (c) {
+    c.addEventListener('input', function () { syncThreshold(); syncOut(); debounced(); });
+    c.addEventListener('change', function () { syncThreshold(); syncOut(); debounced(); });
+  });
+  thval && thval.addEventListener('input', function () { syncOut(); debounced(); });
+  function confBadge(c) {
+    if (c === null || c === undefined || c === '') return '<span class="badge badge-muted">\u2014</span>';
+    var pct = Math.round(c * 100), cls = c >= 0.75 ? 'badge-success' : (c >= 0.55 ? 'badge-warning' : 'badge-danger');
+    return '<span class="badge ' + cls + '">' + pct + '%</span>';
+  }
+  function esc(s) { var d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+  function renderResults(fields) {
+    fields = fields || [];
+    if (!fields.length) {
+      results.innerHTML = '<p class="muted">No template-selected fields to show.</p>';
+      results.hidden = false;
+      return;
+    }
+    var rows = fields.map(function (f) {
+      var flag = (f.mask_ok === false)
+        ? ' <span class="badge badge-warning" title="Fails Apply-mask \u2014 flagged for review">review</span>' : '';
+      var crop = f.crop
+        ? '<img class="ocr-test-crop" src="' + f.crop + '" alt="">'
+        : '<span class="muted">\u2014</span>';
+      return '<tr><th>' + esc(f.label) + '</th><td class="crop">' + crop +
+        '</td><td class="val">' +
+        (f.value ? esc(f.value) : '<span class="muted">\u2014</span>') + flag +
+        '</td><td class="conf">' + confBadge(f.confidence) + '</td></tr>';
+    }).join('');
+    results.innerHTML = '<table><thead><tr><th>Field</th><th>Scan</th>' +
+      '<th>Value</th><th>Conf.</th></tr></thead><tbody>' + rows +
+      '</tbody></table>';
+    results.hidden = false;
+  }
+  function runTest() {
+    if (uid === null) return;
+    testBtn.disabled = true; setStatus('Running OCR\u2026');
+    fetch(url(TEST_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), fields: collectFields(), page: currentPage, slip: currentPage, anchors: collectAnchors(), ref_slip: anchorRefSlip, text_anchors: collectTextAnchors() })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        testBtn.disabled = false;
+        if (!d || !d.ok) { setStatus('Test failed.'); return; }
+        renderResults(d.fields); setStatus('');
+      }).catch(function () { testBtn.disabled = false; setStatus('Network error.'); });
+  }
+  testBtn && testBtn.addEventListener('click', runTest);
+  function readValidateBox() {
+    if (uid === null || !VALREAD_TPL) return;
+    var box = collectValidateBox(), box2 = collectValidateBox2();
+    if (!box && !box2) { if (valCaptured) { valCaptured.textContent = 'Draw the validate box first.'; valCaptured.className = 'val-captured bad'; } return; }
+    valReadBtn.disabled = true;
+    if (valCaptured) { valCaptured.textContent = 'Reading\u2026'; valCaptured.className = 'val-captured muted'; }
+    fetch(url(VALREAD_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ pp: collectPp(), box: box, box2: box2, slip: currentPage, page: currentPage,
+        text: valText ? valText.value : '', text2: valText2 ? valText2.value : '' })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        valReadBtn.disabled = false;
+        if (!d || !d.ok) { if (valCaptured) { valCaptured.textContent = (d && d.error) || 'Read failed.'; valCaptured.className = 'val-captured bad'; } return; }
+        var parts = [], allOk = true, anyText = false;
+        if (box) {
+          var has1 = !!(valText && valText.value.trim());
+          var mark1 = has1 ? (d.matched ? ' \u2713' : ' \u2717') : '';
+          parts.push('Box 1: ' + (d.text ? d.text : '(empty)') + mark1);
+          if (has1) { anyText = true; if (!d.matched) allOk = false; }
+        }
+        if (box2) {
+          var has2 = !!(valText2 && valText2.value.trim());
+          var mark2 = has2 ? (d.matched2 ? ' \u2713' : ' \u2717') : '';
+          parts.push('Box 2: ' + (d.text2 ? d.text2 : '(empty)') + mark2);
+          if (has2) { anyText = true; if (!d.matched2) allOk = false; }
+        }
+        if (valCaptured) {
+          valCaptured.textContent = parts.join('  |  ');
+          valCaptured.className = 'val-captured ' + (anyText ? (allOk ? 'ok' : 'bad') : 'muted');
+        }
+      }).catch(function () { valReadBtn.disabled = false; if (valCaptured) { valCaptured.textContent = 'Network error.'; valCaptured.className = 'val-captured bad'; } });
+  }
+  valReadBtn && valReadBtn.addEventListener('click', readValidateBox);
+  function runTemplateTest(cb) {
+    if (uid === null || !TPLTEST_TPL) { if (cb) cb(null); return; }
+    if (!selectedId) { if (tplTestStatus) { tplTestStatus.textContent = 'Select or save a template first.'; tplTestStatus.className = 'val-captured bad'; } if (cb) cb(null); return; }
+    tplTestBtn.disabled = true;
+    if (tplTestStatus) { tplTestStatus.textContent = 'Testing slip ' + currentPage + '\u2026'; tplTestStatus.className = 'val-captured muted'; }
+    if (tplTestResults) { tplTestResults.hidden = true; tplTestResults.innerHTML = ''; }
+    fetch(url(TPLTEST_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ template_id: selectedId, slip: currentPage })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        tplTestBtn.disabled = false;
+        if (!d || !d.ok) { if (tplTestStatus) { tplTestStatus.textContent = (d && d.error) || 'Test failed.'; tplTestStatus.className = 'val-captured bad'; } if (cb) cb(null); return; }
+        if (tplTestStatus) {
+          tplTestStatus.textContent = 'Slip ' + d.slip + ' \u2014 ' + (d.matched ? ('matched ' + d.matched) : 'no template matched');
+          tplTestStatus.className = 'val-captured ' + (d.matched ? 'ok' : 'bad');
+        }
+        if (tplTestResults) {
+          tplTestResults.innerHTML = '';
+          var tbl = document.createElement('table');
+          tbl.className = 'table';
+          tbl.innerHTML = '<thead><tr><th>Order</th><th>Template</th><th>Validate reads</th><th>Result</th></tr></thead>';
+          var tb = document.createElement('tbody');
+          (d.chain || []).forEach(function (row, i) {
+            var tr = document.createElement('tr');
+            var c1 = document.createElement('td'); c1.textContent = (i + 1);
+            var c2 = document.createElement('td'); c2.textContent = row.name;
+            var c3 = document.createElement('td');
+            if (!row.validate_enabled || !(row.reads && row.reads.length)) {
+              c3.textContent = '(no validation)';
+            } else {
+              c3.textContent = row.reads.map(function (rd) {
+                return 'Box ' + rd.box + ': ' + (rd.text || '(empty)') + (rd.ok ? ' \u2713' : ' \u2717');
+              }).join('  |  ');
+            }
+            var c4 = document.createElement('td');
+            if (row.used) { c4.textContent = '\u2713 Used'; c4.className = 'ok'; }
+            else if (row.matched) { c4.textContent = 'Matched'; c4.className = 'ok'; }
+            else { c4.textContent = '\u2717 No match'; c4.className = 'bad'; }
+            tr.appendChild(c1); tr.appendChild(c2); tr.appendChild(c3); tr.appendChild(c4);
+            tb.appendChild(tr);
+          });
+          tbl.appendChild(tb);
+          tplTestResults.appendChild(tbl);
+          tplTestResults.hidden = false;
+        }
+        if (cb) cb(d);
+      }).catch(function () { tplTestBtn.disabled = false; if (tplTestStatus) { tplTestStatus.textContent = 'Network error.'; tplTestStatus.className = 'val-captured bad'; } if (cb) cb(null); });
+  }
+  // Badge-open flow: test the template chain for the loaded slip and, if a
+  // template matches, switch the editor to it before running Test OCR so the
+  // popup opens on the template that actually applies to this slip.
+  function autoFlow() {
+    runTemplateTest(function (d) {
+      var loaded = false;
+      if (d && d.ok && d.matched) {
+        var mi = -1;
+        for (var k = 0; k < templates.length; k++) {
+          if (templates[k].name === d.matched) { mi = k; break; }
+        }
+        if (mi > -1 && templates[mi].id !== selectedId) {
+          selectedId = templates[mi].id;
+          populateTplSelect();
+          loadTemplateIntoEditor(templates[mi]);
+          loaded = true;
+        }
+      }
+      setTimeout(runTest, loaded ? 300 : 0);
+    });
+  }
+  tplTestBtn && tplTestBtn.addEventListener('click', function () { runTemplateTest(); });
+  function saveList() {
+    var name = (listName.value || '').trim();
+    if (!name) { setStatus('Enter a list name.'); listName.focus(); return; }
+    listSaveBtn.disabled = true; setStatus('Saving list\u2026');
+    fetch(LISTS_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ name: name, items: listItems.value })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      listSaveBtn.disabled = false;
+      if (!d || !d.ok) { setStatus((d && d.error) || 'List save failed.'); return; }
+      lists = d.lists || []; renderLists();
+      var saved = lists.filter(function (l) { return l.name === name; })[0];
+      if (saved) listPicker.value = String(saved.id);
+      setStatus('List saved.');
+    }).catch(function () { listSaveBtn.disabled = false; setStatus('Network error.'); });
+  }
+  function deleteList() {
+    var l = findList(listPicker.value);
+    if (!l) { setStatus('Pick a list to delete.'); return; }
+    appConfirm('Delete list \u201c' + l.name + '\u201d?',
+               { danger: true, okText: 'Delete' }).then(function (ok) {
+      if (!ok) return;
+      fetch(LISTDEL_TPL.replace(/\/0\//, '/' + l.id + '/'), {
+        method: 'POST', headers: { 'X-CSRFToken': CSRF }
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (!d || !d.ok) { setStatus('Delete failed.'); return; }
+        lists = d.lists || []; renderLists();
+        listName.value = ''; listItems.value = ''; setStatus('List deleted.');
+      }).catch(function () { setStatus('Network error.'); });
+    });
+  }
+  listPicker && listPicker.addEventListener('change', function () {
+    var l = findList(listPicker.value);
+    if (l) { listName.value = l.name; listItems.value = l.items || ''; }
+    else { listName.value = ''; listItems.value = ''; }
+  });
+  listSaveBtn && listSaveBtn.addEventListener('click', saveList);
+  listDelBtn && listDelBtn.addEventListener('click', deleteList);
+  fldAddBtn && fldAddBtn.addEventListener('click', addField);
+  fldNew && fldNew.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); addField(); } });
+  function round4(n) { return Math.round(n * 1e4) / 1e4; }
+  function collectRects() {
+    var out = {};
+    Object.keys(rects).forEach(function (k) {
+      var r = rects[k];
+      out[k] = [round4(r[0]), round4(r[1]), round4(r[2]), round4(r[3])];
+    });
+    return out;
+  }
+  function defaultRects() {
+    var out = {}, n = FIELDS.length, band = 0.86 / n;
+    FIELDS.forEach(function (f, i) {
+      var y0 = 0.06 + i * band;
+      out[f[0]] = clampRect([0.30, y0, 0.92, y0 + Math.min(0.09, band - 0.02)]);
+    });
+    return out;
+  }
+  function clampRect(r) {
+    var w = Math.max(0.01, Math.min(1, r[2] - r[0]));
+    var h = Math.max(0.01, Math.min(1, r[3] - r[1]));
+    var x0 = Math.max(0, Math.min(1 - w, r[0]));
+    var y0 = Math.max(0, Math.min(1 - h, r[1]));
+    return [x0, y0, x0 + w, y0 + h];
+  }
+  function setZoom(z) {
+    zoom = Math.max(1, Math.min(5, z));
+    stage.style.width = (zoom * 100) + '%';
+    if (zoomLabel) zoomLabel.textContent = Math.round(zoom * 100) + '%';
+  }
+  function positionBox(box, r) {
+    box.style.left = (r[0] * 100) + '%';
+    box.style.top = (r[1] * 100) + '%';
+    box.style.width = ((r[2] - r[0]) * 100) + '%';
+    box.style.height = ((r[3] - r[1]) * 100) + '%';
+  }
+  function wireDrag(box, getR, setR) {
+    box.addEventListener('pointerdown', function (e) {
+      var handle = e.target.getAttribute && e.target.getAttribute('data-h');
+      e.preventDefault(); e.stopPropagation();
+      var r0 = getR().slice();
+      var sb = stage.getBoundingClientRect();
+      var sx = e.clientX, sy = e.clientY;
+      function move(ev) {
+        var dx = (ev.clientX - sx) / sb.width;
+        var dy = (ev.clientY - sy) / sb.height;
+        var r = r0.slice();
+        if (!handle) { r[0] += dx; r[1] += dy; r[2] += dx; r[3] += dy; }
+        else {
+          if (handle.indexOf('w') > -1) r[0] = r0[0] + dx;
+          if (handle.indexOf('n') > -1) r[1] = r0[1] + dy;
+          if (handle.indexOf('e') > -1) r[2] = r0[2] + dx;
+          if (handle.indexOf('s') > -1) r[3] = r0[3] + dy;
+          if (r[2] < r[0] + 0.01) r[2] = r[0] + 0.01;
+          if (r[3] < r[1] + 0.01) r[3] = r[1] + 0.01;
+        }
+        setR(clampRect(r));
+        positionBox(box, getR());
+      }
+      function up() {
+        document.removeEventListener('pointermove', move);
+        document.removeEventListener('pointerup', up);
+      }
+      document.addEventListener('pointermove', move);
+      document.addEventListener('pointerup', up);
+    });
+  }
+  function wireBox(box, key) {
+    wireDrag(box, function () { return rects[key]; },
+             function (r) { rects[key] = r; });
+  }
+  function wireAnchor(box, i) {
+    wireDrag(box, function () { return anchors[i]; },
+             function (r) { anchors[i] = r; anchorRefSlip = currentPage; });
+  }
+  function addHandles(box) {
+    ['nw', 'ne', 'sw', 'se'].forEach(function (h) {
+      var hd = document.createElement('span');
+      hd.className = 'ocr-rect__h ocr-rect__h--' + h;
+      hd.setAttribute('data-h', h);
+      box.appendChild(hd);
+    });
+  }
+  function findFieldDef(key) {
+    for (var i = 0; i < fieldDefs.length; i++) { if (fieldDefs[i].key === key) return fieldDefs[i]; }
+    return null;
+  }
+  function stackedBox(i) { var y = 0.06 + (i % 9) * 0.09; return clampRect([0.30, y, 0.92, y + 0.07]); }
+  function buildFieldDefs(t) {
+    // Start from the records-table catalog (canonical + custom columns), then
+    // overlay this template's per-field capture/mask/value/box settings.
+    var cat = (fieldCatalog || []).map(function (d) {
+      return { key: d.key, label: d.label, type: d.type, role: d.role,
+               canonical: !!d.canonical, box: null, pp: null,
+               capture: false, mask: 'none', value: '', min_conf: 0 };
+    });
+    var byKey = {}; cat.forEach(function (d) { byKey[d.key] = d; });
+    ((t && t.fields) || []).forEach(function (f) {
+      var d = byKey[f.key];
+      if (!d) {
+        d = { key: f.key, label: f.label || f.key, type: f.type || 'text',
+              role: f.role || f.key, canonical: false, box: null, pp: null,
+              capture: false, mask: 'none', value: '', min_conf: 0 };
+        byKey[f.key] = d; cat.push(d);
+      }
+      d.capture = !!f.capture || !!f.box;
+      d.mask = f.mask || 'none';
+      d.value = f.value || '';
+      d.min_conf = (typeof f.min_conf === 'number') ? f.min_conf : (d.min_conf || 0);
+      if (f.box) d.box = f.box.slice();
+    });
+    // ocr_rects is authoritative for the built-in value boxes (it is what the
+    // extraction pipeline reads); overlay it LAST so the editor always shows
+    // the positions that will actually be used, even if a template's stored
+    // fields[].box copy has drifted out of sync.  Custom fields are not in
+    // ocr_rects (clean_rects drops them), so their fields[].box is kept.
+    var rc = (t && t.rects) || {};
+    Object.keys(rc).forEach(function (k) {
+      var d = byKey[k]; if (d) { d.capture = true; d.box = rc[k].slice(); }
+    });
+    return cat;
+  }
+  function maskSelectHtml(sel) {
+    var o = MASK_OPTS.map(function (m) {
+      return '<option value="' + m[0] + '"' + (m[0] === sel ? ' selected' : '') + '>' + m[1] + '</option>';
+    });
+    return '<select class="fld-mask" data-fld-mask>' + o.join('') + '</select>';
+  }
+  function renderFieldSettings() {
+    if (!fldBody) return;
+    fldBody.innerHTML = '';
+    fieldDefs.forEach(function (d, idx) {
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td class="ta-center"><input type="checkbox" data-fld-cap ' + (d.capture ? 'checked' : '') + '></td>' +
+        '<td><input type="text" class="fld-label" data-fld-label value="' + esc(d.label || '') + '"></td>' +
+        '<td>' + maskSelectHtml(d.mask || 'none') + '</td>' +
+        '<td><input type="text" class="fld-value" data-fld-value value="' + esc(d.value || '') + '" placeholder="text or [List]"></td>' +
+        '<td class="ta-center"><input type="number" class="fld-minconf" data-fld-minconf min="0" max="100" step="1" value="' + (d.min_conf ? Math.round(d.min_conf * 100) : '') + '" placeholder="—"></td>' +
+        (d.canonical
+          ? '<td class="ta-center muted" title="Built-in field">\u2014</td>'
+          : '<td class="ta-center"><button type="button" class="act-btn fld-del" data-fld-del title="Delete field & column">\u00d7</button></td>');
+      tr.querySelector('[data-fld-cap]').addEventListener('change', function () { toggleCapture(idx, this.checked); });
+      tr.querySelector('[data-fld-label]').addEventListener('input', function () { fieldDefs[idx].label = this.value; renderRects(); });
+      tr.querySelector('[data-fld-mask]').addEventListener('change', function () { fieldDefs[idx].mask = this.value; });
+      tr.querySelector('[data-fld-value]').addEventListener('input', function () { fieldDefs[idx].value = this.value; });
+      tr.querySelector('[data-fld-minconf]').addEventListener('input', function () { var n = parseFloat(this.value); fieldDefs[idx].min_conf = isNaN(n) ? 0 : Math.max(0, Math.min(100, n)) / 100; });
+      var delBtn = tr.querySelector('[data-fld-del]');
+      if (delBtn) delBtn.addEventListener('click', function () { deleteField(idx); });
+      fldBody.appendChild(tr);
+    });
+  }
+  function toggleCapture(idx, checked) {
+    var d = fieldDefs[idx]; if (!d) return;
+    d.capture = checked;
+    if (checked) { if (!rects[d.key]) rects[d.key] = (d.box && d.box.slice()) || stackedBox(idx); d.box = rects[d.key]; }
+    else { delete rects[d.key]; }
+    renderRects();
+  }
+  function addField() {
+    var label = (fldNew.value || '').trim(); if (!label) { fldNew.focus(); return; }
+    fldAddBtn.disabled = true; setStatus('Adding field\u2026');
+    fetch(FIELDS_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ kind: kind, label: label })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      fldAddBtn.disabled = false;
+      if (!d || !d.ok) { setStatus((d && d.error) || 'Add field failed.'); return; }
+      fieldCatalog = d.catalog || fieldCatalog;
+      fldNew.value = '';
+      if (!findFieldDef(d.key)) {
+        var c = fieldCatalog.filter(function (x) { return x.key === d.key; })[0] || {};
+        var def = { key: d.key, label: c.label || label, type: c.type || 'text',
+                    role: c.role || d.key, canonical: false, box: null, pp: null,
+                    capture: true, mask: 'none', value: '', min_conf: 0 };
+        fieldDefs.push(def);
+        rects[def.key] = stackedBox(fieldDefs.length - 1); def.box = rects[def.key];
+      }
+      renderFieldSettings(); renderRects();
+      setStatus('Field added — drag its box into place, then Save.');
+    }).catch(function () { fldAddBtn.disabled = false; setStatus('Network error.'); });
+  }
+  function deleteField(idx) {
+    var d = fieldDefs[idx]; if (!d) return;
+    if (d.canonical) { setStatus('Built-in fields cannot be deleted.'); return; }
+    appConfirm('Delete field \u201c' + (d.label || d.key) + '\u201d and its column from the '
+        + (kind === 'rc' ? 'receipt' : 'CR book') + ' records table? This removes it from ALL templates.',
+        { danger: true, okText: 'Delete' }).then(function (ok) {
+      if (!ok) return;
+      fetch(FIELDDEL_TPL.replace('__KEY__', encodeURIComponent(d.key)), {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+        body: JSON.stringify({ kind: kind })
+      }).then(function (r) { return r.json(); }).then(function (res) {
+        if (!res || !res.ok) { setStatus((res && res.error) || 'Delete failed.'); return; }
+        fieldCatalog = res.catalog || fieldCatalog;
+        delete rects[d.key];
+        fieldDefs.splice(idx, 1);
+        renderFieldSettings(); renderRects();
+        setStatus('Field deleted.');
+      }).catch(function () { setStatus('Network error.'); });
+    });
+  }
+  function collectFields() {
+    fieldDefs.forEach(function (d) { if (d.capture && rects[d.key]) d.box = rects[d.key].map(round4); });
+    return fieldDefs;
+  }
+  function syncDefsFromRects() {
+    Object.keys(rects).forEach(function (key) {
+      var d = findFieldDef(key); if (d) { d.capture = true; d.box = rects[key].slice(); }
+    });
+    renderFieldSettings();
+  }
+  function renderLists() {
+    if (!listPicker) return;
+    var opts = ['<option value="">(new list)</option>'];
+    lists.forEach(function (l) { opts.push('<option value="' + l.id + '">' + esc(l.name) + '</option>'); });
+    listPicker.innerHTML = opts.join('');
+    if (listHint) listHint.textContent = lists.length
+      ? ('Available: ' + lists.map(function (l) { return '[' + l.name + ']'; }).join(', '))
+      : 'No lists yet — create one below.';
+  }
+  function findList(id) { for (var i = 0; i < lists.length; i++) { if (String(lists[i].id) === String(id)) return lists[i]; } return null; }
+  function renderFields() {
+    var defs = fieldDefs.length
+      ? fieldDefs.filter(function (d) { return d.capture; }).map(function (d) { return [d.key, d.label]; })
+      : FIELDS;
+    defs.forEach(function (f) {
+      var key = f[0], r = rects[key];
+      if (!r) return;
+      var box = document.createElement('div');
+      box.className = 'ocr-rect'; box.setAttribute('data-field', key);
+      positionBox(box, r);
+      var lab = document.createElement('span');
+      lab.className = 'ocr-rect__label'; lab.textContent = f[1];
+      box.appendChild(lab);
+      addHandles(box);
+      overlay.appendChild(box);
+      wireBox(box, key);
+    });
+  }
+  function renderAnchors() {
+    anchors.forEach(function (r, i) {
+      var box = document.createElement('div');
+      box.className = 'ocr-rect ocr-anchor';
+      positionBox(box, r);
+      var lab = document.createElement('span');
+      lab.className = 'ocr-rect__label'; lab.textContent = 'Anchor ' + (i + 1);
+      box.appendChild(lab);
+      var del = document.createElement('span');
+      del.className = 'ocr-anchor__del'; del.textContent = '\u00d7';
+      del.title = 'Remove anchor';
+      del.addEventListener('pointerdown', function (e) {
+        e.stopPropagation(); e.preventDefault();
+        anchors.splice(i, 1); anchorRefSlip = currentPage; renderRects();
+      });
+      box.appendChild(del);
+      addHandles(box);
+      overlay.appendChild(box);
+      wireAnchor(box, i);
+    });
+  }
+  function updateAnchorUi() {
+    if (anchorToggleBtn) anchorToggleBtn.classList.toggle('is-on', anchorMode);
+    if (anchorAddBtn) {
+      anchorAddBtn.style.display = anchorMode ? '' : 'none';
+      anchorAddBtn.disabled = anchors.length >= 3;
+    }
+    if (anchorHint) anchorHint.style.display = anchorMode ? '' : 'none';
+    if (hintEl) hintEl.style.display = anchorMode ? 'none' : '';
+  }
+  function wireTextAnchor(box, i) {
+    wireDrag(box, function () { return textAnchors[i].box; },
+             function (r) { textAnchors[i].box = r; });
+  }
+  function renderCalibAnchors() {
+    textAnchors.forEach(function (a, i) {
+      var box = document.createElement('div');
+      box.className = 'ocr-rect ocr-anchor ocr-calib';
+      positionBox(box, a.box);
+      var lab = document.createElement('span');
+      lab.className = 'ocr-rect__label';
+      lab.textContent = a.text ? a.text : ('Label ' + (i + 1));
+      box.appendChild(lab);
+      var del = document.createElement('span');
+      del.className = 'ocr-anchor__del'; del.textContent = '\u00d7';
+      del.title = 'Remove anchor';
+      del.addEventListener('pointerdown', function (e) {
+        e.stopPropagation(); e.preventDefault();
+        textAnchors.splice(i, 1); renderRects(); renderCalibPanel();
+      });
+      box.appendChild(del);
+      addHandles(box);
+      overlay.appendChild(box);
+      wireTextAnchor(box, i);
+    });
+  }
+  function renderCalibPanel() {
+    if (!calibList) return;
+    calibList.innerHTML = '';
+    textAnchors.forEach(function (a, i) {
+      var row = document.createElement('div');
+      row.className = 'calib-item';
+      row.innerHTML = '<span class="calib-item__n">' + (i + 1) + '</span>' +
+        '<input type="text" class="calib-item__text" placeholder="Exact label text" value="' + esc(a.text || '') + '">' +
+        '<button type="button" class="act-btn calib-item__del" title="Remove">\u00d7</button>';
+      row.querySelector('.calib-item__text').addEventListener('input', function () {
+        textAnchors[i].text = this.value; if (calibMode) renderRects();
+      });
+      row.querySelector('.calib-item__del').addEventListener('click', function () {
+        textAnchors.splice(i, 1); renderCalibPanel(); if (calibMode) renderRects();
+      });
+      calibList.appendChild(row);
+    });
+    if (calibCount) calibCount.textContent = textAnchors.length + ' / 3';
+    if (calibAddBtn) calibAddBtn.disabled = textAnchors.length >= 3;
+  }
+  function renderOneValidateBox(label, get, set) {
+    if (!get()) return;
+    var box = document.createElement('div');
+    box.className = 'ocr-rect ocr-val';
+    positionBox(box, get());
+    var lab = document.createElement('span');
+    lab.className = 'ocr-rect__label'; lab.textContent = label;
+    box.appendChild(lab);
+    addHandles(box);
+    overlay.appendChild(box);
+    wireDrag(box, get, set);
+  }
+  function renderValidateBox() {
+    renderOneValidateBox('Validate 1', function () { return validateBox; },
+                         function (r) { validateBox = r; });
+    renderOneValidateBox('Validate 2', function () { return validateBox2; },
+                         function (r) { validateBox2 = r; });
+  }
+  function updateValidateUi() {
+    if (valBoxBtn) valBoxBtn.classList.toggle('is-on', validateMode);
+    if (valBox2Btn) valBox2Btn.classList.toggle('is-on', validateMode);
+  }
+  function renderRects() {
+    // Derive calibration mode from the panel's active state so the overlay
+    // always matches the visible tab, regardless of click-handler ordering.
+    calibMode = !!(calibPanel && calibPanel.classList.contains('is-active'));
+    if (calibMode) { anchorMode = false; validateMode = false; }
+    overlay.innerHTML = '';
+    if (calibMode) renderCalibAnchors();
+    else if (validateMode) renderValidateBox();
+    else if (anchorMode) renderAnchors();
+    else renderFields();
+    updateAnchorUi();
+    updateValidateUi();
+  }
+  function collectAnchors() {
+    return anchors.map(function (r) {
+      return [round4(r[0]), round4(r[1]), round4(r[2]), round4(r[3])];
+    });
+  }
+  function collectTextAnchors() {
+    return textAnchors
+      .filter(function (a) { return a.box; })
+      .map(function (a) {
+        return { box: [round4(a.box[0]), round4(a.box[1]),
+                       round4(a.box[2]), round4(a.box[3])],
+                 text: (a.text || '').trim() };
+      })
+      .filter(function (a) { return a.text; });
+  }
+  function collectValidateBox() {
+    return validateBox
+      ? [round4(validateBox[0]), round4(validateBox[1]),
+         round4(validateBox[2]), round4(validateBox[3])]
+      : null;
+  }
+  function collectValidateBox2() {
+    return validateBox2
+      ? [round4(validateBox2[0]), round4(validateBox2[1]),
+         round4(validateBox2[2]), round4(validateBox2[3])]
+      : null;
+  }
+  function populateFailSelect() {
+    if (!valFail) return;
+    var cur = valFail.value;
+    var opts = ['<option value="">(none)</option>'];
+    templates.forEach(function (t) {
+      if (selectedId && t.id === selectedId) return;
+      if (t.kind && kind && t.kind !== kind) return;
+      opts.push('<option value="' + t.id + '">' + esc(t.name) + '</option>');
+    });
+    valFail.innerHTML = opts.join('');
+    valFail.value = cur;
+  }
+  function populateCalibCopy() {
+    if (!calibCopySelect) return;
+    var opts = ['<option value="">Select a template\u2026</option>'];
+    templates.forEach(function (t) {
+      if (selectedId && t.id === selectedId) return;
+      if (t.kind && kind && t.kind !== kind) return;
+      var n = (t.text_anchors && t.text_anchors.length) || 0;
+      opts.push('<option value="' + t.id + '">' + esc(t.name) +
+                (n ? ' (' + n + ')' : ' (none)') + '</option>');
+    });
+    calibCopySelect.innerHTML = opts.join('');
+    calibCopySelect.value = '';
+  }
+  function loadBoxes() {
+    if (uid === null) return;
+    if (kind === 'rc') {
+      rects = defaultRects(); syncDefsFromRects(); renderRects();
+      setStatus('Default boxes added \u2014 drag to position, then Save.');
+      return;
+    }
+    setStatus('Detecting positions\u2026');
+    fetch(url(BOXES_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ pp: collectPp(), page: currentPage })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (d && d.ok && d.boxes) rects = d.boxes;
+      syncDefsFromRects(); renderRects(); setStatus('');
+    }).catch(function () { setStatus('Detect failed.'); });
+  }
+  modal.querySelectorAll('[data-ocr-zoom]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var m = b.getAttribute('data-ocr-zoom');
+      if (m === 'in') setZoom(zoom + 0.25);
+      else if (m === 'out') setZoom(zoom - 0.25);
+      else setZoom(1);
+    });
+  });
+  detectBtn && detectBtn.addEventListener('click', loadBoxes);
+  anchorToggleBtn && anchorToggleBtn.addEventListener('click', function () {
+    anchorMode = !anchorMode; if (anchorMode) validateMode = false; renderRects();
+  });
+  valBoxBtn && valBoxBtn.addEventListener('click', function () {
+    validateMode = !(validateMode && !!validateBox);
+    if (validateMode) {
+      anchorMode = false;
+      if (!validateBox) validateBox = clampRect([0.30, 0.06, 0.70, 0.14]);
+    }
+    renderRects();
+  });
+  valBox2Btn && valBox2Btn.addEventListener('click', function () {
+    validateMode = !(validateMode && !!validateBox2);
+    if (validateMode) {
+      anchorMode = false;
+      if (!validateBox2) validateBox2 = clampRect([0.30, 0.16, 0.70, 0.24]);
+    }
+    renderRects();
+  });
+  anchorAddBtn && anchorAddBtn.addEventListener('click', function () {
+    if (anchors.length >= 3) return;
+    var y = 0.10 + anchors.length * 0.12;
+    anchors.push(clampRect([0.35, y, 0.65, y + 0.06]));
+    anchorRefSlip = currentPage; renderRects();
+  });
+  calibAddBtn && calibAddBtn.addEventListener('click', function () {
+    if (textAnchors.length >= 3) return;
+    var y = 0.10 + textAnchors.length * 0.12;
+    textAnchors.push({ box: clampRect([0.35, y, 0.65, y + 0.06]), text: '' });
+    renderCalibPanel(); renderRects();
+  });
+  calibCopySelect && calibCopySelect.addEventListener('change', function () {
+    var id = this.value ? parseInt(this.value, 10) : null;
+    this.value = '';
+    var t = id ? findTpl(id) : null;
+    if (!t) return;
+    var src = t.text_anchors || [];
+    if (!src.length) {
+      setStatus('\u201c' + t.name + '\u201d has no calibration anchors to copy.');
+      return;
+    }
+    textAnchors = JSON.parse(JSON.stringify(src));
+    renderCalibPanel(); renderRects();
+    setStatus('Copied ' + textAnchors.length + ' calibration anchor(s) from \u201c' +
+              t.name + '\u201d. Save to keep.');
+  });
+  // Repaint the overlay whenever the Calibration tab is shown/hidden.  Driven by
+  // the panel's is-active class (toggled by the shared tabs handler) so it works
+  // regardless of click-handler ordering.
+  if (calibPanel && window.MutationObserver) {
+    new MutationObserver(function () { renderRects(); })
+      .observe(calibPanel, { attributes: true, attributeFilter: ['class'] });
+  }
+  function tplUpdUrl(id) { return TPLUPD_TPL.replace(/\/0$/, '/' + id); }
+  function tplIndex(id) { for (var i = 0; i < templates.length; i++) { if (templates[i].id === id) return i; } return -1; }
+  function findTpl(id) { var i = tplIndex(id); return i > -1 ? templates[i] : null; }
+  function setPageLabel() {
+    if (!pageLabel) return;
+    if (kind === 'rc') {
+      var p = slipPages[currentPage - 1];
+      pageLabel.textContent = 'Slip ' + currentPage + ' of ' + totalPages +
+        (p ? ' (page ' + p + ')' : '');
+    } else {
+      pageLabel.textContent = currentPage + '/' + totalPages;
+    }
+  }
+  function gotoPage(p) { currentPage = Math.max(1, Math.min(totalPages, p)); setPageLabel(); loadPreview(); }
+  function populateTplSelect() {
+    var opts = ['<option value="">(no template)</option>'];
+    templates.forEach(function (t) { opts.push('<option value="' + t.id + '">' + esc(t.name) + '</option>'); });
+    tplSelect.innerHTML = opts.join('');
+    tplSelect.value = selectedId ? String(selectedId) : '';
+    populateFailSelect();
+    populateCalibCopy();
+  }
+  function loadTemplateIntoEditor(t) {
+    var pp = (t && t.pp) || {};
+    setControls(pp);
+    fieldDefs = buildFieldDefs(t);
+    rects = {};
+    fieldDefs.forEach(function (d) { if (d.capture && d.box) rects[d.key] = d.box.slice(); });
+    if (kind === 'rc' && !Object.keys(rects).length) {
+      rects = defaultRects();
+      Object.keys(rects).forEach(function (k) { var d = findFieldDef(k); if (d) { d.capture = true; d.box = rects[k].slice(); } });
+    }
+    renderFieldSettings();
+    anchors = (t && t.anchors)
+      ? JSON.parse(JSON.stringify(t.anchors)) : [];
+    anchorRefSlip = 1;
+    textAnchors = (t && t.text_anchors)
+      ? JSON.parse(JSON.stringify(t.text_anchors)) : [];
+    calibMode = false;
+    renderCalibPanel();
+    validateBox = (t && t.validate_box) ? t.validate_box.slice() : null;
+    validateBox2 = (t && t.validate_box2) ? t.validate_box2.slice() : null;
+    validateMode = false;
+    if (valEnabled) valEnabled.checked = !!(t && t.validate_enabled);
+    if (valText) valText.value = (t && t.validate_text) || '';
+    if (valText2) valText2.value = (t && t.validate_text2) || '';
+    populateFailSelect();
+    populateCalibCopy();
+    if (valFail) valFail.value = (t && t.fail_template_id)
+      ? String(t.fail_template_id) : '';
+    renderRects();
+    loadPreview();
+    var ns = Object.keys(pp).length, nb = Object.keys(rects).length;
+    var parts = (kind === 'cr'
+      ? (nb + ' box' + (nb === 1 ? '' : 'es') + ', ') : '') +
+      ns + ' setting' + (ns === 1 ? '' : 's');
+    setStatus('Loaded “' + (t ? t.name : '') + '” — ' + parts + '.');
+  }
+  pagePrev && pagePrev.addEventListener('click', function () { gotoPage(currentPage - 1); });
+  pageNext && pageNext.addEventListener('click', function () { gotoPage(currentPage + 1); });
+  tplSelect && tplSelect.addEventListener('change', function () {
+    var v = tplSelect.value;
+    selectedId = v ? parseInt(v, 10) : null;
+    var t = selectedId ? findTpl(selectedId) : null;
+    if (t) loadTemplateIntoEditor(t);
+  });
+  tplSaveBtn && tplSaveBtn.addEventListener('click', function () {
+    if (!selectedId) { setStatus('Pick a template or use + to add one.'); return; }
+    tplSaveBtn.disabled = true; setStatus('Saving template\u2026');
+    fetch(tplUpdUrl(selectedId), {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ pp: collectPp(), rects: collectRects(), fields: collectFields(),
+        validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
+        validate_text: valText ? valText.value : '', validate_box2: collectValidateBox2(),
+        validate_text2: valText2 ? valText2.value : '', fail_template_id: valFail ? valFail.value : '' })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      tplSaveBtn.disabled = false;
+      if (!d || !d.ok) { setStatus((d && d.error) || 'Save failed.'); return; }
+      var i = tplIndex(d.template.id); if (i > -1) templates[i] = d.template;
+      populateFailSelect();
+      setStatus('Template saved.');
+    }).catch(function () { tplSaveBtn.disabled = false; setStatus('Network error.'); });
+  });
+  tplAddBtn && tplAddBtn.addEventListener('click', function () {
+    if (!tplNewWrap) return;
+    tplNewWrap.hidden = false; tplNameInput.value = ''; tplNameInput.focus();
+  });
+  tplCancelBtn && tplCancelBtn.addEventListener('click', function () { if (tplNewWrap) tplNewWrap.hidden = true; });
+  function createTemplate() {
+    var name = (tplNameInput.value || '').trim();
+    if (!name) { setStatus('Enter a template name.'); tplNameInput.focus(); return; }
+    tplCreateBtn.disabled = true; setStatus('Creating template\u2026');
+    fetch(TPLS_URL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ name: name, kind: kind, pp: collectPp(), rects: collectRects(), fields: collectFields(),
+        validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
+        validate_text: valText ? valText.value : '', validate_box2: collectValidateBox2(),
+        validate_text2: valText2 ? valText2.value : '', fail_template_id: valFail ? valFail.value : '' })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      tplCreateBtn.disabled = false;
+      if (!d || !d.ok) { setStatus((d && d.error) || 'Create failed.'); return; }
+      templates.unshift(d.template); selectedId = d.template.id;
+      populateTplSelect(); if (tplNewWrap) tplNewWrap.hidden = true;
+      setStatus('Template created.');
+    }).catch(function () { tplCreateBtn.disabled = false; setStatus('Network error.'); });
+  }
+  tplCreateBtn && tplCreateBtn.addEventListener('click', createTemplate);
+  tplNameInput && tplNameInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); createTemplate(); } });
+  function tplDelUrl(id) { return TPLDEL_TPL.replace('/0/delete', '/' + id + '/delete'); }
+  tplDelBtn && tplDelBtn.addEventListener('click', function () {
+    if (!selectedId) { setStatus('Pick a template to delete.'); return; }
+    var t = findTpl(selectedId);
+    appConfirm('Delete template “' + (t ? t.name : '') + '”? Uploads using '
+        + 'it will fall back to no template.',
+        { danger: true, okText: 'Delete' }).then(function (ok) {
+      if (!ok) return;
+      tplDelBtn.disabled = true; setStatus('Deleting template…');
+      fetch(tplDelUrl(selectedId), {
+        method: 'POST', headers: { 'X-CSRFToken': CSRF }
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        tplDelBtn.disabled = false;
+        if (!d || !d.ok) { setStatus((d && d.error) || 'Delete failed.'); return; }
+        templates = d.templates || [];
+        selectedId = templates.length ? templates[0].id : null;
+        populateTplSelect();
+        var nt = selectedId ? findTpl(selectedId) : null;
+        if (nt) loadTemplateIntoEditor(nt);
+        setStatus('Template deleted.');
+      }).catch(function () { tplDelBtn.disabled = false; setStatus('Network error.'); });
+    });
+  });
+  function openModal(u, k, opts) {
+    opts = opts || {};
+    var targetPage = parseInt(opts.page, 10) || 1;
+    var autoTest = !!opts.test;
+    setKind(k);
+    uid = u; currentPage = 1; totalPages = 1; setPageLabel();
+    results.hidden = true; results.innerHTML = '';
+    if (tplNewWrap) tplNewWrap.hidden = true;
+    setZoom(1); overlay.innerHTML = ''; rects = {}; slipPages = [];
+    anchors = []; anchorMode = false; anchorRefSlip = 1;
+    textAnchors = []; calibMode = false;
+    if (calibList) calibList.innerHTML = '';
+    validateBox = null; validateBox2 = null; validateMode = false;
+    fieldDefs = []; fieldCatalog = []; lists = [];
+    if (fldBody) fldBody.innerHTML = '';
+    if (valEnabled) valEnabled.checked = false;
+    if (valText) valText.value = '';
+    if (valText2) valText2.value = '';
+    if (valFail) valFail.value = '';
+    setControls({});
+    modal.hidden = false;
+    setStatus('Loading\u2026');
+    fetch(url(INIT_TPL), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      .then(function (r) { return r.json(); }).then(function (d) {
+        if (!d || !d.ok) { setStatus('Load failed.'); return; }
+        setStatus('');
+        if (kind === 'rc') {
+          slipPages = (d.slips || []).map(function (s) { return s.page; });
+          totalPages = d.slip_count || slipPages.length || 1;
+        } else {
+          totalPages = d.pages || 1;
+        }
+        currentPage = Math.max(1, Math.min(totalPages, targetPage));
+        setPageLabel();
+        lists = d.lists || []; renderLists();
+        fieldCatalog = d.field_catalog || [];
+        templates = d.templates || [];
+        var chosen = (d.template_id && findTpl(d.template_id)) ? d.template_id
+          : (templates.length ? templates[0].id : null);
+        selectedId = chosen;
+        populateTplSelect();
+        var t = selectedId ? findTpl(selectedId) : null;
+        if (t) loadTemplateIntoEditor(t);
+        else if (kind === 'cr') { fieldDefs = buildFieldDefs(null); renderFieldSettings(); loadPreview(); loadBoxes(); }
+        else { fieldDefs = buildFieldDefs(null); renderFieldSettings(); rects = defaultRects(); syncDefsFromRects(); renderRects(); loadPreview(); }
+        if (autoTest) setTimeout(autoFlow, 200);
+      }).catch(function () { setStatus('Load failed.'); });
+  }
+  function closeModal() { modal.hidden = true; uid = null; }
+  document.addEventListener('click', function (e) {
+    var open = e.target.closest ? e.target.closest('[data-ocr-open]') : null;
+    if (open) {
+      e.preventDefault();
+      openModal(parseInt(open.getAttribute('data-uid'), 10),
+        open.getAttribute('data-kind'),
+        { page: parseInt(open.getAttribute('data-ocr-page'), 10) || 1,
+          test: open.hasAttribute('data-ocr-page') });
+      return;
+    }
+    if (e.target.closest && e.target.closest('[data-ocr-close]')) closeModal();
+  });
+  resetBtn && resetBtn.addEventListener('click', function () { setControls({}); loadPreview(); });
+  saveBtn && saveBtn.addEventListener('click', function () {
+    if (uid === null) return;
+    if (!selectedId) { setStatus('Select or create a template first.'); return; }
+    saveBtn.disabled = true; setStatus('Saving\u2026');
+    fetch(url(SAVE_TPL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': CSRF },
+      body: JSON.stringify({ template_id: selectedId, pp: collectPp(), rects: collectRects(), fields: collectFields(), reprocess: !!(reproc && reproc.checked), anchors: collectAnchors(), ref_slip: anchorRefSlip, text_anchors: collectTextAnchors(),
+        validate_enabled: !!(valEnabled && valEnabled.checked), validate_box: collectValidateBox(),
+        validate_text: valText ? valText.value : '', validate_box2: collectValidateBox2(),
+        validate_text2: valText2 ? valText2.value : '', fail_template_id: valFail ? valFail.value : '' })
+    }).then(function (r) { return r.json(); })
+      .then(function (d) {
+        saveBtn.disabled = false;
+        if (!d || !d.ok) { setStatus((d && d.error) || 'Save failed.'); return; }
+        if (d.template) { var i = tplIndex(d.template.id); if (i > -1) templates[i] = d.template; }
+        closeModal();
+        window.location.reload();
+      }).catch(function () { saveBtn.disabled = false; setStatus('Network error.'); });
+  });
+})();
+</script>
