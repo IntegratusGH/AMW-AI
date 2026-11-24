@@ -352,6 +352,10 @@ select.input { appearance: auto; }
 /* A single field cell whose read failed its mask or is below the confidence
    threshold: light-red background so the operator can spot it at a glance. */
 .cell-flag { background: rgba(214,69,69,.16); }
+/* Per-field confidence result on the records page: a cell reads OK (confidence
+   at/above its minimum) in light green, or Check (below) in light red. */
+.cell-ok { background: rgba(46,160,67,.15); }
+.cell-check { background: rgba(214,69,69,.16); }
 
 /* Value-region scan crops + inline correction inputs on the CR records page. */
 .val-crop { display: block; max-height: 34px; max-width: 240px; margin-bottom: 4px;

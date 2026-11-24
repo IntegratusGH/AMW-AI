@@ -3,6 +3,9 @@
 {% macro conf_pct_text(r, key) -%}
 {% if key in r._conf_pct %}{{ r._conf_pct[key] }}%{% else %}n/a{% endif %}
 {%- endmacro %}
+{% macro cell_cls(r, key) -%}
+{%- if r._field_status.get(key) == 'ok' %}cell-ok{% elif r._field_status.get(key) == 'check' %}cell-check{% endif -%}
+{%- endmacro %}
 {% block title %}Extracted records{% endblock %}
 {% block page_title %}Extracted records &mdash; {{ upload.filename }}{% endblock %}
 {% block content_class %}content--wide{% endblock %}
@@ -47,28 +50,28 @@
         <td>{{ r.page_no or '' }}</td>
         <td>{% if r._review %}<span class="badge badge-warning" title="{{ r._reasons|join('; ') }}">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
         <td>{{ r.applied_template or '—' }}</td>
-        {% if 'registration_no' in visible %}<td class="{{ 'cell-flag' if 'registration_no' in r._flags }}" title="confidence {{ conf_pct_text(r, 'registration_no') }}">
+        {% if 'registration_no' in visible %}<td class="{{ cell_cls(r, 'registration_no') }}" title="confidence {{ conf_pct_text(r, 'registration_no') }}">
           {% if r.reg_crop %}<img class="val-crop" loading="lazy" alt="Reg No scan"
             src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field='reg') }}">{% endif %}
           <input class="val-edit mono" form="rec{{ r.id }}" name="registration_no" value="{{ r.registration_no or '' }}">
         </td>{% endif %}
-        {% if 'chassis_no' in visible %}<td class="{{ 'cell-flag' if 'chassis_no' in r._flags }}" title="confidence {{ conf_pct_text(r, 'chassis_no') }}">
+        {% if 'chassis_no' in visible %}<td class="{{ cell_cls(r, 'chassis_no') }}" title="confidence {{ conf_pct_text(r, 'chassis_no') }}">
           {% if r.chassis_crop %}<img class="val-crop" loading="lazy" alt="Chassis No scan"
             src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field='chassis') }}">{% endif %}
           <input class="val-edit mono" form="rec{{ r.id }}" name="chassis_no" value="{{ r.chassis_no or '' }}">
         </td>{% endif %}
-        {% if 'engine_no' in visible %}<td class="{{ 'cell-flag' if 'engine_no' in r._flags }}" title="confidence {{ conf_pct_text(r, 'engine_no') }}">
+        {% if 'engine_no' in visible %}<td class="{{ cell_cls(r, 'engine_no') }}" title="confidence {{ conf_pct_text(r, 'engine_no') }}">
           {% if r.engine_crop %}<img class="val-crop" loading="lazy" alt="Engine No scan"
             src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field='engine') }}">{% endif %}
           <input class="val-edit mono" form="rec{{ r.id }}" name="engine_no" value="{{ r.engine_no or '' }}">
         </td>{% endif %}
-        {% if 'absolute_owner' in visible %}<td class="{{ 'cell-flag' if 'absolute_owner' in r._flags }}" title="confidence {{ conf_pct_text(r, 'absolute_owner') }}">{{ r.absolute_owner or '—' }}</td>{% endif %}
-        {% if 'class_of_vehicle' in visible %}<td class="{{ 'cell-flag' if 'class_of_vehicle' in r._flags }}" title="confidence {{ conf_pct_text(r, 'class_of_vehicle') }}">{{ r.class_of_vehicle or '—' }}</td>{% endif %}
-        {% if 'fuel_type' in visible %}<td class="{{ 'cell-flag' if 'fuel_type' in r._flags }}" title="confidence {{ conf_pct_text(r, 'fuel_type') }}">{{ r.fuel_type or '—' }}</td>{% endif %}
-        {% if 'cylinder_capacity' in visible %}<td class="{{ 'cell-flag' if 'cylinder_capacity' in r._flags }}" title="confidence {{ conf_pct_text(r, 'cylinder_capacity') }}">{{ r.cylinder_capacity or '—' }}</td>{% endif %}
-        {% if 'year_of_manufacture' in visible %}<td class="{{ 'cell-flag' if 'year_of_manufacture' in r._flags }}" title="confidence {{ conf_pct_text(r, 'year_of_manufacture') }}">{{ r.year_of_manufacture or '—' }}</td>{% endif %}
-        {% if 'colour' in visible %}<td class="{{ 'cell-flag' if 'colour' in r._flags }}" title="confidence {{ conf_pct_text(r, 'colour') }}">{{ r.colour or '—' }}</td>{% endif %}
-        {% for f in extra_fields %}<td class="{{ 'cell-flag' if f[0] in r._flags }}" title="confidence {{ conf_pct_text(r, f[0]) }}">{% if r.fc.get(f[0]) %}<img class="val-crop" loading="lazy" alt="{{ f[1] }} scan"
+        {% if 'absolute_owner' in visible %}<td class="{{ cell_cls(r, 'absolute_owner') }}" title="confidence {{ conf_pct_text(r, 'absolute_owner') }}">{{ r.absolute_owner or '—' }}</td>{% endif %}
+        {% if 'class_of_vehicle' in visible %}<td class="{{ cell_cls(r, 'class_of_vehicle') }}" title="confidence {{ conf_pct_text(r, 'class_of_vehicle') }}">{{ r.class_of_vehicle or '—' }}</td>{% endif %}
+        {% if 'fuel_type' in visible %}<td class="{{ cell_cls(r, 'fuel_type') }}" title="confidence {{ conf_pct_text(r, 'fuel_type') }}">{{ r.fuel_type or '—' }}</td>{% endif %}
+        {% if 'cylinder_capacity' in visible %}<td class="{{ cell_cls(r, 'cylinder_capacity') }}" title="confidence {{ conf_pct_text(r, 'cylinder_capacity') }}">{{ r.cylinder_capacity or '—' }}</td>{% endif %}
+        {% if 'year_of_manufacture' in visible %}<td class="{{ cell_cls(r, 'year_of_manufacture') }}" title="confidence {{ conf_pct_text(r, 'year_of_manufacture') }}">{{ r.year_of_manufacture or '—' }}</td>{% endif %}
+        {% if 'colour' in visible %}<td class="{{ cell_cls(r, 'colour') }}" title="confidence {{ conf_pct_text(r, 'colour') }}">{{ r.colour or '—' }}</td>{% endif %}
+        {% for f in extra_fields %}<td class="{{ cell_cls(r, f[0]) }}" title="confidence {{ conf_pct_text(r, f[0]) }}">{% if r.fc.get(f[0]) %}<img class="val-crop" loading="lazy" alt="{{ f[1] }} scan"
           src="{{ url_for('main.cr_value_crop', upload_id=upload.id, record_id=r.id, field=f[0]) }}">{% endif %}{{ r.fv.get(f[0]) or '—' }}</td>{% endfor %}
         <td class="actions">
           <form id="rec{{ r.id }}" method="post" class="inline"
@@ -110,25 +113,25 @@
         <td>{% if r.error %}<span class="badge badge-danger" title="{{ r.error }}">Unmatched Template</span>{% elif r._review %}<span class="badge badge-warning" title="{{ r._reasons|join('; ') }}">Check</span>{% else %}<span class="badge badge-success">OK</span>{% endif %}</td>
         <td class="mono">{{ r.id }}</td>
         <td>{{ r.applied_template or '—' }}</td>
-        {% if 'slip_no' in visible %}<td class="mono{{ ' cell-flag' if 'slip_no' in r._flags }}" title="confidence {{ conf_pct_text(r, 'slip_no') }}">{% if r.slip_crop %}<img class="val-crop" loading="lazy" alt="Slip No scan"
+        {% if 'slip_no' in visible %}<td class="mono {{ cell_cls(r, 'slip_no') }}" title="confidence {{ conf_pct_text(r, 'slip_no') }}">{% if r.slip_crop %}<img class="val-crop" loading="lazy" alt="Slip No scan"
           src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='slip') }}">{% endif %}<input class="val-edit mono" form="rec{{ r.id }}" name="slip_no" value="{{ r.slip_no or '' }}"></td>{% endif %}
-        {% if 'receipt_no' in visible %}<td class="{{ 'cell-flag' if 'receipt_no' in r._flags }}" title="confidence {{ conf_pct_text(r, 'receipt_no') }}">{% if r.receipt_no_crop %}<img class="val-crop" loading="lazy" alt="Receipt No scan"
+        {% if 'receipt_no' in visible %}<td class="{{ cell_cls(r, 'receipt_no') }}" title="confidence {{ conf_pct_text(r, 'receipt_no') }}">{% if r.receipt_no_crop %}<img class="val-crop" loading="lazy" alt="Receipt No scan"
           src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='receipt') }}">{% endif %}<input class="val-edit mono" form="rec{{ r.id }}" name="receipt_no" value="{{ r.receipt_no or '' }}"></td>{% endif %}
-        {% if 'receipt_date' in visible %}<td class="{{ 'cell-flag' if 'receipt_date' in r._flags }}" title="confidence {{ conf_pct_text(r, 'receipt_date') }}">{% if r.date_crop %}<img class="val-crop" loading="lazy" alt="Date scan"
+        {% if 'receipt_date' in visible %}<td class="{{ cell_cls(r, 'receipt_date') }}" title="confidence {{ conf_pct_text(r, 'receipt_date') }}">{% if r.date_crop %}<img class="val-crop" loading="lazy" alt="Date scan"
           src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='date') }}">{% endif %}<input class="val-edit mono" form="rec{{ r.id }}" name="receipt_date" value="{{ r.receipt_date or '' }}"></td>{% endif %}
-        {% if 'receipt_time' in visible %}<td class="{{ 'cell-flag' if 'receipt_time' in r._flags }}" title="confidence {{ conf_pct_text(r, 'receipt_time') }}"><input class="val-edit mono" form="rec{{ r.id }}" name="receipt_time" value="{{ r.receipt_time or '' }}"></td>{% endif %}
-        {% if 'vehicle_no' in visible %}<td class="mono{{ ' cell-flag' if 'vehicle_no' in r._flags }}" title="confidence {{ conf_pct_text(r, 'vehicle_no') }}">{% if r.vehicle_crop %}<img class="val-crop" loading="lazy" alt="Vehicle No scan"
+        {% if 'receipt_time' in visible %}<td class="{{ cell_cls(r, 'receipt_time') }}" title="confidence {{ conf_pct_text(r, 'receipt_time') }}"><input class="val-edit mono" form="rec{{ r.id }}" name="receipt_time" value="{{ r.receipt_time or '' }}"></td>{% endif %}
+        {% if 'vehicle_no' in visible %}<td class="mono {{ cell_cls(r, 'vehicle_no') }}" title="confidence {{ conf_pct_text(r, 'vehicle_no') }}">{% if r.vehicle_crop %}<img class="val-crop" loading="lazy" alt="Vehicle No scan"
           src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='vehicle') }}">{% endif %}<input class="val-edit mono" form="rec{{ r.id }}" name="vehicle_no" value="{{ r.vehicle_no or '' }}"></td>{% endif %}
-        {% if 'application_no' in visible %}<td class="mono{{ ' cell-flag' if 'application_no' in r._flags }}" title="confidence {{ conf_pct_text(r, 'application_no') }}"><input class="val-edit mono" form="rec{{ r.id }}" name="application_no" value="{{ r.application_no or '' }}"></td>{% endif %}
-        {% if 'total_amount' in visible %}<td class="ta-right{{ ' cell-flag' if 'total_amount' in r._flags }}" title="confidence {{ conf_pct_text(r, 'total_amount') }}">{% if r.total_crop %}<img class="val-crop" loading="lazy" alt="Total scan"
+        {% if 'application_no' in visible %}<td class="mono {{ cell_cls(r, 'application_no') }}" title="confidence {{ conf_pct_text(r, 'application_no') }}"><input class="val-edit mono" form="rec{{ r.id }}" name="application_no" value="{{ r.application_no or '' }}"></td>{% endif %}
+        {% if 'total_amount' in visible %}<td class="ta-right {{ cell_cls(r, 'total_amount') }}" title="confidence {{ conf_pct_text(r, 'total_amount') }}">{% if r.total_crop %}<img class="val-crop" loading="lazy" alt="Total scan"
           src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='total') }}">{% endif %}<input class="val-edit mono ta-right" form="rec{{ r.id }}" name="total_amount" value="{{ '%.2f'|format(r.total_amount) if r.total_amount is not none else '' }}"></td>{% endif %}
-        {% if 'bank_charges' in visible %}<td class="ta-right{{ ' cell-flag' if 'bank_charges' in r._flags }}" title="confidence {{ conf_pct_text(r, 'bank_charges') }}">{% if r.charges_crop %}<img class="val-crop" loading="lazy" alt="Charges scan"
+        {% if 'bank_charges' in visible %}<td class="ta-right {{ cell_cls(r, 'bank_charges') }}" title="confidence {{ conf_pct_text(r, 'bank_charges') }}">{% if r.charges_crop %}<img class="val-crop" loading="lazy" alt="Charges scan"
           src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='charges') }}">{% endif %}<input class="val-edit mono ta-right" form="rec{{ r.id }}" name="bank_charges" value="{{ '%.2f'|format(r.bank_charges) if r.bank_charges is not none else '' }}"></td>{% endif %}
-        {% if 'bank_total' in visible %}<td class="ta-right{{ ' cell-flag' if 'bank_total' in r._flags }}" title="confidence {{ conf_pct_text(r, 'bank_total') }}">{% if r.bank_total_crop %}<img class="val-crop" loading="lazy" alt="Bank Total scan"
+        {% if 'bank_total' in visible %}<td class="ta-right {{ cell_cls(r, 'bank_total') }}" title="confidence {{ conf_pct_text(r, 'bank_total') }}">{% if r.bank_total_crop %}<img class="val-crop" loading="lazy" alt="Bank Total scan"
           src="{{ url_for('main.receipt_value_crop', upload_id=upload.id, record_id=r.id, field='banktotal') }}">{% endif %}<input class="val-edit mono ta-right" form="rec{{ r.id }}" name="bank_total" value="{{ '%.2f'|format(r.bank_total) if r.bank_total is not none else '' }}"></td>{% endif %}
         <td>{% if r.is_duplicate %}<span class="badge badge-warning">Dup</span>{% else %}—{% endif %}</td>
         <td>{{ '%.2f'|format(r.confidence) if r.confidence is not none else '' }}</td>
-        {% for f in extra_fields %}<td class="{{ 'cell-flag' if f[0] in r._flags }}" title="confidence {{ conf_pct_text(r, f[0]) }}"><input class="val-edit" form="rec{{ r.id }}" name="{{ f[0] }}" value="{{ r.fv.get(f[0]) or '' }}"></td>{% endfor %}
+        {% for f in extra_fields %}<td class="{{ cell_cls(r, f[0]) }}" title="confidence {{ conf_pct_text(r, f[0]) }}"><input class="val-edit" form="rec{{ r.id }}" name="{{ f[0] }}" value="{{ r.fv.get(f[0]) or '' }}"></td>{% endfor %}
         <td class="actions">
           <form id="rec{{ r.id }}" method="post" class="inline"
                 action="{{ url_for('main.rc_edit_record', upload_id=upload.id, record_id=r.id) }}">

@@ -607,6 +607,11 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
                    if kind == "rc" else tpl) or tpl)
             cap_defs, mask_defs, conf_only_defs, tpp = _defs_for(rt)
             flagged = False
+            # Per-record cache of whole-page pp renders (keyed by pp) so each
+            # field crop is sliced from the same full-page image the editor
+            # preview shows; page-adaptive steps (removebg/fft/Otsu) only work
+            # over the whole page, not an isolated box crop.
+            _pagebgr_cache: dict = {}
             for d in cap_defs:
                 fpp = d.get("pp") or tpp
                 if kind == "cr":
@@ -628,9 +633,22 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
                         float(_c), 3)
                 # Persist a crop of the field box so View Records can show the
                 # scanned region beside the value (as the three critical CR
-                # identifiers already do).
+                # identifiers already do).  Slice it from a whole-page render with
+                # the field's effective pp so it matches the editor preview and
+                # the page-adaptive steps (removebg/fft) actually take effect.
                 if kind == "cr":
-                    png = ocr.crop_box_png(page, d["box"])
+                    try:
+                        cz = (ocr._descreen_zoom(page, 5.0)
+                              if (fpp and fpp.get("fft")) else 5.0)
+                        ck = json.dumps(fpp, sort_keys=True) if fpp else ""
+                        pbgr = _pagebgr_cache.get(ck)
+                        if pbgr is None and fpp:
+                            pbgr = ocr._page_bgr(page, fpp, cz)
+                            _pagebgr_cache[ck] = pbgr
+                        png = ocr.crop_box_png(page, d["box"],
+                                               disp_zoom=cz, page_bgr=pbgr)
+                    except Exception:
+                        png = None
                     if png:
                         cfn = f"{rec.id}_{_safe_field_key(d['key'])}.png"
                         with open(os.path.join(cr_crop_dir, cfn), "wb") as fh:
@@ -2963,97 +2981,56 @@ def upload_records(kind: str, upload_id: int):
     captured_keys = {d["key"] for d in defs if d.get("capture")}
     min_conf_by_key = {d["key"]: (d.get("min_conf") or 0.0) for d in defs
                        if (not restrict) or d.get("capture")}
-    mask_defs = [d for d in defs
-                 if d.get("capture") and (d.get("mask") or "none") != "none"]
+    # Fields actually displayed for this upload drive the per-cell colour and
+    # the row Review badge: a cell is green when its confidence meets the field's
+    # minimum (falling back to the global 75% default when the field sets none),
+    # red when it is below.  The row reads OK only when no shown field is red.
+    # This is identical for CR and receipts; mask/format and blank-value checks
+    # do not drive the badge (it is purely confidence-based).
+    shown_keys = set(visible) | {k for k, _ in extra_fields}
     if kind in ("cr", "rc"):
         for r in records:
-            flags: set = set()
-            reasons: list = []
-            conf_flags: set = set()
-            conf_reasons: list = []
             try:
                 fconf = json.loads(r.field_confidence) if r.field_confidence else {}
             except (ValueError, TypeError):
                 fconf = {}
-            # Per-field confidence as a whole-number percent for the cell
-            # tooltips, plus a human-readable reason for each flagged field.
-            conf_pct: dict = {}
-            for key, c in fconf.items():
-                try:
-                    cf = float(c) if c is not None else None
-                except (TypeError, ValueError):
-                    cf = None
-                if cf is not None:
-                    conf_pct[key] = round(cf * 100)
-                if (restrict and key not in captured_keys) or cf is None:
-                    continue
-                mc = min_conf_by_key.get(key, 0.0)
-                if kind == "rc" and mc <= 0 and not restrict:
-                    mc = _RC_CONF_MIN
-                if mc > 0 and cf < mc:
-                    flags.add(key)
-                    conf_flags.add(key)
-                    msg = "%s: confidence %d%% below %d%%" % (
-                        label_by_key.get(key, key),
-                        round(cf * 100), round(mc * 100))
-                    reasons.append(msg)
-                    conf_reasons.append(msg)
             # CR exposes its critical reads as dedicated *_confidence columns;
-            # seed those so the three always have a percent for display.
+            # seed those when the JSON mirror lacks them (older records).
             if kind == "cr":
                 for key, col in (("registration_no", "registration_no_confidence"),
                                  ("chassis_no", "chassis_no_confidence"),
                                  ("engine_no", "engine_no_confidence")):
                     v = getattr(r, col, None)
-                    if v is not None:
-                        conf_pct.setdefault(key, round(float(v) * 100))
-            for d in mask_defs:
-                key = d["key"]
-                role = d.get("role") or key
-                val = getattr(r, role, None)
-                if val in (None, ""):
-                    val = r.fv.get(key)
-                if val in (None, ""):
+                    if v is not None and key not in fconf:
+                        fconf[key] = float(v)
+            conf_pct: dict = {}
+            status: dict = {}
+            reasons: list = []
+            for key, c in fconf.items():
+                try:
+                    cf = float(c) if c is not None else None
+                except (TypeError, ValueError):
+                    cf = None
+                if cf is None:
                     continue
-                _nv, ok = ocr.apply_field_mask(
-                    d.get("mask"), d.get("value"), str(val), _list_lookup)
-                if not ok:
-                    flags.add(key)
-                    reasons.append(
-                        "%s: value does not match the required format"
-                        % label_by_key.get(key, key))
-            # Flag any captured field that produced no value, so an empty read
-            # (e.g. an amount whose decimals were cropped off) surfaces for
-            # review instead of silently passing as OK.
-            for d in defs:
-                if not d.get("capture"):
+                conf_pct[key] = round(cf * 100)
+                # Only captured (template mode) + displayed fields are coloured.
+                if (restrict and key not in captured_keys) or key not in shown_keys:
                     continue
-                key = d["key"]
-                role = d.get("role") or key
-                val = getattr(r, role, None)
-                if val in (None, ""):
-                    val = r.fv.get(key)
-                if val in (None, ""):
-                    flags.add(key)
-                    reasons.append(
-                        "%s: no value captured" % label_by_key.get(key, key))
+                mc = min_conf_by_key.get(key, 0.0)
+                if mc <= 0:
+                    mc = _RC_CONF_MIN
+                if cf >= mc:
+                    status[key] = "ok"
+                else:
+                    status[key] = "check"
+                    reasons.append("%s: confidence %d%% below %d%%" % (
+                        label_by_key.get(key, key),
+                        round(cf * 100), round(mc * 100)))
             r._conf_pct = conf_pct
-            if kind == "cr":
-                r._review = bool(r.needs_review)
-                r._flags = flags if r.needs_review else set()
-                r._reasons = (reasons or ["Flagged for review during processing"]) \
-                    if r.needs_review else []
-            else:
-                # Receipts have no per-row verify: the Review badge is driven
-                # purely by field confidence - OK when every captured field reads
-                # at or above its minimum, Check when any is below it.  Each
-                # field's template minimum applies; a field left at 0 is not
-                # reviewed on confidence, and the global 75% default is used only
-                # when no template is assigned.  Mask/format and blank-value
-                # checks are not applied to the receipt Review badge.
-                r._review = bool(conf_flags)
-                r._flags = conf_flags
-                r._reasons = conf_reasons if r._review else []
+            r._field_status = status
+            r._review = any(v == "check" for v in status.values())
+            r._reasons = reasons if r._review else []
     # thead structural columns per kind (cr: Pg/Review/Template/Save/Image = 5;
     # rc: Review/Rec No/Template/Dup/Conf/Save/Image = 7) plus visible + extra.
     col_count = (7 if kind == "rc" else 5) + len(visible) + len(extra_fields)
@@ -3217,6 +3194,20 @@ def cr_edit_record(upload_id: int, record_id: int):
     rec.registration_no = new_reg
     rec.chassis_no = new_chassis
     rec.engine_no = new_engine
+    # Operator-verified values are 100% confident, so their cells and the row's
+    # confidence-driven Review badge read OK after saving.
+    try:
+        _fconf = json.loads(rec.field_confidence) if rec.field_confidence else {}
+    except (ValueError, TypeError):
+        _fconf = {}
+    for _k, _col, _v in (
+            ("registration_no", "registration_no_confidence", new_reg),
+            ("chassis_no", "chassis_no_confidence", new_chassis),
+            ("engine_no", "engine_no_confidence", new_engine)):
+        if _v:
+            setattr(rec, _col, 1.0)
+            _fconf[_k] = 1.0
+    rec.field_confidence = json.dumps(_fconf) if _fconf else None
     rec.needs_review = False  # an operator has verified/corrected this row
     record_audit("cr_record_edited", f"record_id={record_id}")
     db.session.commit()
@@ -4815,7 +4806,15 @@ def tr_field_preview():
         if page_no < 1 or page_no > total:
             abort(404)
         page = doc[page_no - 1]
-        png = ocr.render_crop_png(page, rect, pp=pp)
+        # Slice the crop from a whole-page render with pp so the page-adaptive
+        # steps (removebg/fft) take effect and this popup preview matches the
+        # stored value crop (an isolated-crop pp cannot estimate the page
+        # background/screen and leaves guilloche behind).
+        cz = ocr._descreen_zoom(page, 5.0) if (pp and pp.get("fft")) else 5.0
+        page_bgr = ocr._page_bgr(page, pp, cz) if pp else None
+        png = ocr.crop_box_png(page, rect, disp_zoom=cz, page_bgr=page_bgr)
+        if not png:
+            return jsonify({"error": "Empty box."}), 400
         result = None
         if run_ocr:
             result = ocr.extract_by_rects(
