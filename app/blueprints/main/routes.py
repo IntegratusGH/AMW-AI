@@ -630,7 +630,8 @@ def _test_select_and_crop(kind, defs, fields, page, region, pp):
     return out
 
 
-def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
+def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id,
+                              report=None):
     """Post-extraction pass over every record of an upload: read each template
     capture-field box and apply its Apply-mask rule.  Custom (non-canonical)
     fields take their value from the box read + mask and are written to their
@@ -705,7 +706,14 @@ def _capture_custom_and_masks(kind, up, tpl, RecordModel, upload_id):
             cr_crop_dir = os.path.join(
                 current_app.config["CR_BOOK_CROP_DIR"], str(upload_id))
             os.makedirs(cr_crop_dir, exist_ok=True)
-        for rec in recs:
+        n_recs = len(recs)
+        for ri, rec in enumerate(recs):
+            # Heartbeat: this per-record pass can run for many minutes on a large
+            # upload, so report progress periodically.  Without it the message
+            # stays frozen and the no-progress stall watchdog would wrongly
+            # demote a still-working upload to "error" (and the UI looks idle).
+            if report and ri % 5 == 0:
+                report(ri, n_recs)
             if kind == "cr":
                 pno = getattr(rec, "page_no", None) or 1
                 page = doc[min(max(1, pno), total) - 1]
@@ -1209,9 +1217,15 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             # reads for review.  Returns the custom values for the JSON mirror.
             up.progress_message = "Applying field masks…"
             db.session.commit()
+
+            def _mask_report(done: int, total_recs: int) -> None:
+                up.progress_message = (
+                    f"Applying field masks \u2014 {done} of {total_recs}\u2026")
+                db.session.commit()
+
             custom_vals, conf_by_id, mask_flagged, custom_crops = \
                 _capture_custom_and_masks(
-                    kind, up, tpl, RecordModel, upload_id)
+                    kind, up, tpl, RecordModel, upload_id, report=_mask_report)
 
             # Hybrid field storage: mirror each record's final (batch-corrected)
             # canonical values, crops and confidences into the template-driven
@@ -1383,7 +1397,7 @@ _reprocess_workers_active = 0
 
 
 def _reprocess_worker_count() -> int:
-    """Parallel worker count: REPROCESS_WORKERS env override, else min(6, cpu-1),
+    """Parallel worker count: REPROCESS_WORKERS env override, else min(6, cpu),
     at least 1."""
     cpu = os.cpu_count() or 1
     env = (os.getenv("REPROCESS_WORKERS", "") or "").strip()
@@ -1394,7 +1408,7 @@ def _reprocess_worker_count() -> int:
                 return n
         except ValueError:
             pass
-    return max(1, min(6, cpu - 1))
+    return max(1, min(6, cpu))
 
 
 def _reprocess_worker(app, intra_threads: int) -> None:  # pragma: no cover
