@@ -78,6 +78,19 @@ class Config:
     APP_NAME = "AMW-AI"
     APP_VERSION = _APP_VERSION
 
+    # --- Logging ---------------------------------------------------------
+    # Runtime log level (DEBUG, INFO, WARNING, ERROR).  Set LOG_LEVEL=DEBUG in
+    # the .env to trace errors with full tracebacks.  Logs are written to a
+    # rotating file in the writable ProgramData logs directory.
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+    LOG_DIR = str(
+        Path(os.getenv("PROGRAMDATA", r"C:\ProgramData")) / "AMW-AI" / "logs")
+    LOG_FILE = str(Path(LOG_DIR) / "app.log")
+    LOG_MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", str(5 * 1024 * 1024)))
+    LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "5"))
+    # Echo every SQL statement to the log (very verbose; deep debugging only).
+    SQLALCHEMY_ECHO = _bool("SQL_ECHO", "no")
+
     # --- Uploads (module icons) ------------------------------------------
     # Icons are stored under the writable ProgramData tree (Program Files is
     # not writable by the service account).

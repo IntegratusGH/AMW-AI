@@ -1365,6 +1365,8 @@ def _run_processing(app, kind: str, upload_id: int) -> None:
             db.session.commit()
         except Exception as exc:  # pragma: no cover - background worker
             db.session.rollback()
+            current_app.logger.exception(
+                "Processing failed for %s upload %s", kind, upload_id)
             up = db.session.get(UploadModel, upload_id)
             if up is not None:
                 up.status = STATUS_ERROR

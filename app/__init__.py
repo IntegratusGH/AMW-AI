@@ -17,9 +17,55 @@ _STALL_SWEEPER_LOCK = threading.Lock()
 _STALL_SWEEPER_STARTED = False
 
 
+def _configure_logging(app: Flask) -> None:
+    """Attach a rotating file handler to the root logger at the configured level
+    so runtime errors are traceable.  Set LOG_LEVEL=DEBUG in the .env to capture
+    debug detail and full tracebacks.  A single handler on the root logger covers
+    app.logger and every module logger via propagation; output goes to
+    <ProgramData>/AMW-AI/logs/app.log (rotating)."""
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    level_name = str(app.config.get("LOG_LEVEL", "INFO")).upper()
+    level = getattr(logging, level_name, logging.INFO)
+    try:
+        os.makedirs(app.config["LOG_DIR"], exist_ok=True)
+    except OSError:
+        pass
+
+    log_file = os.path.abspath(app.config["LOG_FILE"])
+    root = logging.getLogger()
+    # Idempotent: a repeated create_app (tests / scripts) must not stack a
+    # second handler on the same file.
+    if not any(isinstance(h, RotatingFileHandler)
+               and getattr(h, "baseFilename", "") == log_file
+               for h in root.handlers):
+        handler = RotatingFileHandler(
+            log_file,
+            maxBytes=int(app.config.get("LOG_MAX_BYTES", 5 * 1024 * 1024)),
+            backupCount=int(app.config.get("LOG_BACKUP_COUNT", 5)),
+            encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s [%(name)s:%(threadName)s] %(message)s"))
+        root.addHandler(handler)
+    root.setLevel(level)
+    app.logger.setLevel(level)
+    app.logger.propagate = True
+    # Drop Flask's default stderr handler (service stderr is discarded); the
+    # root file handler receives app.logger records via propagation.
+    try:
+        from flask.logging import default_handler
+        app.logger.removeHandler(default_handler)
+    except Exception:
+        pass
+    app.logger.info("Logging configured: level=%s file=%s", level_name, log_file)
+
+
 def create_app(config_class: type = Config) -> Flask:
     app = Flask(__name__)
     app.config.from_object(config_class)
+    # Configure logging first so startup steps (recovery/sweeper) are captured.
+    _configure_logging(app)
 
     # Ensure the writable uploads directory exists (module icons).
     try:
