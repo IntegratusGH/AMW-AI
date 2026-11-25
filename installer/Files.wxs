@@ -177,6 +177,9 @@
             <Component Id="cmp6c7f3227c1c9e801b289a3d5" Guid="*">
               <File Id="fil6c7f3227c1c9e801b289a3d5" Name="_image_viewer.html" KeyPath="yes" Source="$(var.PayloadDir)\app\templates\main\_image_viewer.html" />
             </Component>
+            <Component Id="cmpb541b5d5d4b283755f78ac7c" Guid="*">
+              <File Id="filb541b5d5d4b283755f78ac7c" Name="_ocr_settings_modal.html" KeyPath="yes" Source="$(var.PayloadDir)\app\templates\main\_ocr_settings_modal.html" />
+            </Component>
             <Component Id="cmp4a84fb5ec9a92f5fb87b9ba1" Guid="*">
               <File Id="fil4a84fb5ec9a92f5fb87b9ba1" Name="cr_review.html" KeyPath="yes" Source="$(var.PayloadDir)\app\templates\main\cr_review.html" />
             </Component>
@@ -354,6 +357,9 @@
           </Component>
           <Component Id="cmpe313633dc6cab48d4ef8bbe3" Guid="*">
             <File Id="file313633dc6cab48d4ef8bbe3" Name="0039_template_validation_box2.py" KeyPath="yes" Source="$(var.PayloadDir)\migrations\versions\0039_template_validation_box2.py" />
+          </Component>
+          <Component Id="cmp92e2a6492d28ce2fd40b02aa" Guid="*">
+            <File Id="fil92e2a6492d28ce2fd40b02aa" Name="0040_ocr_field_settings.py" KeyPath="yes" Source="$(var.PayloadDir)\migrations\versions\0040_ocr_field_settings.py" />
           </Component>
         </Directory>
       </Directory>
@@ -13121,6 +13127,7 @@
       <ComponentRef Id="cmp6c0d6b4e49bab3356cca958b" />
       <ComponentRef Id="cmp9a78be9e53e7834377c9a137" />
       <ComponentRef Id="cmp6c7f3227c1c9e801b289a3d5" />
+      <ComponentRef Id="cmpb541b5d5d4b283755f78ac7c" />
       <ComponentRef Id="cmp4a84fb5ec9a92f5fb87b9ba1" />
       <ComponentRef Id="cmp728b71b5db53f5e9b0715190" />
       <ComponentRef Id="cmpb2c05a84d8fcdd206a189b58" />
@@ -13178,6 +13185,7 @@
       <ComponentRef Id="cmpdde64572bdaf0b4c16d0068e" />
       <ComponentRef Id="cmpcb3a2ebbd48de202de7a1798" />
       <ComponentRef Id="cmpe313633dc6cab48d4ef8bbe3" />
+      <ComponentRef Id="cmp92e2a6492d28ce2fd40b02aa" />
       <ComponentRef Id="cmp13091fc9878daffa6ef8fc2b" />
       <ComponentRef Id="cmpb0e40e7eb7f55704fe4f688c" />
       <ComponentRef Id="cmpcb58a1309c209bb0a5304a90" />
